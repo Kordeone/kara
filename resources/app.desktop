@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Kara
+Comment=A native task and productivity manager for the COSMIC™ desktop
+Type=Application
+Icon=io.github.kordeone.Kara
+Exec=kara %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=

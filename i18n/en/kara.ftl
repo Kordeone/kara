@@ -1,0 +1,9 @@
+app-title = Kara
+app-comment = A native task and productivity manager for the COSMIC™ desktop
+app-keywords =
+about = About
+repository = Repository
+view = View
+welcome = Welcome to COSMIC! ✨
+page-id = Page { $num }
+git-description = Git commit {$hash} on {$date}
