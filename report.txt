@@ -1,179 +1,77 @@
-Kara — Consolidated Report: Eisenhower Matrix Stage 1
+Kara Tasks UI Completion Report
+Baseline: 92508f2
+Branch: main
 
-Delivery status: finalized on feat/eisenhower; no merge or push
-- Integrated against b1a1c1331fa0c0d7b5ced84b067350b796bc8c33, Luna's
-  committed native COSMIC sidebar restoration, following Tasks polish 72da937.
-- Owner confirmed Luna is paused and this integration has exclusive editing
-  authorization. Source hashes remained unchanged throughout final validation;
-  no concurrent source edits were detected. No reset, checkout, clean or rebase.
-- Reviewed existing working-tree implementation; did not reapply the backup
-  patch. No additional application source changes were needed during finalization.
-- Native labeled sidebar builder and existing dialog implementation match the
-  restoration commit byte-for-byte. Existing Tasks presentation remains intact.
-- Durable preservation backup remains available outside the Git working tree:
-      /home/rapper/projects/kara-matrix-backup-20261018T224201134002Z/
-- Owner has already launched the combined application on CachyOS and confirmed
-  the restored labeled sidebar, four quadrants, list selector and Unassigned.
-  Full functional acceptance below remains for the owner; Debian is headless.
+Implemented
+- Kept the restored native libcosmic navigation and existing Tasks hierarchy.
+  No horizontal four-icon section selector or shell restructuring was added.
+- Constrained Tasks and Lists content to a centered 960 logical-pixel maximum.
+  Task rows use a narrower 880-pixel maximum while staying fluid at small widths.
+- Grouped each task row as checkbox, title and metadata, then adjacent Edit/Delete
+  icon buttons. Task title and metadata share a column; action spacing is compact.
+  Existing COSMIC symbolic icons, tooltips, selected states, and control behavior
+  remain in use.
+- Kept active tasks before completed tasks, in their existing contexts. Completed
+  titles remain muted and struck through; their checkboxes and actions remain usable.
+- Centered empty-state copy within the task-list area.
+- Organized the shared Add/Edit task dialog into Task details, Organization, and
+  Notes sections. Inputs and dropdowns use available width, validation errors are
+  shown above the fields, and the dialog and scrollable form have size limits for
+  narrow windows. Add and Edit retain the same fields, defaults, focus, validation,
+  save, cancel, task-list assignment, and Matrix compatibility.
+- No task/list storage fields, data semantics, Matrix presentation, tray behavior,
+  single-instance behavior, or other modules were changed.
 
-Baseline and scope
-- Tasks CRUD, Inbox/Today context, list management/pinning, contextual completed
-  tasks, native navigation/dialogs, atomic storage, tray lifecycle and
-  single-instance behavior remain in place.
-- Calendar remains its existing placeholder. Board and Pomodoro remain
-  placeholders. No drag/drop, autostart, packaging, installation, database,
-  custom palette, dependencies/upgrades or unrelated Tasks redesign was added.
+Files modified
+- src/app.rs — Tasks content layout and shared Add/Edit task dialog.
+- report.txt — this milestone report and COSMIC acceptance checklist.
 
-Matrix MVP
-- The existing Matrix section now contains a Task list selector, defaulting to
-  Inbox, with every named list available regardless of pin/collapse state.
-- A native two-by-two grid displays exactly:
-      Important & Urgent          | Important & Not Urgent
-      Not Important & Urgent      | Not Important & Not Urgent
-  Below it is an always-present Unassigned area. Content scrolls; below 720
-  logical pixels of content width the quadrants stack in row-major order.
-- Each task has a native classification dropdown, completion checkbox and
-  icon-only Edit action. Classified tasks have Up/Down controls. Each quadrant
-  and Unassigned provide an Add action that opens the unchanged task dialog.
-- Direct quadrant creation defaults to the selected list/classification. The
-  existing editor may change its list; classification is retained and appended
-  in the destination. Task creation in Tasks retains Luna's original defaults.
-- Matrix and Tasks share task IDs/records. Completed tasks stay in their list
-  and quadrant, display after active tasks with muted strikethrough titles and
-  remain editable/reactivatable. Empty/unavailable states use native widgets.
+Automated validation on Debian (headless)
+- cargo fmt --check: PASS
+- cargo check --locked: PASS
+- cargo clippy --locked: PASS
+- cargo test --locked: PASS (40 passed, 0 failed, 1 ignored because it requires
+  an isolated session bus)
+- cargo build --locked: PASS
+- Isolated tray/D-Bus regression:
+  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked
+  tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport
+  -- --ignored --exact --nocapture: PASS (1 passed)
+- The default sandbox denied binding the temporary D-Bus socket. The same test
+  passed through the approved execution path.
+- No graphical runtime validation was performed in this headless environment.
 
-Model and ordering
-- Optional task fields: matrix_quadrant and matrix_order (zero-based u64 rank).
-  Quadrant variants explicitly encode ImportantUrgent, ImportantNotUrgent,
-  NotImportantUrgent and NotImportantNotUrgent. Absence means Unassigned.
-- Importance/urgency are never inferred from priority or dates.
-- Ranks are scoped to (list ID or Inbox, quadrant), not list names. Other
-  lists/quadrants may reuse the same rank. Classified ranks are normalized
-  contiguously after accepted mutations and when loading into memory.
-- Ordering is active first, completed second. Up/Down swaps neighbors inside
-  the same completion group. Append means the end of the destination completion
-  group, preserving the rule that completed tasks always follow active ones.
-- Reclassification/list moves append at the destination and compact the old
-  group. Unassigning clears rank. Completion moves a task into the completed
-  group; reactivation appends to the active group without losing its quadrant.
-- List deletion moves all its tasks to Inbox, retaining classification and
-  relative Matrix order, after existing Inbox tasks in each completion group.
-- Only Matrix rank fields change during reordering; shared document record
-  order and Luna's existing Tasks presentation order are preserved.
+Known limitations
+- Visual spacing, text wrapping, dialog scrolling, icon hit targets, and theme
+  rendering require review in COSMIC. The editor caps its scroll region at 400
+  logical pixels and the full dialog at 520; long forms may scroll more on a
+  small window.
+- Existing minimum window size (640 x 560), Calendar placeholder, Board View
+  placeholder, and Pomodoro placeholder are unchanged.
 
-Persistence compatibility and failure safety
-- Same XDG tasks.json, lock, atomic replacement, synced writes and external
-  conflict checks. No user task data was accessed during automated testing.
-- Reads document versions 1, 2 and 3. Legacy tasks without Matrix fields default
-  to Unassigned; existing list IDs, pins, task IDs and other task fields remain.
-- Opening a file does not rewrite its bytes. Duplicate/gapped/missing classified
-  ranks normalize stably in memory, with document order resolving ties. The
-  next accepted write saves the entire document atomically as schema version 3.
-- Unknown quadrants/fields, non-integer/negative ranks, an order without a
-  quadrant, invalid records, dangling lists and unsupported versions block
-  loading visibly and preserve the original file. No silent reset occurs.
-- Failed writes retain the previous live data/ranks and disk contents. External
-  edits block writes. The existing post-replacement sync-failure warning still
-  explicitly distinguishes written data from uncertain durability.
-- Older Kara binaries reject version 3. Use disposable/copied data for feature
-  validation; do not downgrade an upgraded personal data file to an older app.
-
-Changed files
-- src/tasks.rs: quadrant enum, optional Matrix metadata and validation.
-- src/matrix.rs: ordering, classification, movement helpers and unit tests.
-- src/matrix_view.rs: responsive native Matrix widgets and layout/label tests.
-- src/storage.rs: compatible schema reads, canonical atomic writes, Matrix
-  mutations, list/task integration and persistence/failure regression tests.
-- src/app.rs: minimal Matrix state/events/content wiring and deleted-list
-  selector fallback; restored native navigation and dialogs are unchanged.
-- src/main.rs: register the two new Matrix modules. report.txt: this report.
-- Cargo.toml and Cargo.lock unchanged. Tray/lifecycle source unchanged.
-
-Validation on headless Debian
-- Final validation rerun on the current combined working tree, 2026-10-18.
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED, 40 tests (28 retained + 12 new); one existing
-  private-bus test intentionally excluded from the ordinary parallel run.
-- Existing isolated D-Bus regression: PASSED separately, 1 test. All 41 tests
-  exercised successfully across the ordinary and isolated runs.
-- cargo build --locked: PASSED; target/debug/kara produced.
-- git diff --check: PASSED. Dependency files unchanged.
-- Tests cover classification independent of dates/priority; per-list/quadrant
-  ranks; stable normalization; reorder/completion boundaries; creation defaults;
-  list moves/deletion; shared IDs; completed context/reversal; pinned legacy
-  data; restart persistence; malformed Matrix fields; denied/external writes.
-- Persistence tests use temporary directories. No graphical testing was done
-  on Debian. Initial CachyOS rendering was confirmed by the owner; complete
-  functional acceptance is still required before merging into main.
-
-Repeat validation
-    cargo fmt --check
-    cargo check --locked
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
-    cargo build --locked
-The pre-existing tray protocol regression is separate from normal parallel
-unit tests and uses an isolated bus (dbus-run-session, no COSMIC required):
-    KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-
-CachyOS COSMIC acceptance
-1. Quit existing Kara instances through their tray menu. Transfer this feature
-   branch's source via Samba, retaining Cargo.lock. In the transferred project:
-       cargo build --locked
-       KARA_MATRIX_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_MATRIX_DATA" ./target/debug/kara
-   Reuse this variable for restarts; single-instance activation shares the bus.
-2. Verify the restored labeled native sidebar and existing Tasks layout. Create Work/Home
-   lists, pin one, collapse/expand Lists and check the pinned entry remains.
-   Create an undated Inbox task and an overdue/high-priority task in Work.
-3. Select Matrix. Expect Inbox by default, exact quadrant labels in their
-   specified positions and the Inbox tasks in Unassigned (regardless of due
-   date/priority). Choose Work/Home and confirm only that context's tasks show.
-4. Classify existing tasks through the dropdowns. Create tasks using each
-   quadrant's Add icon; verify the unchanged dialog defaults to the selected
-   list. Cancel one creation. Save others with titles/notes/dates/priority.
-5. Create three tasks in one quadrant and move them Up/Down. Test first/last
-   disabled arrows. Reclassify one and confirm it appends in its new quadrant.
-   Return a task to Unassigned and classify it again. Check other scopes retain
-   their own order. Switch to Tasks and verify there are no duplicate records.
-6. Complete tasks in Matrix and in Tasks. They must remain in their original
-   context/quadrant, muted/struck through after active tasks. Reorder completed
-   tasks among themselves; they must not cross above active tasks. Reactivate
-   one and confirm it returns to the active group in the same list/quadrant.
-7. Edit a classified task with the existing editor: change its title, notes,
-   due date/priority, then its list. Classification must remain; destination
-   quadrant order must append, and source order must compact. Rename/pin its
-   list and verify classification/order are unaffected.
-8. Put tasks in an Inbox quadrant, reorder tasks in a named list's same
-   quadrant, then delete that list from Tasks with confirmation. Expect all its
-   tasks moved to Inbox in prior relative order after existing destination tasks
-   in their completion groups. No tasks are deleted. Matrix selection falls
-   back to Inbox if its selected list was deleted. Test ordinary task deletion.
-9. Resize from a wide window to minimum size (also with sidebar visible/hidden),
-   inspect stacking, dropdowns, long labels/titles, scrolling, Tab/Enter/Escape,
-   light/dark theme and display scaling. Unassigned must remain reachable.
-10. Quit/relaunch using the same XDG_DATA_HOME. Verify ranks, classifications,
-    completion, list moves/pins and task edits persist. The disposable file is:
-       $KARA_MATRIX_DATA/io.github.kordeone.Kara/tasks.json
-    With Kara closed, copy a legacy version 1/2 file into a separate disposable
-    test directory, launch, verify Unassigned defaults, classify and restart.
-    Test corrupt Matrix fields only in a disposable file: expect visible load
-    failure and unchanged bytes. Never alter personal data for corruption tests.
-11. Smoke-test tray close/Open/Quit, second-launch restoration and Tasks Inbox,
-    Today, Calendar placeholder and named lists. Calendar/Board/Pomodoro scope
-    is unchanged; this feature adds only the Matrix MVP.
-
-Limitations and delivery
-- No drag/drop; ordering uses buttons within active/completed groups. Unassigned
-  tasks use stable document order (active first) and have no persisted rank.
-- A narrow Matrix stacks quadrants; exact rendering/focus needs COSMIC testing.
-- Existing small synchronous JSON, English UI and tray platform limitations
-  remain. No attempt to repair corrupt task content or reset storage is made.
-- Matrix implementation is finalized on feat/eisenhower atop b1a1c13.
-  No known integration blocker remains. The feature commit includes only the
-  seven files listed above. Main is unchanged; no merge or push was performed.
-- Remaining concern: full CachyOS functional, keyboard, scaling and narrow-window
-  testing is manual. Owner's initial combined-app rendering check is recorded
-  above; no graphical validation was performed on Debian.
+CachyOS COSMIC graphical acceptance checklist
+1. At a normal window size (about 1280 x 800), confirm the labeled native sidebar
+   is unchanged and the Tasks content is centered with a readable maximum width.
+2. Inspect Inbox, Today, and a named list. Confirm checkbox, title, due/priority
+   metadata, and adjacent icon-only Edit/Delete buttons align consistently.
+   Tab through the row and verify both icon buttons are keyboard reachable and
+   their tooltips identify the actions.
+3. Create active and completed tasks in Inbox and a named list. Confirm completed
+   tasks remain in that context, appear after active tasks, have muted struck
+   through titles, and remain editable and reversible.
+4. Inspect each empty state and verify its message is centered in the task area.
+5. Add and edit a task. Verify title, optional YYYY-MM-DD due date, priority,
+   notes, and task-list selection; ensure current values are retained on Edit and
+   Matrix task creation still opens the same editor with the selected list.
+6. Try a blank title and malformed/impossible date. Confirm the error is visible
+   above the form fields and the editor stays open. Verify title focus on opening,
+   Enter-to-save from text fields, Tab navigation, Escape/Cancel, and Save.
+7. At the minimum window size (640 x 560), repeat the dialog and task-row checks.
+   Confirm the form scrolls without hiding Cancel/Save, dropdowns remain usable,
+   task titles and metadata do not collide with actions, and the content remains
+   reachable. Also inspect an intermediate size (about 800 x 600).
+8. Verify Lists create, rename, select, delete confirmation, pin/unpin, collapse,
+   and pinned-list visibility when collapsed. Confirm the native sidebar labels,
+   icons, disclosure, and selected states align in light and dark themes.
+9. Smoke-test Matrix Add/Edit and classification retention, then tray close,
+   reopen, second-launch activation, and quit to confirm those existing behaviors.

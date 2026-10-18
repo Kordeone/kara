@@ -303,7 +303,10 @@ impl cosmic::Application for AppModel {
                 );
         }
         if let Some(view) = page.view() {
-            let mut rows = widget::column::with_capacity(10).spacing(spacing.space_s);
+            let mut rows = widget::column::with_capacity(10)
+                .spacing(spacing.space_s)
+                .width(Length::Fill)
+                .align_x(Alignment::Center);
             let mut count = 0;
             if let Some(store) = &self.store {
                 let visible = tasks::visible_tasks(store.tasks(), view, self.today);
@@ -345,21 +348,14 @@ impl cosmic::Application for AppModel {
                         Some(d) => format!("Due {d} · {} priority", task.priority.label()),
                         None => format!("{} priority", task.priority.label()),
                     };
-                    let label = widget::column::with_capacity(2)
+                    let task_details = widget::column::with_capacity(2)
                         .spacing(spacing.space_xxs)
-                        .push(
-                            widget::row::with_capacity(2)
-                                .spacing(spacing.space_s)
-                                .align_y(Alignment::Center)
-                                .push(check)
-                                .push(title),
-                        )
+                        .push(title)
                         .push(widget::text::caption(detail))
                         .width(Length::Fill);
-                    let row = widget::row::with_capacity(3)
-                        .spacing(spacing.space_s)
+                    let actions = widget::row::with_capacity(2)
+                        .spacing(spacing.space_xxs)
                         .align_y(Alignment::Center)
-                        .push(label)
                         .push(
                             widget::button::icon(icon::from_name("document-edit-symbolic"))
                                 .tooltip("Edit task")
@@ -374,7 +370,18 @@ impl cosmic::Application for AppModel {
                                     self.can_write().then(|| Message::Delete(task.id.clone())),
                                 ),
                         );
-                    rows = rows.push(widget::container(row).padding(spacing.space_s));
+                    let row = widget::row::with_capacity(3)
+                        .spacing(spacing.space_s)
+                        .align_y(Alignment::Center)
+                        .push(check)
+                        .push(task_details)
+                        .push(actions);
+                    rows = rows.push(
+                        widget::container(row)
+                            .padding(spacing.space_xxs)
+                            .width(Length::Fill)
+                            .max_width(880),
+                    );
                 }
             }
             if count == 0 {
@@ -387,9 +394,17 @@ impl cosmic::Application for AppModel {
                         TaskView::List(_) => "No tasks in this list. Add a task to get started.",
                     }
                 };
-                rows = rows.push(widget::text::body(empty));
+                rows = rows.push(
+                    widget::container(widget::text::body(empty))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                );
             }
-            content = content.push(widget::scrollable(rows).height(Length::Fill));
+            content = content.push(
+                widget::scrollable(rows)
+                    .height(Length::Fill)
+                    .width(Length::Fill),
+            );
         } else if page == Page::Matrix {
             content = content.push(matrix_view::view(
                 self.store.as_ref(),
@@ -456,10 +471,21 @@ impl cosmic::Application for AppModel {
                 _ => "Coming later.",
             }));
         }
+        let content = if page.view().is_some() || page == Page::Lists {
+            widget::container(content)
+                .max_width(960)
+                .width(Length::Fill)
+                .height(Length::Fill)
+        } else {
+            widget::container(content)
+                .width(Length::Fill)
+                .height(Length::Fill)
+        };
         widget::container(content)
             .padding(spacing.space_m)
             .width(Length::Fill)
             .height(Length::Fill)
+            .center_x(Length::Fill)
             .into()
     }
     fn dialog(&self) -> Option<Element<'_, Message>> {
@@ -522,35 +548,41 @@ impl cosmic::Application for AppModel {
         }
         if let Some(editor) = &self.editor {
             let spacing = cosmic::theme::spacing();
-            let mut fields = widget::column::with_capacity(9)
+            let mut fields = widget::column::with_capacity(12)
                 .spacing(spacing.space_s)
+                .push(widget::text::heading("Task details"));
+            if let Some(error) = &editor.error {
+                fields = fields.push(widget::text::body(error));
+            }
+            fields = fields
                 .push(widget::text::body("Title"))
                 .push(
                     widget::text_input("Task title", &editor.task.title)
                         .id(self.title_input.clone())
                         .on_input(Message::Title)
-                        .on_submit(|_| Message::Save),
+                        .on_submit(|_| Message::Save)
+                        .width(Length::Fill),
                 )
-                .push(widget::text::body("Due date (optional)"))
+                .push(widget::text::body("Due date"))
                 .push(
-                    widget::text_input("YYYY-MM-DD", &editor.due)
+                    widget::text_input("YYYY-MM-DD (optional)", &editor.due)
                         .on_input(Message::Due)
-                        .on_submit(|_| Message::Save),
+                        .on_submit(|_| Message::Save)
+                        .width(Length::Fill),
                 )
                 .push(widget::text::body("Priority"))
-                .push(widget::dropdown(
-                    vec!["Low", "Normal", "High"],
-                    Priority::ALL
-                        .iter()
-                        .position(|p| *p == editor.task.priority),
-                    Message::Priority,
-                ))
-                .push(widget::text::body("Notes (optional)"))
                 .push(
-                    widget::text_editor::text_editor(&editor.notes)
-                        .height(110)
-                        .on_action(Message::Notes),
-                );
+                    widget::dropdown(
+                        vec!["Low", "Normal", "High"],
+                        Priority::ALL
+                            .iter()
+                            .position(|p| *p == editor.task.priority),
+                        Message::Priority,
+                    )
+                    .width(Length::Fill),
+                )
+                .push(widget::text::heading("Organization"))
+                .push(widget::text::body("Task list"));
             let mut options = vec!["Inbox (no list)".to_string()];
             let mut selected = Some(0);
             if let Some(store) = &self.store {
@@ -564,18 +596,21 @@ impl cosmic::Application for AppModel {
                 }
             }
             fields = fields
-                .push(widget::text::body("List"))
-                .push(widget::dropdown(options, selected, Message::AssignList));
-            if let Some(error) = &editor.error {
-                fields = fields.push(widget::text::body(error));
-            }
+                .push(widget::dropdown(options, selected, Message::AssignList).width(Length::Fill));
+            fields = fields.push(widget::text::heading("Notes")).push(
+                widget::text_editor::text_editor(&editor.notes)
+                    .height(110)
+                    .on_action(Message::Notes),
+            );
             let mut dialog = widget::dialog()
                 .title(if editor.is_new {
                     "Add task"
                 } else {
                     "Edit task"
                 })
-                .control(widget::container(widget::scrollable(fields)).max_height(430))
+                .control(widget::container(widget::scrollable(fields)).max_height(400))
+                .max_width(560)
+                .max_height(520)
                 .primary_action(
                     widget::button::suggested("Save")
                         .on_press_maybe(self.can_write().then_some(Message::Save)),
