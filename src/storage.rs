@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-use crate::tasks::{self, Task, TaskList};
+use crate::{
+    matrix::{self, Direction},
+    tasks::{self, Quadrant, Task, TaskList},
+};
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
@@ -79,7 +82,7 @@ impl Store {
                         path.display()
                     )
                 })?;
-                if ![1, 2].contains(&doc.version) {
+                if ![1, 2, 3].contains(&doc.version) {
                     return Err(format!(
                         "Unsupported task data version {}. The file has been preserved.",
                         doc.version
@@ -107,6 +110,7 @@ impl Store {
                 }
                 tasks::validate_document(&doc.tasks, &doc.lists)
                     .map_err(|e| format!("Invalid task data: {e} The file has been preserved."))?;
+                matrix::normalize(&mut doc.tasks);
                 (doc.tasks, doc.lists)
             }
         };
@@ -139,11 +143,7 @@ impl Store {
             return Err("List no longer exists.".into());
         }
         let mut tasks = self.tasks.clone();
-        for task in &mut tasks {
-            if task.list_id.as_deref() == Some(id) {
-                task.list_id = None;
-            }
-        }
+        matrix::move_list_to_inbox(&mut tasks, id);
         let lists = self
             .lists
             .iter()
@@ -165,13 +165,14 @@ impl Store {
     pub fn replace(&mut self, tasks: Vec<Task>) -> Result<(), String> {
         self.commit(tasks, self.lists.clone())
     }
-    fn commit(&mut self, tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
+    fn commit(&mut self, mut tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
         tasks::validate_document(&tasks, &lists)?;
+        matrix::normalize(&mut tasks);
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Changes were not saved. Restart Kara to reload the file.".into());
         }
         let bytes = serde_json::to_vec_pretty(&Document {
-            version: 2,
+            version: 3,
             tasks: tasks.clone(),
             lists: lists.clone(),
         })
@@ -195,13 +196,34 @@ impl Store {
             .and_then(|f| f.sync_all())
             .map_err(|e| format!("Tasks were written, but durability could not be confirmed: {e}"))
     }
-    pub fn upsert(&mut self, task: Task) -> Result<(), String> {
+    pub fn upsert(&mut self, mut task: Task) -> Result<(), String> {
+        tasks::validate(std::slice::from_ref(&task))?;
         let mut tasks = self.tasks.clone();
+        // Ordinary editor saves cannot change ordering, even if a draft has a
+        // missing/stale rank. Only scope changes append; reorder has its own API.
+        task.matrix_order = tasks
+            .iter()
+            .find(|old| {
+                old.id == task.id
+                    && old.list_id == task.list_id
+                    && old.matrix_quadrant == task.matrix_quadrant
+            })
+            .and_then(|old| old.matrix_order);
         if let Some(old) = tasks.iter_mut().find(|old| old.id == task.id) {
             *old = task;
         } else {
             tasks.push(task);
         }
+        self.replace(tasks)
+    }
+    pub fn classify(&mut self, id: &str, quadrant: Option<Quadrant>) -> Result<(), String> {
+        let mut tasks = self.tasks.clone();
+        matrix::classify(&mut tasks, id, quadrant)?;
+        self.replace(tasks)
+    }
+    pub fn reorder(&mut self, id: &str, direction: Direction) -> Result<(), String> {
+        let mut tasks = self.tasks.clone();
+        matrix::reorder(&mut tasks, id, direction)?;
         self.replace(tasks)
     }
     pub fn toggle(&mut self, id: &str) -> Result<(), String> {
@@ -223,6 +245,287 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const Q1: Quadrant = Quadrant::ImportantUrgent;
+    const Q2: Quadrant = Quadrant::ImportantNotUrgent;
+    fn matrix_task(title: &str, list: Option<&str>, quadrant: Quadrant) -> Task {
+        let mut task = Task::new(title).unwrap();
+        task.list_id = list.map(str::to_string);
+        task.matrix_quadrant = Some(quadrant);
+        task
+    }
+    fn matrix_titles(store: &Store, list: Option<&str>, quadrant: Quadrant) -> Vec<String> {
+        matrix::ordered(store.tasks(), list, Some(quadrant))
+            .into_iter()
+            .map(|task| task.title.clone())
+            .collect()
+    }
+    #[test]
+    fn matrix_edits_and_list_moves_preserve_records_and_append_to_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let mut list = TaskList::new("Work").unwrap();
+        list.pinned = true;
+        store.upsert_list(list.clone()).unwrap();
+        let inbox = matrix_task("Inbox existing", None, Q1);
+        store.upsert(inbox).unwrap();
+        let first = matrix_task("First", Some(&list.id), Q1);
+        let mut second = matrix_task("Second", Some(&list.id), Q1);
+        second.notes = Some("Preserve notes\nline 2".into());
+        second.due_date = Some("2026-10-18".into());
+        second.priority = tasks::Priority::High;
+        let id = second.id.clone();
+        store.upsert(first).unwrap();
+        store.upsert(second).unwrap();
+        store.reorder(&id, Direction::Up).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q1),
+            ["Second", "First"]
+        );
+        let mut edit = store
+            .tasks()
+            .iter()
+            .find(|task| task.id == id)
+            .unwrap()
+            .clone();
+        edit.title = "Edited".into();
+        edit.matrix_order = None; // a stale/missing draft rank must not reorder an edit
+        store.upsert(edit.clone()).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q1),
+            ["Edited", "First"]
+        );
+        edit.list_id = None;
+        store.upsert(edit).unwrap();
+        assert_eq!(
+            matrix_titles(&store, None, Q1),
+            ["Inbox existing", "Edited"]
+        );
+        assert_eq!(matrix_titles(&store, Some(&list.id), Q1), ["First"]);
+        let saved = store.tasks().to_vec();
+        drop(store);
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.tasks(), saved);
+        assert_eq!(store.tasks().len(), 3);
+        assert!(store.lists()[0].pinned);
+        let task = store.tasks().iter().find(|task| task.id == id).unwrap();
+        assert_eq!(task.matrix_quadrant, Some(Q1));
+        assert_eq!(task.notes.as_deref(), Some("Preserve notes\nline 2"));
+        assert_eq!(task.priority, tasks::Priority::High);
+        store.toggle(&id).unwrap();
+        let completed = store.tasks().iter().find(|task| task.id == id).unwrap();
+        assert!(completed.completed);
+        assert_eq!(completed.matrix_quadrant, Some(Q1));
+        let mut moving = completed.clone();
+        moving.list_id = Some(list.id.clone());
+        store.upsert(moving).unwrap();
+        assert!(
+            store
+                .tasks()
+                .iter()
+                .find(|task| task.id == id)
+                .unwrap()
+                .completed
+        );
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q1),
+            ["First", "Edited"]
+        );
+        store.toggle(&id).unwrap();
+        store.classify(&id, Some(Q2)).unwrap();
+        assert_eq!(matrix_titles(&store, Some(&list.id), Q2), ["Edited"]);
+        store.classify(&id, None).unwrap();
+        let task = store.tasks().iter().find(|task| task.id == id).unwrap();
+        assert_eq!(task.matrix_order, None);
+        assert_eq!(task.matrix_quadrant, None);
+        assert_eq!(task.list_id.as_deref(), Some(list.id.as_str()));
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().tasks().len(), 3);
+    }
+    #[test]
+    fn matrix_list_deletion_appends_in_prior_order_and_normalizes_after_task_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let list = TaskList::new("Work").unwrap();
+        store.upsert_list(list.clone()).unwrap();
+        let inbox = matrix_task("Inbox", None, Q1);
+        let first = matrix_task("First", Some(&list.id), Q1);
+        let second = matrix_task("Second", Some(&list.id), Q1);
+        let mut done = matrix_task("Done", Some(&list.id), Q1);
+        done.completed = true;
+        let mut inbox_done = matrix_task("Inbox done", None, Q1);
+        inbox_done.completed = true;
+        let second_id = second.id.clone();
+        let first_id = first.id.clone();
+        for task in [inbox, first, second, done, inbox_done] {
+            store.upsert(task).unwrap();
+        }
+        store.reorder(&second_id, Direction::Up).unwrap();
+        store.delete_list(&list.id).unwrap();
+        assert_eq!(
+            matrix_titles(&store, None, Q1),
+            ["Inbox", "Second", "First", "Inbox done", "Done"]
+        );
+        assert_eq!(store.tasks().len(), 5);
+        assert!(
+            store
+                .tasks()
+                .iter()
+                .all(|task| task.list_id.is_none() && task.matrix_quadrant == Some(Q1))
+        );
+        store.delete(&first_id).unwrap();
+        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Some(Q1))
+            .iter()
+            .map(|task| task.matrix_order.unwrap())
+            .collect();
+        assert_eq!(ranks, [0, 1, 2, 3]);
+        drop(store);
+        let store = Store::open(path).unwrap();
+        assert_eq!(
+            matrix_titles(&store, None, Q1),
+            ["Inbox", "Second", "Inbox done", "Done"]
+        );
+        assert!(store.lists().is_empty());
+    }
+    #[test]
+    fn legacy_polished_tasks_default_to_unassigned_and_pinned_lists_survive_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let bytes = br#"{"version":2,"tasks":[{"id":"original-id","title":"Legacy completed","completed":true,"due_date":"2026-10-18","priority":"High","notes":"Original notes","list_id":"work-id"}],"lists":[{"id":"work-id","name":"Work","pinned":true}]}"#;
+        fs::write(&path, bytes).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.tasks()[0].matrix_quadrant, None);
+        assert_eq!(store.tasks()[0].matrix_order, None);
+        assert!(store.lists()[0].pinned);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store.classify("original-id", Some(Q2)).unwrap();
+        drop(store);
+        let store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.tasks()[0].matrix_quadrant, Some(Q2));
+        assert!(store.tasks()[0].completed);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 3);
+        let legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        saved["tasks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("matrix_quadrant");
+        saved["tasks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("matrix_order");
+        assert_eq!(saved["tasks"], legacy["tasks"]);
+        assert_eq!(saved["lists"], legacy["lists"]);
+    }
+    #[test]
+    fn imported_matrix_ranks_normalize_stably_without_rewriting_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut tasks = vec![
+            matrix_task("Missing", None, Q1),
+            matrix_task("Duplicate1", None, Q1),
+            matrix_task("Duplicate2", None, Q1),
+            matrix_task("Other quadrant", None, Q2),
+        ];
+        tasks[1].matrix_order = Some(40);
+        tasks[2].matrix_order = Some(40);
+        tasks[3].matrix_order = Some(u64::MAX);
+        let bytes = serde_json::to_vec(&Document {
+            version: 3,
+            tasks,
+            lists: vec![],
+        })
+        .unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            matrix_titles(&store, None, Q1),
+            ["Duplicate1", "Duplicate2", "Missing"]
+        );
+        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Some(Q1))
+            .iter()
+            .map(|task| task.matrix_order)
+            .collect();
+        assert_eq!(ranks, [Some(0), Some(1), Some(2)]);
+        store
+            .reorder(&store.tasks()[0].id.clone(), Direction::Up)
+            .unwrap();
+        let expected = store.tasks().to_vec();
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().tasks(), expected);
+    }
+    #[test]
+    fn corrupt_matrix_fields_are_preserved_and_block_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let task = matrix_task("Bad data", None, Q1);
+        let base = serde_json::json!({"version":3,"tasks":[task],"lists":[]});
+        let mut cases = vec![];
+        for value in [serde_json::json!("not-a-quadrant"), serde_json::json!(1)] {
+            let mut doc = base.clone();
+            doc["tasks"][0]["matrix_quadrant"] = value;
+            cases.push(doc);
+        }
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!("zero"),
+            serde_json::json!(0.5),
+        ] {
+            let mut doc = base.clone();
+            doc["tasks"][0]["matrix_order"] = value;
+            cases.push(doc);
+        }
+        let mut no_quadrant = base.clone();
+        no_quadrant["tasks"][0]["matrix_quadrant"] = serde_json::Value::Null;
+        no_quadrant["tasks"][0]["matrix_order"] = serde_json::json!(0);
+        cases.push(no_quadrant);
+        let mut unknown = base;
+        unknown["tasks"][0]["matrix_future_field"] = serde_json::json!(true);
+        cases.push(unknown);
+        for doc in cases {
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(Store::open(path.clone()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn failed_matrix_writes_preserve_classification_ranks_and_data_then_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let first = matrix_task("First", None, Q1);
+        let second = matrix_task("Second", None, Q1);
+        let id = first.id.clone();
+        store.upsert(first).unwrap();
+        store.upsert(second).unwrap();
+        let before = fs::read(&path).unwrap();
+        let tasks = store.tasks().to_vec();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let classify = store.classify(&id, Some(Q2));
+        let reorder = store.reorder(&id, Direction::Down);
+        let complete = store.toggle(&id);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(classify.is_err());
+        assert!(reorder.is_err());
+        assert!(complete.is_err());
+        assert_eq!(store.tasks(), tasks);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        store.reorder(&id, Direction::Down).unwrap();
+        store.classify(&id, Some(Q2)).unwrap();
+        drop(store);
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(matrix_titles(&store, None, Q2), ["First"]);
+        fs::write(&path, b"external corruption").unwrap();
+        assert!(store.classify(&id, Some(Q1)).is_err());
+        assert!(store.reorder(&id, Direction::Up).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external corruption");
+        assert_eq!(matrix_titles(&store, None, Q2), ["First"]);
+    }
     #[test]
     fn lists_and_task_moves_round_trip_with_stable_ids_and_no_duplicate_records() {
         let dir = tempfile::tempdir().unwrap();
@@ -321,7 +624,7 @@ mod tests {
         assert_eq!(store.tasks(), original);
         assert_eq!(store.lists().len(), 1);
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["version"], 3);
         let legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(saved["tasks"], legacy["tasks"]);
     }

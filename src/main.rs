@@ -3,6 +3,8 @@
 mod app;
 mod i18n;
 mod lifecycle;
+mod matrix;
+mod matrix_view;
 mod storage;
 mod tasks;
 mod tray;

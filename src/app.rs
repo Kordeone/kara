@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
     lifecycle::{Effect, Lifecycle, State},
+    matrix, matrix_view,
     storage::{self, Store},
     tasks::{self, Priority, Task as KaraTask, TaskList, TaskView},
     tray,
@@ -23,6 +24,7 @@ pub struct AppModel {
     nav: nav_bar::Model,
     page: Page,
     lists_expanded: bool,
+    matrix_list: Option<String>,
     store: Option<Store>,
     storage_error: Option<String>,
     editor: Option<Editor>,
@@ -56,6 +58,7 @@ pub enum Message {
     FocusToken(cosmic::iced::window::Id, Option<String>),
     Exit,
 
+    Matrix(matrix_view::Action),
     NavContext(NavMenuAction),
     Add,
     AddList,
@@ -166,6 +169,7 @@ impl cosmic::Application for AppModel {
             nav,
             page: Page::Inbox,
             lists_expanded: true,
+            matrix_list: None,
             store: None,
             storage_error: None,
             editor: None,
@@ -386,6 +390,12 @@ impl cosmic::Application for AppModel {
                 rows = rows.push(widget::text::body(empty));
             }
             content = content.push(widget::scrollable(rows).height(Length::Fill));
+        } else if page == Page::Matrix {
+            content = content.push(matrix_view::view(
+                self.store.as_ref(),
+                self.matrix_list.as_deref(),
+                self.can_write(),
+            ));
         } else if page == Page::Lists {
             let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
             match &self.store {
@@ -651,6 +661,36 @@ impl cosmic::Application for AppModel {
                     return self.update(Message::ToggleListPin(id));
                 }
             }
+            Message::Matrix(matrix_view::Action::SelectList(index)) => {
+                if index == 0 {
+                    self.matrix_list = None;
+                } else if let Some(list) = self
+                    .store
+                    .as_ref()
+                    .and_then(|store| store.lists().get(index - 1))
+                {
+                    self.matrix_list = Some(list.id.clone());
+                }
+            }
+            Message::Matrix(matrix_view::Action::Add(quadrant)) if self.can_write() => {
+                match matrix::draft(self.matrix_list.as_deref(), quadrant) {
+                    Ok(task) => {
+                        self.open_editor(task, true);
+                        return widget::text_input::focus(self.title_input.clone());
+                    }
+                    Err(error) => self.storage_error = Some(error),
+                }
+            }
+            Message::Matrix(matrix_view::Action::Classify(id, quadrant)) if self.can_write() => {
+                if let Some(store) = &mut self.store {
+                    self.storage_error = store.classify(&id, quadrant).err();
+                }
+            }
+            Message::Matrix(matrix_view::Action::Reorder(id, direction)) if self.can_write() => {
+                if let Some(store) = &mut self.store {
+                    self.storage_error = store.reorder(&id, direction).err();
+                }
+            }
             Message::Tray(tray::Event::Availability(result)) => {
                 self.tray_error = result.as_ref().err().cloned();
                 let effect = self.lifecycle.availability(result.is_ok());
@@ -780,6 +820,13 @@ impl cosmic::Application for AppModel {
                             self.page = Page::Lists;
                         }
                         self.delete_list_id = None;
+                    }
+                    if self
+                        .matrix_list
+                        .as_ref()
+                        .is_some_and(|id| !store.lists().iter().any(|list| &list.id == id))
+                    {
+                        self.matrix_list = None;
                     }
                 }
                 self.rebuild_nav();

@@ -21,6 +21,32 @@ impl Priority {
     }
 }
 
+// Keep both axes explicit in each variant, including the repeated urgency suffix.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Quadrant {
+    ImportantUrgent,
+    ImportantNotUrgent,
+    NotImportantUrgent,
+    NotImportantNotUrgent,
+}
+impl Quadrant {
+    pub const ALL: [Self; 4] = [
+        Self::ImportantUrgent,
+        Self::ImportantNotUrgent,
+        Self::NotImportantUrgent,
+        Self::NotImportantNotUrgent,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ImportantUrgent => "Important & Urgent",
+            Self::ImportantNotUrgent => "Important & Not Urgent",
+            Self::NotImportantUrgent => "Not Important & Urgent",
+            Self::NotImportantNotUrgent => "Not Important & Not Urgent",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
@@ -31,6 +57,10 @@ pub struct Task {
     pub priority: Priority,
     pub notes: Option<String>,
     pub list_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_quadrant: Option<Quadrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_order: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +80,8 @@ impl Task {
             priority: Priority::Normal,
             notes: None,
             list_id: None,
+            matrix_quadrant: None,
+            matrix_order: None,
         };
         validate(std::slice::from_ref(&task))?;
         Ok(task)
@@ -158,6 +190,9 @@ pub fn validate(tasks: &[Task]) -> Result<(), String> {
     for task in tasks {
         if task.id.is_empty() || !ids.insert(&task.id) {
             return Err("Missing or duplicate task ID.".into());
+        }
+        if task.matrix_quadrant.is_none() && task.matrix_order.is_some() {
+            return Err("A Matrix order requires a quadrant.".into());
         }
         if task.title.trim().is_empty() {
             return Err("A task title is required.".into());

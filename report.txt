@@ -1,260 +1,179 @@
-Kara — Stage 3: System Tray & Window Lifecycle
+Kara — Consolidated Report: Eisenhower Matrix Stage 1
 
-Implementation
-- Normal launch shows Kara. Use libcosmic's run_single_instance launcher
-  (the feature was previously enabled, but the regular launcher was called).
-- A small zbus integration exports org.kde.StatusNotifierItem at
-  /StatusNotifierItem and com.canonical.dbusmenu at /MenuBar, on libcosmic's
-  existing activation connection. No second bus service/runtime is introduced.
-- The system theme's view-list-symbolic icon identifies Kara. The native tray
-  menu contains exactly Open Kara and Quit. Activation and Open Kara restore
-  the main window and request focus, using COSMIC's supplied activation token.
-- Task/list models, persistence, dialogs, navigation and styling are unchanged.
-  Saved changes remain automatic; backgrounding retains model and dialog drafts.
+Delivery status: finalized on feat/eisenhower; no merge or push
+- Integrated against b1a1c1331fa0c0d7b5ced84b067350b796bc8c33, Luna's
+  committed native COSMIC sidebar restoration, following Tasks polish 72da937.
+- Owner confirmed Luna is paused and this integration has exclusive editing
+  authorization. Source hashes remained unchanged throughout final validation;
+  no concurrent source edits were detected. No reset, checkout, clean or rebase.
+- Reviewed existing working-tree implementation; did not reapply the backup
+  patch. No additional application source changes were needed during finalization.
+- Native labeled sidebar builder and existing dialog implementation match the
+  restoration commit byte-for-byte. Existing Tasks presentation remains intact.
+- Durable preservation backup remains available outside the Git working tree:
+      /home/rapper/projects/kara-matrix-backup-20261018T224201134002Z/
+- Owner has already launched the combined application on CachyOS and confirmed
+  the restored labeled sidebar, four quadrants, list selector and Unassigned.
+  Full functional acceptance below remains for the owner; Debian is headless.
 
-Window lifecycle
-- The current Wayland backend does not implement window visibility toggles.
-  Use the existing public window close/open and Core::set_main_window_id APIs,
-  with libcosmic's already-enabled multi-window daemon runtime. No dependency
-  patch, desktop installation or application architecture replacement is needed.
-- Intercept both the COSMIC titlebar close action and compositor close requests.
-  When the tray is ready, destroy only the window surface; retain the app model,
-  storage lock, subscriptions and session-bus activation service.
-- Open restores an existing window or recreates one with the same application
-  ID and native decorations. Wait for closure before reopening if requests race;
-  repeated open requests cannot create multiple windows.
-- Quit closes the activation/tray bus connection (up to one second), then uses
-  iced::exit. Dropping the app releases storage locks. Unsaved dialog drafts are
-  discarded on Quit; accepted task/list changes were already saved.
-- Repeated launches use libcosmic's supported action arguments to retain the
-  launcher activation token until a recreated window is ready. This avoids
-  libcosmic consuming the standard platform token before the activation hook.
+Baseline and scope
+- Tasks CRUD, Inbox/Today context, list management/pinning, contextual completed
+  tasks, native navigation/dialogs, atomic storage, tray lifecycle and
+  single-instance behavior remain in place.
+- Calendar remains its existing placeholder. Board and Pomodoro remain
+  placeholders. No drag/drop, autostart, packaging, installation, database,
+  custom palette, dependencies/upgrades or unrelated Tasks redesign was added.
 
-Tray availability and recovery
-- Backgrounding is disabled until registration, watcher host availability and
-  a connected client reading Kara's tray metadata have all been confirmed.
-  Closing with no confirmed tray quits instead of leaving an orphan process.
-- Check every two seconds, with a two-second timeout. Check watcher owner,
-  registered items and host state without stale property caches; re-register
-  after owner changes or lost registration. A hidden window is restored when
-  checks fail, normally within two seconds (up to four for an unresponsive bus).
-- COSMIC's watcher currently reports HostRegistered=true unconditionally.
-  Therefore also observe property requests to our own tray item and verify
-  consumer unique bus names remain connected. Applet loss is detected even
-  when the separate watcher daemon remains alive. Host return is detected
-  when the applet reads Kara's icon again; application restart is unnecessary.
-- Failures produce a tray-status message in the window. While registration is
-  pending, closing also quits safely. Existing task UI/dialogs are not redesigned.
+Matrix MVP
+- The existing Matrix section now contains a Task list selector, defaulting to
+  Inbox, with every named list available regardless of pin/collapse state.
+- A native two-by-two grid displays exactly:
+      Important & Urgent          | Important & Not Urgent
+      Not Important & Urgent      | Not Important & Not Urgent
+  Below it is an always-present Unassigned area. Content scrolls; below 720
+  logical pixels of content width the quadrants stack in row-major order.
+- Each task has a native classification dropdown, completion checkbox and
+  icon-only Edit action. Classified tasks have Up/Down controls. Each quadrant
+  and Unassigned provide an Add action that opens the unchanged task dialog.
+- Direct quadrant creation defaults to the selected list/classification. The
+  existing editor may change its list; classification is retained and appended
+  in the destination. Task creation in Tasks retains Luna's original defaults.
+- Matrix and Tasks share task IDs/records. Completed tasks stay in their list
+  and quadrant, display after active tasks with muted strikethrough titles and
+  remain editable/reactivatable. Empty/unavailable states use native widgets.
 
-Changed files and dependencies
-- src/tray.rs: SNI, static D-Bus menu, activation tokens, availability/recovery,
-  protocol tests. src/lifecycle.rs: window transitions and race/fallback tests.
-- src/app.rs: lifecycle hooks/subscription, close/open/focus/quit actions and
-  tray error feedback. src/main.rs: single-instance launch and activation flags.
-- Cargo.toml/Cargo.lock: direct use of the already-locked zbus 5.19.0 with Tokio;
-  no existing package version or git revision changes. report.txt: this report.
-- src/storage.rs and src/tasks.rs unchanged. Existing JSON and schema version 2
-  are unchanged; all task/list and legacy compatibility tests remain in place.
-- No autostart, packaging, installation, custom theme or unrelated functionality.
+Model and ordering
+- Optional task fields: matrix_quadrant and matrix_order (zero-based u64 rank).
+  Quadrant variants explicitly encode ImportantUrgent, ImportantNotUrgent,
+  NotImportantUrgent and NotImportantNotUrgent. Absence means Unassigned.
+- Importance/urgency are never inferred from priority or dates.
+- Ranks are scoped to (list ID or Inbox, quadrant), not list names. Other
+  lists/quadrants may reuse the same rank. Classified ranks are normalized
+  contiguously after accepted mutations and when loading into memory.
+- Ordering is active first, completed second. Up/Down swaps neighbors inside
+  the same completion group. Append means the end of the destination completion
+  group, preserving the rule that completed tasks always follow active ones.
+- Reclassification/list moves append at the destination and compact the old
+  group. Unassigning clears rank. Completion moves a task into the completed
+  group; reactivation appends to the active group without losing its quadrant.
+- List deletion moves all its tasks to Inbox, retaining classification and
+  relative Matrix order, after existing Inbox tasks in each completion group.
+- Only Matrix rank fields change during reordering; shared document record
+  order and Luna's existing Tasks presentation order are preserved.
+
+Persistence compatibility and failure safety
+- Same XDG tasks.json, lock, atomic replacement, synced writes and external
+  conflict checks. No user task data was accessed during automated testing.
+- Reads document versions 1, 2 and 3. Legacy tasks without Matrix fields default
+  to Unassigned; existing list IDs, pins, task IDs and other task fields remain.
+- Opening a file does not rewrite its bytes. Duplicate/gapped/missing classified
+  ranks normalize stably in memory, with document order resolving ties. The
+  next accepted write saves the entire document atomically as schema version 3.
+- Unknown quadrants/fields, non-integer/negative ranks, an order without a
+  quadrant, invalid records, dangling lists and unsupported versions block
+  loading visibly and preserve the original file. No silent reset occurs.
+- Failed writes retain the previous live data/ranks and disk contents. External
+  edits block writes. The existing post-replacement sync-failure warning still
+  explicitly distinguishes written data from uncertain durability.
+- Older Kara binaries reject version 3. Use disposable/copied data for feature
+  validation; do not downgrade an upgraded personal data file to an older app.
+
+Changed files
+- src/tasks.rs: quadrant enum, optional Matrix metadata and validation.
+- src/matrix.rs: ordering, classification, movement helpers and unit tests.
+- src/matrix_view.rs: responsive native Matrix widgets and layout/label tests.
+- src/storage.rs: compatible schema reads, canonical atomic writes, Matrix
+  mutations, list/task integration and persistence/failure regression tests.
+- src/app.rs: minimal Matrix state/events/content wiring and deleted-list
+  selector fallback; restored native navigation and dialogs are unchanged.
+- src/main.rs: register the two new Matrix modules. report.txt: this report.
+- Cargo.toml and Cargo.lock unchanged. Tray/lifecycle source unchanged.
 
 Validation on headless Debian
+- Final validation rerun on the current combined working tree, 2026-10-18.
 - cargo fmt --check: PASSED.
 - cargo check --locked: PASSED.
 - cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED, 27 tests; one isolated-bus test excluded here.
-- Isolated D-Bus protocol test: PASSED separately (1 test). All 28 tests run.
+- cargo test --locked: PASSED, 40 tests (28 retained + 12 new); one existing
+  private-bus test intentionally excluded from the ordinary parallel run.
+- Existing isolated D-Bus regression: PASSED separately, 1 test. All 41 tests
+  exercised successfully across the ordinary and isolated runs.
 - cargo build --locked: PASSED; target/debug/kara produced.
-- git diff --check: PASSED; all existing dependency package records unchanged.
-- No graphical validation performed on Debian.
-The default test run intentionally omits the private-bus test. It is executed
-separately to avoid inheriting concurrent storage-test file locks across a fork.
-No protocol test uses the developer's desktop bus. dbus-run-session was already
-installed; the execution sandbox required escalation to bind its private socket.
+- git diff --check: PASSED. Dependency files unchanged.
+- Tests cover classification independent of dates/priority; per-list/quadrant
+  ranks; stable normalization; reorder/completion boundaries; creation defaults;
+  list moves/deletion; shared IDs; completed context/reversal; pinned legacy
+  data; restart persistence; malformed Matrix fields; denied/external writes.
+- Persistence tests use temporary directories. No graphical testing was done
+  on Debian. Initial CachyOS rendering was confirmed by the owner; complete
+  functional acceptance is still required before merging into main.
 
-Repeat checks
+Repeat validation
     cargo fmt --check
     cargo check --locked
     cargo clippy --locked --all-targets -- -D warnings
     cargo test --locked
     cargo build --locked
-Run the additional isolated protocol test:
+The pre-existing tray protocol regression is separate from normal parallel
+unit tests and uses an isolated bus (dbus-run-session, no COSMIC required):
     KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-This exercises exported properties/layout signatures, token delivery, activation,
-Open/Quit events, single-instance action transport, registration refusal/loss,
-watcher replacement, host false/true and a disconnected/reconnected consumer
-while the watcher still reports a host. Lifecycle tests cover close/open races,
-no-tray exit, loss while hidden/closing, recovery and Quit from every state.
 
-Exact CachyOS COSMIC validation (not performed on Debian)
-1. Quit all older Kara instances. Transfer source with the existing Samba
-   workflow, retaining Cargo.lock. In the transferred project directory:
+CachyOS COSMIC acceptance
+1. Quit existing Kara instances through their tray menu. Transfer this feature
+   branch's source via Samba, retaining Cargo.lock. In the transferred project:
        cargo build --locked
-       KARA_STAGE3_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_STAGE3_DATA" ./target/debug/kara
-   Reuse this shell variable for every subsequent launch. No installation needed.
-2. Confirm the normal window and one symbolic tray icon appear. Wait several
-   seconds for tray readiness. Create a list/task and edit due date/notes to
-   establish disposable saved data. Leave an unsaved dialog draft if desired.
-3. Close using the titlebar X. Verify the window disappears, one Kara process
-   remains, and left-clicking the tray restores/focuses it with the same state.
-   Repeat with the compositor's configured close shortcut.
-   Repeat several times, including rapid close/activate clicks.
-4. Right-click the tray and choose Open Kara. Test while hidden and while
-   visible behind another application. Also minimize Kara and use Open Kara.
-   Confirm no duplicate windows. Confirm unsaved drafts survive backgrounding.
-5. While hidden, run from another terminal in the same project:
-       XDG_DATA_HOME="$KARA_STAGE3_DATA" ./target/debug/kara
-   The second launch should exit promptly and restore/focus the first. Confirm
-   one process with pgrep -ax kara. Repeat while already visible/minimized.
-6. While hidden, restart the panel if this session has the standard user unit:
-       systemctl --user status cosmic-panel.service
-       systemctl --user restart cosmic-panel.service
-   Use this only when the first command confirms the existing unit. Otherwise
-   remove/re-add the System Tray applet through COSMIC panel configuration.
-   Confirm Kara reappears when its host disconnects, the tray returns, and Open
-   Kara works again without restarting Kara. Repeat once while Kara is visible.
-7. Remove the System Tray applet in panel configuration. Within a few seconds,
-   Kara should restore if hidden and report the unavailable tray. Closing now
-   should exit; pgrep -ax kara should show no remaining Kara test process.
-   Launch with the applet absent: the window must show normally and closing must
-   exit. Restore the System Tray applet, relaunch, and verify tray recovery.
-8. Choose Quit in the tray menu, both with the window visible and hidden.
-   Verify the process and icon disappear. This should return no owner:
-       busctl --user status io.github.kordeone.Kara
-   Relaunch with the same XDG_DATA_HOME and confirm task/list data persisted.
-   Inspect the disposable JSON at:
-       $KARA_STAGE3_DATA/io.github.kordeone.Kara/tasks.json
-9. Check current theme/accent, display scaling, window focus, symbolic icon,
-   task/list dialogs and navigation for regressions. No Stage 3 graphical test
-   has been claimed; compositor focus policy must be validated on this machine.
+       KARA_MATRIX_DATA=$(mktemp -d)
+       XDG_DATA_HOME="$KARA_MATRIX_DATA" ./target/debug/kara
+   Reuse this variable for restarts; single-instance activation shares the bus.
+2. Verify the restored labeled native sidebar and existing Tasks layout. Create Work/Home
+   lists, pin one, collapse/expand Lists and check the pinned entry remains.
+   Create an undated Inbox task and an overdue/high-priority task in Work.
+3. Select Matrix. Expect Inbox by default, exact quadrant labels in their
+   specified positions and the Inbox tasks in Unassigned (regardless of due
+   date/priority). Choose Work/Home and confirm only that context's tasks show.
+4. Classify existing tasks through the dropdowns. Create tasks using each
+   quadrant's Add icon; verify the unchanged dialog defaults to the selected
+   list. Cancel one creation. Save others with titles/notes/dates/priority.
+5. Create three tasks in one quadrant and move them Up/Down. Test first/last
+   disabled arrows. Reclassify one and confirm it appends in its new quadrant.
+   Return a task to Unassigned and classify it again. Check other scopes retain
+   their own order. Switch to Tasks and verify there are no duplicate records.
+6. Complete tasks in Matrix and in Tasks. They must remain in their original
+   context/quadrant, muted/struck through after active tasks. Reorder completed
+   tasks among themselves; they must not cross above active tasks. Reactivate
+   one and confirm it returns to the active group in the same list/quadrant.
+7. Edit a classified task with the existing editor: change its title, notes,
+   due date/priority, then its list. Classification must remain; destination
+   quadrant order must append, and source order must compact. Rename/pin its
+   list and verify classification/order are unaffected.
+8. Put tasks in an Inbox quadrant, reorder tasks in a named list's same
+   quadrant, then delete that list from Tasks with confirmation. Expect all its
+   tasks moved to Inbox in prior relative order after existing destination tasks
+   in their completion groups. No tasks are deleted. Matrix selection falls
+   back to Inbox if its selected list was deleted. Test ordinary task deletion.
+9. Resize from a wide window to minimum size (also with sidebar visible/hidden),
+   inspect stacking, dropdowns, long labels/titles, scrolling, Tab/Enter/Escape,
+   light/dark theme and display scaling. Unassigned must remain reachable.
+10. Quit/relaunch using the same XDG_DATA_HOME. Verify ranks, classifications,
+    completion, list moves/pins and task edits persist. The disposable file is:
+       $KARA_MATRIX_DATA/io.github.kordeone.Kara/tasks.json
+    With Kara closed, copy a legacy version 1/2 file into a separate disposable
+    test directory, launch, verify Unassigned defaults, classify and restart.
+    Test corrupt Matrix fields only in a disposable file: expect visible load
+    failure and unchanged bytes. Never alter personal data for corruption tests.
+11. Smoke-test tray close/Open/Quit, second-launch restoration and Tasks Inbox,
+    Today, Calendar placeholder and named lists. Calendar/Board/Pomodoro scope
+    is unchanged; this feature adds only the Matrix MVP.
 
-Known limits
-- Session D-Bus and the enabled libcosmic single-instance path are required for
-  tray/background operation. Without that connection (or if explicitly disabled
-  using COSMIC_SINGLE_INSTANCE), the app remains a normal visible application
-  and closes by exiting; libcosmic's fallback cannot provide D-Bus activation.
-- Full session-bus restart is not reconnected by this libcosmic activation API.
-  The window is restored on connection loss; close and relaunch to reconnect.
-- A metadata consumer is evidence of a host connection, not proof of rendered
-  pixels. A host that stays connected but deliberately stops displaying icons
-  cannot be detected reliably through SNI. Hidden overflow icons still count.
-- Focus is compositor-controlled. COSMIC tray/launcher tokens are used when
-  supplied; tokenless clients get a token request/focus or attention fallback.
-- Reopening creates a new surface; original compositor geometry is not promised.
-- No implementation blocker found in the current libcosmic public lifecycle API.
-  Actual CachyOS tray/rendering/window behavior still requires the checks above.
-
-Primary API references inspected
-- https://github.com/pop-os/libcosmic/blob/e1f2cd2/src/app/mod.rs
-- https://github.com/pop-os/libcosmic/blob/e1f2cd2/src/app/cosmic.rs
-- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/components/app.rs
-- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/components/status_menu.rs
-- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/subscriptions/status_notifier_watcher/server.rs
-Git commit/push outcome is reported separately in the final delivery response.
-
-Kara — Stage 4: MVP Stabilization Audit
-
-Audit findings
-- Keyboard: task and list dialogs focus their primary text field on open;
-  Enter submits from the task title/date and list name fields; Escape and Cancel
-  close active dialogs. Navigation and task controls use native libcosmic
-  widgets. No focus or keyboard defect was reproduced by source review.
-- Validation: blank task titles, malformed dates, empty list names and
-  case-insensitive duplicate list names remain in their dialogs with an error.
-  Writes are disabled while storage is unavailable or requires recovery.
-- Empty states: Inbox, Today, Completed, named lists and the list index each
-  have specific empty or unavailable messages. Task-creation dialog design is
-  intentionally unchanged.
-- Errors and recovery: initial load failures can be retried; loaded-store save
-  failures retain the draft and expected disk snapshot. External modifications
-  are detected and require restart to reload, preserving the external file.
-- Deletion: task deletion requires a destructive confirmation. List deletion
-  confirms that tasks will be unassigned and explains their resulting views;
-  storage commits task reassignment and list removal atomically.
-- Layout and theme: the window enforces a 640×560 minimum size, task fields
-  scroll within the dialog, and normal task/list content scrolls. Theme colors
-  and controls are delegated to libcosmic. Narrow-window rendering and light/
-  dark appearance require graphical verification on COSMIC.
-- Persistence and lifecycle: storage tests cover restart, atomic replacement,
-  failed writes and list/task preservation. Lifecycle tests cover close/open
-  races, tray loss, focus activation and quit; the isolated D-Bus protocol test
-  passed. No tray architecture changes were needed.
-- No reproducible functional bug was found during this pass; no application
-  source or regression-test changes were warranted.
-
-Stage 4 validation on headless Debian
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED, 27 passed, 1 ignored by default because it
-  requires an isolated session bus.
-- Isolated D-Bus protocol test: PASSED separately with dbus-run-session; it
-  verified registration/recovery and single-instance transport.
-- cargo build --locked: PASSED; `target/debug/kara` was produced.
-- COSMIC graphical runtime checks: NOT PERFORMED on this Debian headless host.
-
-Items requiring COSMIC graphical verification
-- Confirm keyboard focus, tab order, Enter and Escape behavior in task/list
-  dialogs with the COSMIC compositor.
-- Inspect narrow-window behavior at the enforced minimum size and check longer
-  task/list names at the current display scale.
-- Inspect native libcosmic controls and error/empty states in both light and
-  dark system themes.
-- Repeat Stage 3 tray/window lifecycle acceptance checks and relaunch Kara to
-  verify task/list persistence in the target COSMIC session.
-
-Stage 4 scope and limitations
-- No functional change was made because the audit did not establish a
-  reproducible defect. The task-creation dialog redesign remains deferred.
-- Board View, Eisenhower Matrix and Pomodoro remain placeholders. Autostart,
-  packaging, new task properties and a custom theme were not introduced.
-- See the Stage 3 report above for the existing tray requirements and known
-  platform limitations; no COSMIC runtime claim is made for Stage 4.
-
-Kara — Stage 5: Tasks UI/UX Polish
-
-Implemented changes
-- Replaced the flat navigation model with a native libcosmic sidebar. Its top
-  row contains icon-only Tasks, Board View, Eisenhower Matrix and Pomodoro
-  section buttons. The selected section controls the sidebar content below.
-- Tasks navigation now contains Inbox, Today, Calendar and Lists. Inbox, Today
-  and Calendar use symbolic icons. The standalone Completed page was removed.
-- Lists is collapsible. Expanded mode shows every named list; collapsed mode
-  shows only pinned lists. Pin controls are available beside lists in the
-  sidebar and Lists page. Lists start expanded for discoverability.
-- Added `TaskList.pinned`, serialized with a default of false for existing
-  saved lists. The document remains at version 2; old list records load without
-  migration or loss of their existing fields.
-- Completed tasks remain in their Inbox, Today or named-list context, sort
-  after active tasks, and use a muted theme-derived title with strikethrough.
-  A small Completed divider separates the two groups when both are present.
-- Task edit and delete controls are icon-only libcosmic buttons with tooltips.
-  The top-right About control is now an info icon. Task dialog design and tray
-  behavior were left unchanged.
-- Board View, Eisenhower Matrix, Pomodoro and Calendar remain placeholders.
-
-Regression coverage and validation on headless Debian
-- Added tests for completed-task context visibility and active-before-completed
-  ordering in Inbox, Today and named-list views.
-- Added tests for expanded/collapsed pinned-list visibility, default-unpinned
-  state, backward-compatible deserialization without `pinned`, and pin
-  persistence across storage reopen.
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked: PASSED.
-- cargo test --locked: PASSED, 28 passed, 1 ignored by default because it
-  requires an isolated session bus.
-- cargo build --locked: PASSED; `target/debug/kara` was produced.
-- git diff --check: PASSED.
-
-COSMIC graphical verification still required
-- Inspect the four icon-only section controls, selection feedback and sidebar
-  collapse behavior at normal and narrow supported window sizes.
-- Verify list expand/collapse and pin/unpin behavior, including persistence
-  after restarting Kara.
-- Verify completed-task ordering, muted strikethrough rendering, checkbox
-  reactivation and the Completed divider in Inbox, Today and named lists.
-- Check symbolic icon availability and tooltip placement in the target COSMIC
-  theme, at the target display scale, in both light and dark modes.
-- Confirm the header info icon and existing tray/window lifecycle still behave
-  as expected. No Stage 5 graphical runtime validation was performed here.
+Limitations and delivery
+- No drag/drop; ordering uses buttons within active/completed groups. Unassigned
+  tasks use stable document order (active first) and have no persisted rank.
+- A narrow Matrix stacks quadrants; exact rendering/focus needs COSMIC testing.
+- Existing small synchronous JSON, English UI and tray platform limitations
+  remain. No attempt to repair corrupt task content or reset storage is made.
+- Matrix implementation is finalized on feat/eisenhower atop b1a1c13.
+  No known integration blocker remains. The feature commit includes only the
+  seven files listed above. Main is unchanged; no merge or push was performed.
+- Remaining concern: full CachyOS functional, keyboard, scaling and narrow-window
+  testing is manual. Owner's initial combined-app rendering check is recorded
+  above; no graphical validation was performed on Debian.
