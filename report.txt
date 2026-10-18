@@ -151,3 +151,62 @@ Primary API references inspected
 - https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/components/status_menu.rs
 - https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/subscriptions/status_notifier_watcher/server.rs
 Git commit/push outcome is reported separately in the final delivery response.
+
+Kara — Stage 4: MVP Stabilization Audit
+
+Audit findings
+- Keyboard: task and list dialogs focus their primary text field on open;
+  Enter submits from the task title/date and list name fields; Escape and Cancel
+  close active dialogs. Navigation and task controls use native libcosmic
+  widgets. No focus or keyboard defect was reproduced by source review.
+- Validation: blank task titles, malformed dates, empty list names and
+  case-insensitive duplicate list names remain in their dialogs with an error.
+  Writes are disabled while storage is unavailable or requires recovery.
+- Empty states: Inbox, Today, Completed, named lists and the list index each
+  have specific empty or unavailable messages. Task-creation dialog design is
+  intentionally unchanged.
+- Errors and recovery: initial load failures can be retried; loaded-store save
+  failures retain the draft and expected disk snapshot. External modifications
+  are detected and require restart to reload, preserving the external file.
+- Deletion: task deletion requires a destructive confirmation. List deletion
+  confirms that tasks will be unassigned and explains their resulting views;
+  storage commits task reassignment and list removal atomically.
+- Layout and theme: the window enforces a 640×560 minimum size, task fields
+  scroll within the dialog, and normal task/list content scrolls. Theme colors
+  and controls are delegated to libcosmic. Narrow-window rendering and light/
+  dark appearance require graphical verification on COSMIC.
+- Persistence and lifecycle: storage tests cover restart, atomic replacement,
+  failed writes and list/task preservation. Lifecycle tests cover close/open
+  races, tray loss, focus activation and quit; the isolated D-Bus protocol test
+  passed. No tray architecture changes were needed.
+- No reproducible functional bug was found during this pass; no application
+  source or regression-test changes were warranted.
+
+Stage 4 validation on headless Debian
+- cargo fmt --check: PASSED.
+- cargo check --locked: PASSED.
+- cargo clippy --locked --all-targets -- -D warnings: PASSED.
+- cargo test --locked: PASSED, 27 passed, 1 ignored by default because it
+  requires an isolated session bus.
+- Isolated D-Bus protocol test: PASSED separately with dbus-run-session; it
+  verified registration/recovery and single-instance transport.
+- cargo build --locked: PASSED; `target/debug/kara` was produced.
+- COSMIC graphical runtime checks: NOT PERFORMED on this Debian headless host.
+
+Items requiring COSMIC graphical verification
+- Confirm keyboard focus, tab order, Enter and Escape behavior in task/list
+  dialogs with the COSMIC compositor.
+- Inspect narrow-window behavior at the enforced minimum size and check longer
+  task/list names at the current display scale.
+- Inspect native libcosmic controls and error/empty states in both light and
+  dark system themes.
+- Repeat Stage 3 tray/window lifecycle acceptance checks and relaunch Kara to
+  verify task/list persistence in the target COSMIC session.
+
+Stage 4 scope and limitations
+- No functional change was made because the audit did not establish a
+  reproducible defect. The task-creation dialog redesign remains deferred.
+- Board View, Eisenhower Matrix and Pomodoro remain placeholders. Autostart,
+  packaging, new task properties and a custom theme were not introduced.
+- See the Stage 3 report above for the existing tray requirements and known
+  platform limitations; no COSMIC runtime claim is made for Stage 4.
