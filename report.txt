@@ -1,164 +1,95 @@
-Kara 0.1 — Stage 1: Tasks Foundation
+Kara — Stage 2: Named Task Lists
 
-Implemented
-- Native COSMIC sidebar: Tasks, with Inbox, Today, Completed and My Lists;
-  Board View, Eisenhower Matrix and Pomodoro show future-stage placeholders.
-  Selecting Tasks opens Inbox. My Lists is a Stage 2 placeholder.
-- Add/edit dialogs with title, optional YYYY-MM-DD due date, Low/Normal/High
-  priority and multiline notes. Empty titles and invalid calendar dates are
-  rejected. New tasks are incomplete, Normal priority, and have no list ID.
-- Stable random 128-bit task IDs, retained by edits and completion changes;
-  optional list IDs are stored and preserved for future modules.
-- Completion checkboxes and deletion confirmation. Cancel/Escape discard a
-  dialog draft. Title fields receive focus when add/edit dialogs open.
-- Inbox contains incomplete tasks without list IDs. Today contains incomplete
-  tasks due on or before the local date, including future named-list records.
-  Completed contains all completed records. All views share the same records.
-  Local date is refreshed on navigation and every 30 seconds.
-- Standard libcosmic controls, theme, accent, spacing, typography, scrolling,
-  keyboard navigation and appropriate empty/error states. No custom theme.
-- Existing About panel retained. Application ID corrected from the template's
-  dev.mmurphy.Test to io.github.kordeone.Kara, matching existing resources.
-
-Storage
-- Versioned JSON at $XDG_DATA_HOME/io.github.kordeone.Kara/tasks.json.
-  When XDG_DATA_HOME is unset, empty or relative, use
-  $HOME/.local/share/io.github.kordeone.Kara/tasks.json.
-- Automatic save after every accepted mutation. A same-directory temporary
-  file is written and synced before atomic rename; the directory is synced
-  afterward. Save files have mode 0600; newly created data directories 0700.
-- An exclusive tasks.lock session lock prevents cooperating Kara processes
-  from writing the same store. The lock is released automatically on exit.
-- Malformed JSON, invalid task records, duplicate IDs, unknown fields and
-  unsupported schema versions prevent loading and disable mutations. Existing
-  bytes are preserved. There is no automatic reset of corrupted data.
-- Saves compare the disk contents with the last loaded/saved snapshot and
-  refuse to replace externally changed or deleted data. Restart to reload
-  an external change. Back up and repair corrupt data before retrying.
-- Errors are visible. Failed pre-replacement saves preserve the saved task
-  state. Editor drafts remain open on failure. Retry storage rechecks the
-  current store; after fixing a transient error, repeat the intended action.
-  If directory syncing fails after replacement, the error explains that data
-  was written but durability could not be confirmed.
+Implementation
+- My Lists now provides create, rename and confirmed delete actions, an
+  overview and empty states. Named lists appear as native indented sidebar
+  entries under My Lists and display their incomplete tasks when selected.
+- List IDs are random 128-bit identifiers independent of names. Names are
+  trimmed; blank names and duplicates after Unicode lowercasing are rejected.
+- The existing task editor gains a List selector with Inbox (no list).
+  New tasks in a named-list view default to that list; creation elsewhere
+  defaults to Inbox. Moving tasks edits their existing records and IDs.
+- Completion retains the assignment. Today and Completed still span all lists.
+  Deleting a list clears every associated task's assignment in the same save;
+  incomplete tasks appear in Inbox and completed tasks stay completed.
+- Native dialogs, existing theme/layout and visible error handling retained.
+  Task-editor visual polish remains deferred. No dependencies were changed.
 
 Changed files
-- src/app.rs: replace demo pages/counter with navigation, task UI and dialogs.
-- src/tasks.rs: task model, validation, date filtering and tests.
-- src/storage.rs: XDG paths, validated JSON, locking, atomic persistence, tests.
-- src/main.rs: register new modules; minimum window size 640 x 560 for forms.
-- src/i18n.rs: cargo fmt whitespace cleanup only.
-- Cargo.toml: add direct dependencies already present in the original lockfile:
-  serde, serde_json, jiff, getrandom and tempfile.
-- Cargo.lock: retain all package versions/revisions; add only Kara's five
-  direct dependency references. The lockfile was not regenerated or removed.
-- report.txt: this implementation, validation and testing report.
-  The unused original src/config.rs remains available; demo config is no
-  longer loaded or watched.
+- src/tasks.rs: list model, name/reference validation, named-list filtering.
+- src/storage.rs: versioned list definitions, legacy compatibility, atomic
+  list/task mutations and persistence/failure tests.
+- src/app.rs: sidebar lists, list dialogs/actions, task selector/defaults,
+  selection preservation and headless navigation/default tests.
+- report.txt: this Stage 2 report (Stage 1 report remains in Git history).
 
-Validation on Debian (Rust/Cargo 1.99.1)
+Storage compatibility and safety
+- Same XDG data location and tasks.json file as Stage 1. Schema version 1
+  loads automatically without rewriting the file. The next accepted mutation
+  atomically writes schema version 2 with both tasks and list definitions.
+- All existing task fields and IDs are preserved. Legacy reserved list IDs
+  receive recovered list definitions with the same IDs, preserving assignment.
+- Version 2 rejects dangling references, invalid/duplicate list definitions,
+  invalid tasks and unknown fields. Unsupported versions and corrupt files
+  are preserved with visible errors and disabled mutation controls.
+- Existing session locking, snapshot conflict detection, synced temporary
+  files, atomic replacement and directory syncing remain in place.
+- Failed writes retain the previous in-memory document and original disk
+  contents. Editor drafts retain their IDs for retry. As in Stage 1, a sync
+  failure after replacement explicitly reports uncertain durability.
+- Schema version 2 is not readable by the older Stage 1 binary; do not downgrade
+  against the upgraded file. Back up personal data before target-machine trials.
+
+Validation on Debian
 - cargo fmt --check: PASSED.
-- cargo check --offline --locked: PASSED.
-- cargo clippy --offline --locked --all-targets -- -D warnings: PASSED.
-- cargo test --offline --locked: PASSED, 8 tests, 0 failures.
-- git diff --check: PASSED.
-- cargo build --offline --locked: PASSED; target/debug/kara produced.
-- Lockfile comparison: all non-Kara package records exactly unchanged.
-- Actual execution-environment temporary-file write probe: PASSED.
-- No graphical testing was performed on Debian.
+- cargo check --locked: PASSED.
+- cargo clippy --locked --all-targets -- -D warnings: PASSED.
+- cargo test --locked: PASSED, 19 tests, 0 failures (8 retained + 11 added).
+- cargo build --locked: PASSED; target/debug/kara built.
+- git diff --check: PASSED. Cargo.toml and Cargo.lock unchanged.
+- The eight Stage 1 tests remain; eleven additional tests cover list CRUD,
+  assignments, deletion, global/list filters, legacy migration, failed writes,
+  invalid documents, task defaults and sidebar selection after rename/delete.
+- Persistence tests use temporary directories, not personal task data.
+- No graphical testing was performed on Debian. Stage 1 graphical acceptance
+  was previously supplied by the user; Stage 2 needs target-machine validation.
 
-CachyOS acceptance (reported by the user on 2026-10-18)
-- Task creation/editing, completion/deletion, Inbox/Today/Completed, local
-  persistence, and native COSMIC navigation/appearance confirmed working.
-- Task-creation dialog visual improvement is deferred to a future UI-polish
-  stage; application functionality and packaging remain unchanged.
-- Final pre-commit Debian checks repeated: formatting, cargo check, Clippy
-  with warnings denied, all 8 tests, and diff whitespace checks.
+CachyOS COSMIC acceptance steps
+1. Transfer source via the existing Samba workflow, retaining Cargo.lock.
+   From the transferred project run cargo run --locked. No installation needed.
+   For isolated testing, close other Kara instances and launch from one shell:
+       KARA_STAGE2_DATA=$(mktemp -d)
+       XDG_DATA_HOME="$KARA_STAGE2_DATA" cargo run --locked
+   Reuse the same variable for restart checks (single-instance activation applies).
+2. Open My Lists, create Work and Home, and reject blank/" work " duplicates.
+   Select Work in the sidebar; add a task and confirm its List defaults to Work.
+   Create a task from Today/Inbox and confirm the default is Inbox instead.
+3. Move the same task Work -> Home -> Inbox using its editor. Check that only
+   the destination incomplete view contains it. Set due today/overdue and
+   verify Today includes it regardless of assignment.
+4. Complete a list task, edit it in Completed and verify the assignment remains.
+   Rename its list and verify the sidebar, heading and selector update while
+   keeping the task association. Cancel a list rename/deletion to check no save.
+5. Confirm deletion of a list containing incomplete and completed tasks.
+   Confirm no tasks disappear: incomplete ones return to Inbox; completed ones
+   remain in Completed and return to Inbox if uncompleted. Check the empty
+   list overview, an empty list view, and the three module placeholders.
+6. Restart with the same data directory. Verify names, stable IDs, task moves
+   and deletion survive. Check Tab/Enter/Escape, scrolling, narrow windows and
+   current COSMIC theme; task-editor visual polish is outside this milestone.
+7. With Kara closed, test a COPY of Stage 1 tasks.json in an isolated XDG
+   directory. Launch, verify old tasks, add a list, restart and inspect the
+   version 2 JSON. Use disposable files to test malformed JSON and a version 2
+   task referencing an unknown list: expect a visible error and unchanged bytes.
 
-Automated checks to repeat from /home/rapper/projects/kara
-    cargo fmt --check
-    cargo check --locked
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
-The implementation session uses --offline for Cargo checks because all pinned
-sources are already cached. No dependency versions or git revisions changed.
-
-Tests cover
-- CRUD round trips, edits preserving IDs/all fields, complete/uncomplete and
-  deletion surviving store reopen.
-- Today: no date, yesterday, today, tomorrow, completed tasks and named-list
-  tasks; Inbox and Completed membership; calendar/leap-year validation.
-- XDG absolute-path precedence, HOME fallback and missing/invalid paths.
-- Atomic inode replacement, intact original open-reader contents, valid JSON
-  after save, private file permissions and temporary-file cleanup.
-- Invalid edits and a permission-denied save preserving previous file/state.
-- Corrupt/empty JSON, invalid dates, duplicate IDs, future schemas and unknown
-  fields preserving their original bytes.
-- Concurrent session lock refusal, external edits and storage read failures.
-All automated persistence tests use disposable temporary directories.
-
-Launch on CachyOS with COSMIC Desktop
-1. Transfer the source through the established Samba workflow. Keep Cargo.lock.
-   Build on the target machine; a Debian-built binary is not assumed portable.
-2. From the transferred project directory run:
-       cargo run --locked
-   Or build with cargo build --locked, then run ./target/debug/kara.
-   No installation is required. Do not run the just install recipe.
-3. For isolated GUI testing, close all running Kara instances first (the
-   existing template uses single-instance activation). In a COSMIC terminal:
-       KARA_STAGE1_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_STAGE1_DATA" cargo run --locked
-   Reuse this same variable for every subsequent launch in that terminal.
-4. Add an undated task; confirm it appears in Inbox, but not Today.
-   Add tasks due yesterday, today and tomorrow using local YYYY-MM-DD dates.
-   Confirm Today shows yesterday/today only. Try an empty title and an invalid
-   date such as 2026-02-30; expect validation without saving or closing.
-5. Edit title, due date, each priority and multiline notes. Reopen the editor
-   to verify values. Cancel an edit and verify the original remains. Tab through
-   controls, press Enter in title/date to save, and Escape to cancel a dialog.
-6. Complete a task from Inbox/Today. Confirm it leaves incomplete views and
-   appears in Completed. Uncheck it there and verify it returns as appropriate.
-   Cancel one deletion, then confirm another. Check all empty states and the
-   four future-stage placeholders. Change system light/dark theme/accent and
-   check native appearance. Resize the window and scroll the task list/forms.
-7. Close and relaunch with the same XDG_DATA_HOME; verify edits, completion and
-   deletion survive. The test JSON is at:
-       $KARA_STAGE1_DATA/io.github.kordeone.Kara/tasks.json
-   Inspect it while Kara is closed to confirm stable IDs and optional fields.
-8. Corruption test ONLY against the disposable directory above, with Kara
-   closed and at least one saved task:
-       KARA_STAGE1_FILE="$KARA_STAGE1_DATA/io.github.kordeone.Kara/tasks.json"
-       cp "$KARA_STAGE1_FILE" "$KARA_STAGE1_FILE.good"
-       printf '{broken' > "$KARA_STAGE1_FILE"
-       cp "$KARA_STAGE1_FILE" "$KARA_STAGE1_FILE.corrupt"
-       XDG_DATA_HOME="$KARA_STAGE1_DATA" cargo run --locked
-   Expect a visible error and disabled mutations. Close Kara, then run:
-       cmp "$KARA_STAGE1_FILE" "$KARA_STAGE1_FILE.corrupt"
-   Expect identical bytes. Restore the disposable test data while closed:
-       cp "$KARA_STAGE1_FILE.good" "$KARA_STAGE1_FILE"
-       XDG_DATA_HOME="$KARA_STAGE1_DATA" cargo run --locked
-   Expect the previously saved tasks to return.
-9. Optional transient save-error test in that disposable store: while Kara is
-   open, remove write permission from its application data directory, then try
-   a task edit. Expect a visible save error and retained draft. Restore the
-   directory's write permission, choose Retry storage, then Save again.
-   Restart and verify the change. Never do this against personal task data.
-
-Known limitations and remaining manual checks
-- CachyOS graphical behavior, focus, scaling, keyboard traversal, appearance
-  and Samba transfer have not been exercised in this Debian environment.
-- Due dates are entered as calendar dates; no times, reminders or date picker.
-  The running Today view may take up to 30 seconds to reflect midnight.
-- Stage 1 interface strings are English; the template localization support
-  remains in place for a later localization pass.
-- Saves are synchronous and rewrite the small local document. This foundation
-  targets local personal task lists; it is not a large-dataset storage engine.
-- The lock protects cooperating Kara processes. An unrelated editor that
-  ignores it must not modify tasks.json during saving; snapshot checks detect
-  changes before replacement but do not provide coordination with such tools.
-- Existing data is never automatically repaired/reset. Corrupt files require
-  a manual backup and repair while Kara is closed.
-- Named-list management, Board, Matrix, Pomodoro, tray, autostart, packaging,
-  synchronization and system installation are outside this stage.
-- No installation or system configuration changes performed.
-- Implementation blockers: none. CachyOS functional acceptance confirmed by
-  the user; additional UI polish remains deferred.
+Limitations and delivery
+- Lists are always visible under My Lists, using the existing native sidebar's
+  indentation model; this version of the navigation widget has no tree expander.
+- No new sorting, list reordering, bulk moves or UI redesign is included.
+- Stage 1 limits remain: calendar dates only, English UI, small synchronous
+  local JSON saves, and no coordination with external editors ignoring locks.
+- Board, Matrix, Pomodoro, tray, autostart, subtasks, tags, recurring tasks,
+  reminders, themes, packaging and installation remain outside this stage.
+- Repository began clean at b8a608e. A fresh fetch confirmed Stage 1 on GitHub.
+  Commit/push outcome is reported separately in the final delivery response.
+- No implementation blockers. CachyOS graphical validation remains pending.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
     storage::{self, Store},
-    tasks::{self, Priority, Task as KaraTask, TaskView},
+    tasks::{self, Priority, Task as KaraTask, TaskList, TaskView},
 };
 use cosmic::{
     app::context_drawer,
@@ -20,6 +20,8 @@ pub struct AppModel {
     storage_error: Option<String>,
     editor: Option<Editor>,
     delete_id: Option<String>,
+    list_editor: Option<ListEditor>,
+    delete_list_id: Option<String>,
     today: jiff::civil::Date,
     about: About,
     title_input: cosmic::iced::widget::Id,
@@ -31,9 +33,23 @@ struct Editor {
     error: Option<String>,
     is_new: bool,
 }
+struct ListEditor {
+    id: Option<String>,
+    is_new: bool,
+    name: String,
+    error: Option<String>,
+}
 #[derive(Debug, Clone)]
 pub enum Message {
     Add,
+    AddList,
+    RenameList(String),
+    DeleteList(String),
+    ConfirmDeleteList,
+    ListName(String),
+    SaveList,
+    OpenList(String),
+    AssignList(usize),
     Edit(String),
     Toggle(String),
     Delete(String),
@@ -49,34 +65,45 @@ pub enum Message {
     About,
     LaunchUrl(String),
 }
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Page {
     Tasks,
     Inbox,
     Today,
     Completed,
     MyLists,
+    List(String),
     Board,
     Matrix,
     Pomodoro,
 }
 impl Page {
-    fn title(self) -> &'static str {
+    fn title(&self) -> &'static str {
         match self {
             Self::Tasks | Self::Inbox => "Inbox",
             Self::Today => "Today",
             Self::Completed => "Completed",
             Self::MyLists => "My Lists",
+            Self::List(_) => "List",
             Self::Board => "Board View",
             Self::Matrix => "Eisenhower Matrix",
             Self::Pomodoro => "Pomodoro",
         }
     }
-    fn view(self) -> Option<TaskView> {
+    fn draft_task(&self) -> Result<KaraTask, String> {
+        let mut task = KaraTask::new("New task")?;
+        task.title.clear();
+        if let Self::List(id) = self {
+            task.list_id = Some(id.clone());
+        }
+        Ok(task)
+    }
+    fn view(&self) -> Option<TaskView<'_>> {
         match self {
             Self::Tasks | Self::Inbox => Some(TaskView::Inbox),
             Self::Today => Some(TaskView::Today),
             Self::Completed => Some(TaskView::Completed),
+            Self::List(id) => Some(TaskView::List(id)),
             _ => None,
         }
     }
@@ -93,26 +120,7 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
     fn init(core: cosmic::Core, _: ()) -> (Self, Task<cosmic::Action<Message>>) {
-        let mut nav = nav_bar::Model::default();
-        nav.insert()
-            .text("Tasks")
-            .data(Page::Tasks)
-            .icon(icon::from_name("view-list-symbolic"))
-            .activate();
-        for page in [Page::Inbox, Page::Today, Page::Completed, Page::MyLists] {
-            let id = nav.insert().text(page.title()).data(page).id();
-            nav.indent_set(id, 1);
-        }
-        for (page, name) in [
-            (Page::Board, "view-grid-symbolic"),
-            (Page::Matrix, "view-app-grid-symbolic"),
-            (Page::Pomodoro, "alarm-symbolic"),
-        ] {
-            nav.insert()
-                .text(page.title())
-                .data(page)
-                .icon(icon::from_name(name));
-        }
+        let nav = build_nav(&[], &Page::Tasks);
         let about = About::default()
             .name("Kara")
             .icon(icon::from_svg_bytes(APP_ICON))
@@ -126,6 +134,8 @@ impl cosmic::Application for AppModel {
             storage_error: None,
             editor: None,
             delete_id: None,
+            list_editor: None,
+            delete_list_id: None,
             today: jiff::Zoned::now().date(),
             about,
             title_input: cosmic::iced::widget::Id::unique(),
@@ -168,7 +178,7 @@ impl cosmic::Application for AppModel {
         let mut header = widget::row::with_capacity(3)
             .align_y(Alignment::Center)
             .spacing(spacing.space_s)
-            .push(widget::text::title1(page.title()))
+            .push(widget::text::title1(self.page_title()))
             .push(widget::space::horizontal());
         if page.view().is_some() {
             header = header.push(
@@ -176,7 +186,26 @@ impl cosmic::Application for AppModel {
                     .on_press_maybe(self.can_write().then_some(Message::Add)),
             );
         }
+        if page == Page::MyLists {
+            header = header.push(
+                widget::button::suggested("Create list")
+                    .on_press_maybe(self.can_write().then_some(Message::AddList)),
+            );
+        }
         content = content.push(header);
+        if let Page::List(id) = &page {
+            content =
+                content.push(
+                    widget::row::with_capacity(2)
+                        .spacing(spacing.space_s)
+                        .push(widget::button::standard("Rename list").on_press_maybe(
+                            self.can_write().then(|| Message::RenameList(id.clone())),
+                        ))
+                        .push(widget::button::standard("Delete list").on_press_maybe(
+                            self.can_write().then(|| Message::DeleteList(id.clone())),
+                        )),
+                );
+        }
         if let Some(view) = page.view() {
             let mut rows = widget::column::with_capacity(10).spacing(spacing.space_s);
             let mut count = 0;
@@ -220,17 +249,57 @@ impl cosmic::Application for AppModel {
                         TaskView::Inbox => "Your inbox is empty. Add a task to get started.",
                         TaskView::Today => "No tasks due today or overdue.",
                         TaskView::Completed => "No completed tasks yet.",
+                        TaskView::List(_) => {
+                            "No incomplete tasks in this list. Add a task to get started."
+                        }
                     }
                 };
                 rows = rows.push(widget::text::body(empty));
             }
             content = content.push(widget::scrollable(rows).height(Length::Fill));
+        } else if page == Page::MyLists {
+            let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
+            match &self.store {
+                None => {
+                    lists = lists.push(widget::text::body(
+                        "Lists are unavailable. Resolve the storage error and retry.",
+                    ))
+                }
+                Some(store) if store.lists().is_empty() => {
+                    lists = lists.push(widget::text::body(
+                        "No lists yet. Create a list to organize your tasks.",
+                    ))
+                }
+                Some(store) => {
+                    for list in store.lists() {
+                        lists = lists.push(
+                            widget::row::with_capacity(4)
+                                .spacing(spacing.space_s)
+                                .align_y(Alignment::Center)
+                                .push(
+                                    widget::button::text(list.name.clone())
+                                        .on_press(Message::OpenList(list.id.clone())),
+                                )
+                                .push(widget::space::horizontal())
+                                .push(
+                                    widget::button::text("Rename").on_press_maybe(
+                                        self.can_write()
+                                            .then(|| Message::RenameList(list.id.clone())),
+                                    ),
+                                )
+                                .push(
+                                    widget::button::text("Delete").on_press_maybe(
+                                        self.can_write()
+                                            .then(|| Message::DeleteList(list.id.clone())),
+                                    ),
+                                ),
+                        );
+                    }
+                }
+            }
+            content = content.push(widget::scrollable(lists).height(Length::Fill));
         } else {
-            content = content.push(widget::text::body(if matches!(page, Page::MyLists) {
-                "Coming in Stage 2."
-            } else {
-                "Coming later."
-            }));
+            content = content.push(widget::text::body("Coming later."));
         }
         widget::container(content)
             .padding(spacing.space_m)
@@ -239,6 +308,63 @@ impl cosmic::Application for AppModel {
             .into()
     }
     fn dialog(&self) -> Option<Element<'_, Message>> {
+        if let Some(editor) = &self.list_editor {
+            let mut fields = widget::column::with_capacity(2)
+                .spacing(cosmic::theme::spacing().space_s)
+                .push(
+                    widget::text_input("List name", &editor.name)
+                        .id(self.title_input.clone())
+                        .on_input(Message::ListName)
+                        .on_submit(|_| Message::SaveList),
+                );
+            if let Some(error) = &editor.error {
+                fields = fields.push(widget::text::body(error));
+            }
+            let mut dialog = widget::dialog()
+                .title(if editor.is_new {
+                    "Create list"
+                } else {
+                    "Rename list"
+                })
+                .control(fields)
+                .primary_action(
+                    widget::button::suggested("Save")
+                        .on_press_maybe(self.can_write().then_some(Message::SaveList)),
+                )
+                .secondary_action(widget::button::standard("Cancel").on_press(Message::Cancel));
+            if self.storage_error.is_some() {
+                dialog = dialog.tertiary_action(
+                    widget::button::standard("Retry storage").on_press(Message::RetryStorage),
+                );
+            }
+            return Some(dialog.into());
+        }
+        if let Some(id) = &self.delete_list_id {
+            let list = self
+                .store
+                .as_ref()?
+                .lists()
+                .iter()
+                .find(|list| &list.id == id)?;
+            let mut body = format!(
+                "Delete “{}”? Its tasks will be unassigned. Incomplete tasks will appear in Inbox; completed tasks will remain in Completed. No tasks will be deleted.",
+                list.name
+            );
+            if let Some(error) = &self.storage_error {
+                body.push_str(&format!("\n\n{error}"));
+            }
+            return Some(
+                widget::dialog()
+                    .title("Delete list?")
+                    .body(body)
+                    .primary_action(
+                        widget::button::destructive("Delete list")
+                            .on_press_maybe(self.can_write().then_some(Message::ConfirmDeleteList)),
+                    )
+                    .secondary_action(widget::button::standard("Cancel").on_press(Message::Cancel))
+                    .into(),
+            );
+        }
         if let Some(editor) = &self.editor {
             let spacing = cosmic::theme::spacing();
             let mut fields = widget::column::with_capacity(9)
@@ -270,6 +396,21 @@ impl cosmic::Application for AppModel {
                         .height(110)
                         .on_action(Message::Notes),
                 );
+            let mut options = vec!["Inbox (no list)".to_string()];
+            let mut selected = Some(0);
+            if let Some(store) = &self.store {
+                options.extend(store.lists().iter().map(|list| list.name.clone()));
+                if let Some(id) = &editor.task.list_id {
+                    selected = store
+                        .lists()
+                        .iter()
+                        .position(|list| &list.id == id)
+                        .map(|i| i + 1);
+                }
+            }
+            fields = fields
+                .push(widget::text::body("List"))
+                .push(widget::dropdown(options, selected, Message::AssignList));
             if let Some(error) = &editor.error {
                 fields = fields.push(widget::text::body(error));
             }
@@ -317,6 +458,8 @@ impl cosmic::Application for AppModel {
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
         self.editor = None;
         self.delete_id = None;
+        self.list_editor = None;
+        self.delete_list_id = None;
         self.core.window.show_context = false;
         Task::none()
     }
@@ -327,9 +470,103 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
-            Message::Add if self.can_write() => match KaraTask::new("New task") {
-                Ok(mut task) => {
-                    task.title.clear();
+            Message::AddList if self.can_write() => {
+                self.list_editor = Some(ListEditor {
+                    id: None,
+                    is_new: true,
+                    name: String::new(),
+                    error: None,
+                });
+                return widget::text_input::focus(self.title_input.clone());
+            }
+            Message::RenameList(id) if self.can_write() => {
+                if let Some(list) = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.lists().iter().find(|l| l.id == id))
+                {
+                    self.list_editor = Some(ListEditor {
+                        id: Some(id),
+                        is_new: false,
+                        name: list.name.clone(),
+                        error: None,
+                    });
+                    return widget::text_input::focus(self.title_input.clone());
+                }
+            }
+            Message::ListName(name) => {
+                if let Some(editor) = &mut self.list_editor {
+                    editor.name = name;
+                }
+            }
+            Message::SaveList if self.can_write() => {
+                if let (Some(editor), Some(store)) = (&mut self.list_editor, &mut self.store) {
+                    if let Err(error) =
+                        tasks::validate_list_name(&editor.name, store.lists(), editor.id.as_deref())
+                    {
+                        editor.error = Some(error);
+                        return Task::none();
+                    }
+                    let list = match &editor.id {
+                        Some(id) => Ok(TaskList {
+                            id: id.clone(),
+                            name: editor.name.trim().into(),
+                        }),
+                        None => TaskList::new(&editor.name),
+                    };
+                    let result = list.and_then(|list| {
+                        // Retain the generated ID in the draft, including when a
+                        // save fails or directory syncing fails after publication.
+                        editor.id = Some(list.id.clone());
+                        store.upsert_list(list)
+                    });
+                    match result {
+                        Ok(()) => self.list_editor = None,
+                        Err(error) => {
+                            editor.error = Some(error.clone());
+                            self.storage_error = Some(error);
+                        }
+                    }
+                }
+                self.rebuild_nav();
+                return self.update_title();
+            }
+            Message::DeleteList(id) if self.can_write() => self.delete_list_id = Some(id),
+            Message::ConfirmDeleteList if self.can_write() => {
+                if let (Some(store), Some(id)) = (&mut self.store, &self.delete_list_id) {
+                    self.storage_error = store.delete_list(id).err();
+                    if !store.lists().iter().any(|list| &list.id == id) {
+                        self.delete_list_id = None;
+                    }
+                }
+                self.rebuild_nav();
+                return self.update_title();
+            }
+            Message::OpenList(id) => {
+                let entity = self
+                    .nav
+                    .iter()
+                    .find(|entity| self.nav.data::<Page>(*entity) == Some(&Page::List(id.clone())));
+                if let Some(entity) = entity {
+                    self.nav.activate(entity);
+                    return self.update_title();
+                }
+            }
+            Message::AssignList(index) => {
+                if let Some(editor) = &mut self.editor {
+                    if index == 0 {
+                        editor.task.list_id = None;
+                    } else if let Some(list) = self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().get(index - 1))
+                    {
+                        editor.task.list_id = Some(list.id.clone());
+                    }
+                }
+            }
+            Message::Add if self.can_write() => match self.page().draft_task() {
+                Ok(task) => {
                     self.open_editor(task, true);
                     return widget::text_input::focus(self.title_input.clone());
                 }
@@ -412,6 +649,8 @@ impl cosmic::Application for AppModel {
             Message::Cancel => {
                 self.editor = None;
                 self.delete_id = None;
+                self.list_editor = None;
+                self.delete_list_id = None;
             }
             Message::RetryStorage => {
                 // Retain a loaded store and its expected disk snapshot after save errors.
@@ -425,7 +664,13 @@ impl cosmic::Application for AppModel {
                     {
                         editor.error = None;
                     }
+                    if self.storage_error.is_none()
+                        && let Some(editor) = &mut self.list_editor
+                    {
+                        editor.error = None;
+                    }
                 }
+                return self.update_title();
             }
             Message::DateTick => self.today = jiff::Zoned::now().date(),
             Message::About => self.core.window.show_context = !self.core.window.show_context,
@@ -443,8 +688,23 @@ impl AppModel {
     fn page(&self) -> Page {
         self.nav
             .active_data::<Page>()
-            .copied()
+            .cloned()
             .unwrap_or(Page::Tasks)
+    }
+    fn page_title(&self) -> String {
+        let page = self.page();
+        if let Page::List(id) = &page
+            && let Some(list) = self
+                .store
+                .as_ref()
+                .and_then(|store| store.lists().iter().find(|list| &list.id == id))
+        {
+            return list.name.clone();
+        }
+        page.title().into()
+    }
+    fn rebuild_nav(&mut self) {
+        self.nav = build_nav(self.store.as_ref().map_or(&[], Store::lists), &self.page());
     }
     fn can_write(&self) -> bool {
         self.store.is_some() && self.storage_error.is_none()
@@ -454,6 +714,7 @@ impl AppModel {
             Ok(store) => {
                 self.store = Some(store);
                 self.storage_error = None;
+                self.rebuild_nav();
             }
             Err(error) => {
                 self.storage_error = Some(error);
@@ -472,12 +733,114 @@ impl AppModel {
         });
     }
     fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
-        let title = format!("Kara — {}", self.page().title());
-        self.set_header_title(self.page().title().to_string());
+        let title = format!("Kara — {}", self.page_title());
+        self.set_header_title(self.page_title());
         if let Some(id) = self.core.main_window_id() {
             self.set_window_title(title, id)
         } else {
             Task::none()
         }
+    }
+}
+
+fn build_nav(lists: &[TaskList], active: &Page) -> nav_bar::Model {
+    let mut nav = nav_bar::Model::default();
+    nav.insert()
+        .text("Tasks")
+        .data(Page::Tasks)
+        .icon(icon::from_name("view-list-symbolic"))
+        .activate();
+    for page in [Page::Inbox, Page::Today, Page::Completed, Page::MyLists] {
+        let id = nav.insert().text(page.title()).data(page.clone()).id();
+        nav.indent_set(id, 1);
+        if page == Page::MyLists {
+            for list in lists {
+                let id = nav
+                    .insert()
+                    .text(list.name.clone())
+                    .data(Page::List(list.id.clone()))
+                    .id();
+                nav.indent_set(id, 2);
+            }
+        }
+    }
+    for (page, name) in [
+        (Page::Board, "view-grid-symbolic"),
+        (Page::Matrix, "view-app-grid-symbolic"),
+        (Page::Pomodoro, "alarm-symbolic"),
+    ] {
+        nav.insert()
+            .text(page.title())
+            .data(page)
+            .icon(icon::from_name(name));
+    }
+    let selected = nav
+        .iter()
+        .find(|id| nav.data::<Page>(*id) == Some(active))
+        .or_else(|| {
+            matches!(active, Page::List(_))
+                .then(|| {
+                    nav.iter()
+                        .find(|id| nav.data::<Page>(*id) == Some(&Page::MyLists))
+                })
+                .flatten()
+        });
+    if let Some(selected) = selected {
+        nav.activate(selected);
+    }
+    nav
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn task_creation_uses_the_selected_list_and_otherwise_inbox() {
+        let task = Page::List("selected-list".into()).draft_task().unwrap();
+        assert_eq!(task.list_id.as_deref(), Some("selected-list"));
+        assert!(!task.completed);
+        assert!(task.due_date.is_none());
+        assert_eq!(task.priority, Priority::Normal);
+        for page in [
+            Page::Tasks,
+            Page::Inbox,
+            Page::Today,
+            Page::Completed,
+            Page::MyLists,
+        ] {
+            assert!(page.draft_task().unwrap().list_id.is_none());
+        }
+    }
+    #[test]
+    fn sidebar_keeps_lists_under_my_lists_and_selection_survives_rename_and_delete() {
+        let mut list = TaskList::new("Work").unwrap();
+        let active = Page::List(list.id.clone());
+        let nav = build_nav(std::slice::from_ref(&list), &active);
+        let pages: Vec<_> = nav
+            .iter()
+            .map(|id| nav.data::<Page>(id).unwrap().clone())
+            .collect();
+        assert_eq!(
+            pages,
+            vec![
+                Page::Tasks,
+                Page::Inbox,
+                Page::Today,
+                Page::Completed,
+                Page::MyLists,
+                active.clone(),
+                Page::Board,
+                Page::Matrix,
+                Page::Pomodoro
+            ]
+        );
+        assert_eq!(nav.active_data::<Page>(), Some(&active));
+        assert_eq!(nav.indent(nav.active()), Some(2));
+        list.name = "Career".into();
+        let renamed = build_nav(&[list], &active);
+        assert_eq!(renamed.active_data::<Page>(), Some(&active));
+        assert_eq!(renamed.text(renamed.active()), Some("Career"));
+        let deleted = build_nav(&[], &active);
+        assert_eq!(deleted.active_data::<Page>(), Some(&Page::MyLists));
     }
 }
