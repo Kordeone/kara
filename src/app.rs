@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
+    date_entry,
     lifecycle::{Effect, Lifecycle, State},
     matrix, matrix_view,
     storage::{self, Store},
@@ -12,6 +13,7 @@ use cosmic::{
     prelude::*,
     widget::{self, about::About, icon, nav_bar},
 };
+use jiff::civil::{Date, Weekday};
 use std::time::Duration;
 
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
@@ -40,6 +42,9 @@ struct Editor {
     due: String,
     notes: widget::text_editor::Content,
     error: Option<String>,
+    due_error: Option<String>,
+    calendar: cosmic::widget::calendar::CalendarModel,
+    calendar_open: bool,
     is_new: bool,
 }
 struct ListEditor {
@@ -78,7 +83,13 @@ pub enum Message {
     Cancel,
     Title(String),
     Due(String),
+    DueBlur,
     Priority(usize),
+    ToggleCalendar,
+    CloseCalendar,
+    CalendarPrev,
+    CalendarNext,
+    CalendarSelect(Date),
     Notes(widget::text_editor::Action),
     Save,
     RetryStorage,
@@ -548,42 +559,65 @@ impl cosmic::Application for AppModel {
         }
         if let Some(editor) = &self.editor {
             let spacing = cosmic::theme::spacing();
-            let mut fields = widget::column::with_capacity(12)
-                .spacing(spacing.space_s)
-                .push(widget::text::heading("Task details"));
-            if let Some(error) = &editor.error {
-                fields = fields.push(widget::text::body(error));
-            }
-            fields = fields
-                .push(widget::text::body("Title"))
+            let due_input = widget::text_input("YYYY-MM-DD", &editor.due)
+                .style(if editor.due_error.is_some() {
+                    invalid_date_input_style()
+                } else {
+                    cosmic::theme::TextInput::Default
+                })
+                .on_input(Message::Due)
+                .on_submit(|_| Message::Save)
+                .on_unfocus(Message::DueBlur)
+                .width(Length::Fill);
+            let due_entry = widget::row::with_capacity(2)
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xxs)
+                .push(due_input)
                 .push(
-                    widget::text_input("Task title", &editor.task.title)
-                        .id(self.title_input.clone())
-                        .on_input(Message::Title)
-                        .on_submit(|_| Message::Save)
-                        .width(Length::Fill),
-                )
-                .push(widget::text::body("Due date"))
-                .push(
-                    widget::text_input("YYYY-MM-DD (optional)", &editor.due)
-                        .on_input(Message::Due)
-                        .on_submit(|_| Message::Save)
-                        .width(Length::Fill),
-                )
-                .push(widget::text::body("Priority"))
-                .push(
-                    widget::dropdown(
-                        vec!["Low", "Normal", "High"],
-                        Priority::ALL
-                            .iter()
-                            .position(|p| *p == editor.task.priority),
-                        Message::Priority,
-                    )
-                    .width(Length::Fill),
-                )
-                .push(widget::text::heading("Organization"))
-                .push(widget::text::body("Task list"));
-            let mut options = vec!["Inbox (no list)".to_string()];
+                    widget::button::icon(icon::from_name("x-office-calendar-symbolic"))
+                        .tooltip("Choose date")
+                        .name("Choose due date")
+                        .on_press(Message::ToggleCalendar),
+                );
+            let due_entry = widget::popover(due_entry)
+                .position(widget::popover::Position::Bottom)
+                .on_close(Message::CloseCalendar);
+            let due_entry = if editor.calendar_open {
+                due_entry.popup(widget::calendar(
+                    &editor.calendar,
+                    Message::CalendarSelect,
+                    || Message::CalendarPrev,
+                    || Message::CalendarNext,
+                    Weekday::Sunday,
+                ))
+            } else {
+                due_entry
+            };
+
+            let priority_buttons = widget::row::with_capacity(3)
+                .spacing(spacing.space_xxs)
+                .push(priority_button(
+                    editor.task.priority,
+                    Priority::Low,
+                    0,
+                    "go-down-symbolic",
+                    "Low priority",
+                ))
+                .push(priority_button(
+                    editor.task.priority,
+                    Priority::Normal,
+                    1,
+                    "list-remove-symbolic",
+                    "Normal priority",
+                ))
+                .push(priority_button(
+                    editor.task.priority,
+                    Priority::High,
+                    2,
+                    "go-up-symbolic",
+                    "High priority",
+                ));
+            let mut options = vec!["Inbox".to_string()];
             let mut selected = Some(0);
             if let Some(store) = &self.store {
                 options.extend(store.lists().iter().map(|list| list.name.clone()));
@@ -595,22 +629,62 @@ impl cosmic::Application for AppModel {
                         .map(|i| i + 1);
                 }
             }
-            fields = fields
-                .push(widget::dropdown(options, selected, Message::AssignList).width(Length::Fill));
-            fields = fields.push(widget::text::heading("Notes")).push(
-                widget::text_editor::text_editor(&editor.notes)
-                    .height(110)
-                    .on_action(Message::Notes),
-            );
+            let list_selector =
+                widget::dropdown(options, selected, Message::AssignList).width(Length::Fill);
+            let title_field = widget::column::with_capacity(2)
+                .spacing(spacing.space_xxs)
+                .push(widget::text::body("Title"))
+                .push(
+                    widget::text_input("Task title", &editor.task.title)
+                        .id(self.title_input.clone())
+                        .on_input(Message::Title)
+                        .on_submit(|_| Message::Save)
+                        .width(Length::Fill),
+                );
+            let metadata = widget::row::with_capacity(3)
+                .align_y(Alignment::Start)
+                .spacing(spacing.space_s)
+                .push(
+                    widget::column::with_capacity(3)
+                        .width(Length::FillPortion(4))
+                        .spacing(spacing.space_xxs)
+                        .push(widget::text::body("Due date"))
+                        .push(due_entry)
+                        .push_maybe(editor.due_error.as_ref().map(widget::text::body)),
+                )
+                .push(
+                    widget::column::with_capacity(2)
+                        .width(Length::FillPortion(2))
+                        .spacing(spacing.space_xxs)
+                        .push(widget::text::body("Priority"))
+                        .push(priority_buttons),
+                )
+                .push(
+                    widget::column::with_capacity(2)
+                        .width(Length::FillPortion(4))
+                        .spacing(spacing.space_xxs)
+                        .push(widget::text::body("List"))
+                        .push(list_selector),
+                );
+            let fields = widget::column::with_capacity(6)
+                .spacing(spacing.space_s)
+                .push(title_field)
+                .push_maybe(editor.error.as_ref().map(widget::text::body))
+                .push(metadata)
+                .push(widget::text::body("Notes"))
+                .push(
+                    widget::text_editor::text_editor(&editor.notes)
+                        .height(76)
+                        .on_action(Message::Notes),
+                );
             let mut dialog = widget::dialog()
                 .title(if editor.is_new {
-                    "Add task"
+                    "Add Task"
                 } else {
-                    "Edit task"
+                    "Edit Task"
                 })
-                .control(widget::container(widget::scrollable(fields)).max_height(400))
-                .max_width(560)
-                .max_height(520)
+                .control(fields)
+                .max_width(700)
                 .primary_action(
                     widget::button::suggested("Save")
                         .on_press_maybe(self.can_write().then_some(Message::Save)),
@@ -947,16 +1021,60 @@ impl cosmic::Application for AppModel {
             Message::Title(title) => {
                 if let Some(e) = &mut self.editor {
                     e.task.title = title;
+                    e.error = None;
                 }
             }
             Message::Due(due) => {
                 if let Some(e) = &mut self.editor {
-                    e.due = due;
+                    let year = jiff::Zoned::now().year();
+                    e.due = date_entry::normalize_continuous_input(&due);
+                    e.due_error = date_entry::validation_error_for_edit(&e.due, year);
+                }
+            }
+            Message::DueBlur => {
+                if let Some(e) = &mut self.editor {
+                    let year = jiff::Zoned::now().year();
+                    e.due = date_entry::normalize_edit(&e.due, year);
+                    e.due_error = date_entry::validation_error_for_edit(&e.due, year);
                 }
             }
             Message::Priority(index) => {
-                if let (Some(e), Some(p)) = (&mut self.editor, Priority::ALL.get(index)) {
-                    e.task.priority = *p;
+                if let (Some(e), Some(p)) = (&mut self.editor, priority_at(index)) {
+                    e.task.priority = p;
+                }
+            }
+            Message::ToggleCalendar => {
+                if let Some(e) = &mut self.editor {
+                    e.calendar_open = !e.calendar_open;
+                    if e.calendar_open {
+                        e.calendar = cosmic::widget::calendar::CalendarModel::new(
+                            date_entry::picker_date(&e.due, jiff::Zoned::now().date()),
+                            date_entry::picker_date(&e.due, jiff::Zoned::now().date()),
+                        );
+                    }
+                }
+            }
+            Message::CloseCalendar => {
+                if let Some(e) = &mut self.editor {
+                    e.calendar_open = false;
+                }
+            }
+            Message::CalendarPrev => {
+                if let Some(e) = &mut self.editor {
+                    e.calendar.show_prev_month();
+                }
+            }
+            Message::CalendarNext => {
+                if let Some(e) = &mut self.editor {
+                    e.calendar.show_next_month();
+                }
+            }
+            Message::CalendarSelect(date) => {
+                if let Some(e) = &mut self.editor {
+                    e.due = date.to_string();
+                    e.due_error = None;
+                    e.calendar.set_selected_visible(date);
+                    e.calendar_open = false;
                 }
             }
             Message::Notes(action) => {
@@ -966,18 +1084,18 @@ impl cosmic::Application for AppModel {
             }
             Message::Save if self.can_write() => {
                 if let Some(e) = &mut self.editor {
-                    let mut task = e.task.clone();
-                    task.title = task.title.trim().into();
-                    let due = e.due.trim();
-                    if !due.is_empty()
-                        && let Err(error) = tasks::parse_date(due)
-                    {
-                        e.error = Some(error);
-                        return Task::none();
-                    }
-                    task.due_date = (!due.is_empty()).then(|| due.to_string());
+                    let due = match date_entry::parse_optional(&e.due, jiff::Zoned::now().year()) {
+                        Ok(due) => {
+                            e.due_error = None;
+                            due
+                        }
+                        Err(error) => {
+                            e.due_error = Some(error);
+                            return Task::none();
+                        }
+                    };
                     let notes = e.notes.text();
-                    task.notes = (!notes.trim().is_empty()).then_some(notes);
+                    let task = apply_editor_fields(e.task.clone(), &e.task.title, due, notes);
                     if let Err(error) = tasks::validate(std::slice::from_ref(&task)) {
                         e.error = Some(error);
                         return Task::none();
@@ -1136,6 +1254,10 @@ impl AppModel {
         }
     }
     fn open_editor(&mut self, task: KaraTask, is_new: bool) {
+        let picker_date = date_entry::picker_date(
+            task.due_date.as_deref().unwrap_or_default(),
+            jiff::Zoned::now().date(),
+        );
         self.editor = Some(Editor {
             due: task.due_date.clone().unwrap_or_default(),
             notes: widget::text_editor::Content::with_text(
@@ -1143,17 +1265,67 @@ impl AppModel {
             ),
             task,
             error: None,
+            due_error: None,
+            calendar: cosmic::widget::calendar::CalendarModel::new(picker_date, picker_date),
+            calendar_open: false,
             is_new,
         });
     }
     fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
-        let title = format!("Kara — {}", self.page_title());
-        self.set_header_title(self.page_title());
+        let title = format!("KARA — {}", self.page_title());
+        self.set_header_title("KARA".to_string());
         if let Some(id) = self.core.main_window_id() {
             self.set_window_title(title, id)
         } else {
             Task::none()
         }
+    }
+}
+
+fn priority_button(
+    selected: Priority,
+    priority: Priority,
+    index: usize,
+    icon_name: &'static str,
+    label: &'static str,
+) -> cosmic::Element<'static, Message> {
+    widget::button::icon(icon::from_name(icon_name))
+        .selected(selected == priority)
+        .tooltip(label)
+        .name(label)
+        .on_press(Message::Priority(index))
+        .into()
+}
+
+fn priority_at(index: usize) -> Option<Priority> {
+    Priority::ALL.get(index).copied()
+}
+
+fn apply_editor_fields(
+    mut task: KaraTask,
+    title: &str,
+    due: Option<String>,
+    notes: String,
+) -> KaraTask {
+    task.title = title.trim().into();
+    task.due_date = due;
+    task.notes = (!notes.trim().is_empty()).then_some(notes);
+    task
+}
+
+fn invalid_date_input_style() -> cosmic::theme::TextInput {
+    use cosmic::widget::text_input::StyleSheet;
+    let appearance = |theme: &cosmic::Theme| {
+        let mut appearance = theme.active(&cosmic::theme::TextInput::Default);
+        appearance.border_color = theme.cosmic().palette.bright_red.into();
+        appearance
+    };
+    cosmic::theme::TextInput::Custom {
+        active: Box::new(appearance),
+        error: Box::new(appearance),
+        hovered: Box::new(appearance),
+        focused: Box::new(appearance),
+        disabled: Box::new(appearance),
     }
 }
 
@@ -1292,5 +1464,47 @@ mod tests {
         assert!(!collapsed_pages.contains(&Page::List(unpinned.id)));
         assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
         assert!(collapsed_pages.contains(&Page::Matrix));
+    }
+
+    #[test]
+    fn priority_selector_indices_cover_all_existing_priorities() {
+        assert_eq!(Priority::default(), Priority::Normal);
+        assert_eq!(priority_at(0), Some(Priority::Low));
+        assert_eq!(priority_at(1), Some(Priority::Normal));
+        assert_eq!(priority_at(2), Some(Priority::High));
+        assert_eq!(priority_at(3), None);
+    }
+
+    #[test]
+    fn shared_editor_fields_preserve_matrix_and_task_assignment_data() {
+        let mut existing =
+            matrix::draft(Some("work"), Some(tasks::Quadrant::ImportantUrgent)).unwrap();
+        existing.title = "Old title".into();
+        existing.priority = Priority::High;
+        existing.matrix_order = Some(4);
+        let edited = apply_editor_fields(
+            existing,
+            "  Revised title  ",
+            Some("2026-02-03".into()),
+            " notes ".into(),
+        );
+        assert_eq!(edited.title, "Revised title");
+        assert_eq!(edited.due_date.as_deref(), Some("2026-02-03"));
+        assert_eq!(edited.notes.as_deref(), Some(" notes "));
+        assert_eq!(edited.list_id.as_deref(), Some("work"));
+        assert_eq!(edited.priority, Priority::High);
+        assert_eq!(
+            edited.matrix_quadrant,
+            Some(tasks::Quadrant::ImportantUrgent)
+        );
+        assert_eq!(edited.matrix_order, Some(4));
+
+        let draft = matrix::draft(None, Some(tasks::Quadrant::NotImportantUrgent)).unwrap();
+        let created = apply_editor_fields(draft, "Matrix task", None, String::new());
+        assert_eq!(
+            created.matrix_quadrant,
+            Some(tasks::Quadrant::NotImportantUrgent)
+        );
+        assert!(created.matrix_order.is_none());
     }
 }

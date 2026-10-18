@@ -33,6 +33,8 @@ git = "https://github.com/pop-os/libcosmic.git"
 features = [
     # About widget for the app
     "about",
+    # Accessible names for icon-only controls
+    "a11y",
     # On app startup, focuses an existing instance if the app is already open
     "single-instance",
     # Markdown widget

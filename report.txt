@@ -1,77 +1,92 @@
-Kara Tasks UI Completion Report
-Baseline: 92508f2
+Kara Task Dialog Refinement Report
 Branch: main
 
 Implemented
-- Kept the restored native libcosmic navigation and existing Tasks hierarchy.
-  No horizontal four-icon section selector or shell restructuring was added.
-- Constrained Tasks and Lists content to a centered 960 logical-pixel maximum.
-  Task rows use a narrower 880-pixel maximum while staying fluid at small widths.
-- Grouped each task row as checkbox, title and metadata, then adjacent Edit/Delete
-  icon buttons. Task title and metadata share a column; action spacing is compact.
-  Existing COSMIC symbolic icons, tooltips, selected states, and control behavior
-  remain in use.
-- Kept active tasks before completed tasks, in their existing contexts. Completed
-  titles remain muted and struck through; their checkboxes and actions remain usable.
-- Centered empty-state copy within the task-list area.
-- Organized the shared Add/Edit task dialog into Task details, Organization, and
-  Notes sections. Inputs and dropdowns use available width, validation errors are
-  shown above the fields, and the dialog and scrollable form have size limits for
-  narrow windows. Add and Edit retain the same fields, defaults, focus, validation,
-  save, cancel, task-list assignment, and Matrix compatibility.
-- No task/list storage fields, data semantics, Matrix presentation, tray behavior,
-  single-instance behavior, or other modules were changed.
+- Replaced the stacked, scrollable Add/Edit form with a compact native COSMIC
+  dialog: heading, full-width title, one Due date / Priority / List row, modest
+  Notes editor, and the standard Cancel / Save footer.
+- Added three mutually exclusive symbolic priority controls for Low, Normal, and
+  High. Normal remains the new-task default and editing restores the stored value.
+  Controls have tooltips and accessible names; the priority data model is intact.
+- Added a clickable calendar control backed by libcosmic's interactive calendar
+  and popover. Choosing a date updates the same optional due-date text value.
+- Added a separate date-entry module. It accepts compact digits, hyphen-separated
+  or space-separated dates, pads month/day, infers the local current year when
+  omitted, canonicalizes separated input on blur, preserves partial edits, and
+  validates real dates including leap days.
+  Invalid dates stay in the field, show an inline message and theme-derived error
+  border, and prevent saving; correcting the value clears the error.
+- Changed the unassigned task-list label to “Inbox”; named list titles are
+  unchanged. The application titlebar now reads “KARA” while page headings remain
+  unchanged.
+- Kept the shared Add/Edit save path compatible with existing task assignments,
+  priority, Matrix quadrant/order, and optional due dates. Storage schemas,
+  sidebar/navigation, tray, and single-instance behavior were not changed.
 
-Files modified
-- src/app.rs — Tasks content layout and shared Add/Edit task dialog.
-- report.txt — this milestone report and COSMIC acceptance checklist.
+Files changed
+- Cargo.toml — enabled libcosmic accessibility support for icon control names.
+- src/app.rs — compact dialog, priority selector, calendar interaction, inline
+  validation, Inbox selector label, titlebar text, and compatibility tests.
+- src/date_entry.rs — date formatting/parsing helpers and focused tests.
+- src/main.rs — registered the date-entry module.
+- report.txt — implementation, validation, limitations, and acceptance checklist.
 
-Automated validation on Debian (headless)
+Validation on Debian (headless)
 - cargo fmt --check: PASS
 - cargo check --locked: PASS
-- cargo clippy --locked: PASS
-- cargo test --locked: PASS (40 passed, 0 failed, 1 ignored because it requires
+- cargo clippy --locked --all-targets -- -D warnings: PASS
+- cargo test --locked: PASS (47 passed, 0 failed, 1 ignored because it requires
   an isolated session bus)
 - cargo build --locked: PASS
-- Isolated tray/D-Bus regression:
+- Isolated D-Bus regression: PASS (1 passed):
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked
   tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport
-  -- --ignored --exact --nocapture: PASS (1 passed)
-- The default sandbox denied binding the temporary D-Bus socket. The same test
-  passed through the approved execution path.
-- No graphical runtime validation was performed in this headless environment.
+  -- --ignored --exact --nocapture
+- The sandbox initially prevented dbus-run-session from binding its temporary
+  socket. The same command passed using the approved execution path.
+- No COSMIC graphical runtime validation was performed.
 
 Known limitations
-- Visual spacing, text wrapping, dialog scrolling, icon hit targets, and theme
-  rendering require review in COSMIC. The editor caps its scroll region at 400
-  logical pixels and the full dialog at 520; long forms may scroll more on a
-  small window.
-- Existing minimum window size (640 x 560), Calendar placeholder, Board View
-  placeholder, and Pomodoro placeholder are unchanged.
+- Visual fit, popover placement, keyboard focus and theme rendering need review
+  in a running COSMIC session. The date field auto-formats continuous digit input
+  when all eight digits are present and canonicalizes separated dates on blur;
+  partial text remains untouched to preserve normal editing operations.
+- The calendar popup uses libcosmic's standard calendar size. On unusually short
+  displays, verify that the popup remains reachable and does not cover required
+  dialog actions.
 
 CachyOS COSMIC graphical acceptance checklist
-1. At a normal window size (about 1280 x 800), confirm the labeled native sidebar
-   is unchanged and the Tasks content is centered with a readable maximum width.
-2. Inspect Inbox, Today, and a named list. Confirm checkbox, title, due/priority
-   metadata, and adjacent icon-only Edit/Delete buttons align consistently.
-   Tab through the row and verify both icon buttons are keyboard reachable and
-   their tooltips identify the actions.
-3. Create active and completed tasks in Inbox and a named list. Confirm completed
-   tasks remain in that context, appear after active tasks, have muted struck
-   through titles, and remain editable and reversible.
-4. Inspect each empty state and verify its message is centered in the task area.
-5. Add and edit a task. Verify title, optional YYYY-MM-DD due date, priority,
-   notes, and task-list selection; ensure current values are retained on Edit and
-   Matrix task creation still opens the same editor with the selected list.
-6. Try a blank title and malformed/impossible date. Confirm the error is visible
-   above the form fields and the editor stays open. Verify title focus on opening,
-   Enter-to-save from text fields, Tab navigation, Escape/Cancel, and Save.
-7. At the minimum window size (640 x 560), repeat the dialog and task-row checks.
-   Confirm the form scrolls without hiding Cancel/Save, dropdowns remain usable,
-   task titles and metadata do not collide with actions, and the content remains
-   reachable. Also inspect an intermediate size (about 800 x 600).
-8. Verify Lists create, rename, select, delete confirmation, pin/unpin, collapse,
-   and pinned-list visibility when collapsed. Confirm the native sidebar labels,
-   icons, disclosure, and selected states align in light and dark themes.
-9. Smoke-test Matrix Add/Edit and classification retention, then tray close,
-   reopen, second-launch activation, and quit to confirm those existing behaviors.
+1. At about 1280 x 800, open Add Task and Edit Task. Confirm the heading, full
+   width title, single horizontal Due date / Priority / List row, modest Notes
+   area, and Cancel / Save footer all fit without form scrolling.
+2. At 800 x 600 and the minimum supported 640 x 560 window, confirm every field
+   and action remains visible and usable; check that the metadata row does not
+   clip or make its controls too narrow. Resize the window while the dialog is
+   open and verify controls remain reachable.
+3. Test priority selection by mouse and keyboard. Confirm Low uses a down arrow,
+   Normal a minus, High an up arrow; selected state is visible independently of
+   color, tooltips/accessibility names identify each option, Normal is selected
+   for a new task, and Edit restores the existing selection.
+4. Test date entry with 19990203, 1999 2 3, 1999-2-3, and 02-03. Confirm canonical
+   YYYY-MM-DD display, current local year for the yearless form, and that empty
+   remains optional. Try moving the cursor, editing/deleting partial text, and
+   selecting/replacing the whole value without losing input.
+5. Open the calendar icon. Navigate months in both directions, select a date,
+   and confirm the field updates. Reopen it and verify its selected date matches
+   the field; dismiss it without selection and confirm the field is unchanged.
+6. Submit impossible dates including 2023-02-29 and 2024-04-31. Confirm the
+   typed value remains, the due field gets a visible theme-consistent error
+   border and nearby message, Save does not close the dialog, and a corrected
+   value clears the error. Verify a valid leap day (2024-02-29) saves.
+7. Confirm the list selector contains “Inbox” and named list titles only. Save
+   tasks assigned to Inbox and a named list, then edit each and verify assignment
+   and all task fields persist.
+8. Confirm the centered application titlebar says “KARA” on Inbox, Today,
+   Calendar, Lists, and Eisenhower Matrix, while the page heading retains its
+   existing name.
+9. Repeat the dialog, date picker, priority, and error checks under light and
+   dark COSMIC themes. Tab through controls, verify focus indication, title focus
+   on open, Enter-to-save behavior, and Cancel/Escape behavior.
+10. Create and edit a Matrix task, confirm its quadrant/order and list assignment
+    remain intact, then smoke-test existing tray close/reopen and second-launch
+    activation behavior.
