@@ -1,95 +1,153 @@
-Kara — Stage 2: Named Task Lists
+Kara — Stage 3: System Tray & Window Lifecycle
 
 Implementation
-- My Lists now provides create, rename and confirmed delete actions, an
-  overview and empty states. Named lists appear as native indented sidebar
-  entries under My Lists and display their incomplete tasks when selected.
-- List IDs are random 128-bit identifiers independent of names. Names are
-  trimmed; blank names and duplicates after Unicode lowercasing are rejected.
-- The existing task editor gains a List selector with Inbox (no list).
-  New tasks in a named-list view default to that list; creation elsewhere
-  defaults to Inbox. Moving tasks edits their existing records and IDs.
-- Completion retains the assignment. Today and Completed still span all lists.
-  Deleting a list clears every associated task's assignment in the same save;
-  incomplete tasks appear in Inbox and completed tasks stay completed.
-- Native dialogs, existing theme/layout and visible error handling retained.
-  Task-editor visual polish remains deferred. No dependencies were changed.
+- Normal launch shows Kara. Use libcosmic's run_single_instance launcher
+  (the feature was previously enabled, but the regular launcher was called).
+- A small zbus integration exports org.kde.StatusNotifierItem at
+  /StatusNotifierItem and com.canonical.dbusmenu at /MenuBar, on libcosmic's
+  existing activation connection. No second bus service/runtime is introduced.
+- The system theme's view-list-symbolic icon identifies Kara. The native tray
+  menu contains exactly Open Kara and Quit. Activation and Open Kara restore
+  the main window and request focus, using COSMIC's supplied activation token.
+- Task/list models, persistence, dialogs, navigation and styling are unchanged.
+  Saved changes remain automatic; backgrounding retains model and dialog drafts.
 
-Changed files
-- src/tasks.rs: list model, name/reference validation, named-list filtering.
-- src/storage.rs: versioned list definitions, legacy compatibility, atomic
-  list/task mutations and persistence/failure tests.
-- src/app.rs: sidebar lists, list dialogs/actions, task selector/defaults,
-  selection preservation and headless navigation/default tests.
-- report.txt: this Stage 2 report (Stage 1 report remains in Git history).
+Window lifecycle
+- The current Wayland backend does not implement window visibility toggles.
+  Use the existing public window close/open and Core::set_main_window_id APIs,
+  with libcosmic's already-enabled multi-window daemon runtime. No dependency
+  patch, desktop installation or application architecture replacement is needed.
+- Intercept both the COSMIC titlebar close action and compositor close requests.
+  When the tray is ready, destroy only the window surface; retain the app model,
+  storage lock, subscriptions and session-bus activation service.
+- Open restores an existing window or recreates one with the same application
+  ID and native decorations. Wait for closure before reopening if requests race;
+  repeated open requests cannot create multiple windows.
+- Quit closes the activation/tray bus connection (up to one second), then uses
+  iced::exit. Dropping the app releases storage locks. Unsaved dialog drafts are
+  discarded on Quit; accepted task/list changes were already saved.
+- Repeated launches use libcosmic's supported action arguments to retain the
+  launcher activation token until a recreated window is ready. This avoids
+  libcosmic consuming the standard platform token before the activation hook.
 
-Storage compatibility and safety
-- Same XDG data location and tasks.json file as Stage 1. Schema version 1
-  loads automatically without rewriting the file. The next accepted mutation
-  atomically writes schema version 2 with both tasks and list definitions.
-- All existing task fields and IDs are preserved. Legacy reserved list IDs
-  receive recovered list definitions with the same IDs, preserving assignment.
-- Version 2 rejects dangling references, invalid/duplicate list definitions,
-  invalid tasks and unknown fields. Unsupported versions and corrupt files
-  are preserved with visible errors and disabled mutation controls.
-- Existing session locking, snapshot conflict detection, synced temporary
-  files, atomic replacement and directory syncing remain in place.
-- Failed writes retain the previous in-memory document and original disk
-  contents. Editor drafts retain their IDs for retry. As in Stage 1, a sync
-  failure after replacement explicitly reports uncertain durability.
-- Schema version 2 is not readable by the older Stage 1 binary; do not downgrade
-  against the upgraded file. Back up personal data before target-machine trials.
+Tray availability and recovery
+- Backgrounding is disabled until registration, watcher host availability and
+  a connected client reading Kara's tray metadata have all been confirmed.
+  Closing with no confirmed tray quits instead of leaving an orphan process.
+- Check every two seconds, with a two-second timeout. Check watcher owner,
+  registered items and host state without stale property caches; re-register
+  after owner changes or lost registration. A hidden window is restored when
+  checks fail, normally within two seconds (up to four for an unresponsive bus).
+- COSMIC's watcher currently reports HostRegistered=true unconditionally.
+  Therefore also observe property requests to our own tray item and verify
+  consumer unique bus names remain connected. Applet loss is detected even
+  when the separate watcher daemon remains alive. Host return is detected
+  when the applet reads Kara's icon again; application restart is unnecessary.
+- Failures produce a tray-status message in the window. While registration is
+  pending, closing also quits safely. Existing task UI/dialogs are not redesigned.
 
-Validation on Debian
+Changed files and dependencies
+- src/tray.rs: SNI, static D-Bus menu, activation tokens, availability/recovery,
+  protocol tests. src/lifecycle.rs: window transitions and race/fallback tests.
+- src/app.rs: lifecycle hooks/subscription, close/open/focus/quit actions and
+  tray error feedback. src/main.rs: single-instance launch and activation flags.
+- Cargo.toml/Cargo.lock: direct use of the already-locked zbus 5.19.0 with Tokio;
+  no existing package version or git revision changes. report.txt: this report.
+- src/storage.rs and src/tasks.rs unchanged. Existing JSON and schema version 2
+  are unchanged; all task/list and legacy compatibility tests remain in place.
+- No autostart, packaging, installation, custom theme or unrelated functionality.
+
+Validation on headless Debian
 - cargo fmt --check: PASSED.
 - cargo check --locked: PASSED.
 - cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED, 19 tests, 0 failures (8 retained + 11 added).
-- cargo build --locked: PASSED; target/debug/kara built.
-- git diff --check: PASSED. Cargo.toml and Cargo.lock unchanged.
-- The eight Stage 1 tests remain; eleven additional tests cover list CRUD,
-  assignments, deletion, global/list filters, legacy migration, failed writes,
-  invalid documents, task defaults and sidebar selection after rename/delete.
-- Persistence tests use temporary directories, not personal task data.
-- No graphical testing was performed on Debian. Stage 1 graphical acceptance
-  was previously supplied by the user; Stage 2 needs target-machine validation.
+- cargo test --locked: PASSED, 27 tests; one isolated-bus test excluded here.
+- Isolated D-Bus protocol test: PASSED separately (1 test). All 28 tests run.
+- cargo build --locked: PASSED; target/debug/kara produced.
+- git diff --check: PASSED; all existing dependency package records unchanged.
+- No graphical validation performed on Debian.
+The default test run intentionally omits the private-bus test. It is executed
+separately to avoid inheriting concurrent storage-test file locks across a fork.
+No protocol test uses the developer's desktop bus. dbus-run-session was already
+installed; the execution sandbox required escalation to bind its private socket.
 
-CachyOS COSMIC acceptance steps
-1. Transfer source via the existing Samba workflow, retaining Cargo.lock.
-   From the transferred project run cargo run --locked. No installation needed.
-   For isolated testing, close other Kara instances and launch from one shell:
-       KARA_STAGE2_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_STAGE2_DATA" cargo run --locked
-   Reuse the same variable for restart checks (single-instance activation applies).
-2. Open My Lists, create Work and Home, and reject blank/" work " duplicates.
-   Select Work in the sidebar; add a task and confirm its List defaults to Work.
-   Create a task from Today/Inbox and confirm the default is Inbox instead.
-3. Move the same task Work -> Home -> Inbox using its editor. Check that only
-   the destination incomplete view contains it. Set due today/overdue and
-   verify Today includes it regardless of assignment.
-4. Complete a list task, edit it in Completed and verify the assignment remains.
-   Rename its list and verify the sidebar, heading and selector update while
-   keeping the task association. Cancel a list rename/deletion to check no save.
-5. Confirm deletion of a list containing incomplete and completed tasks.
-   Confirm no tasks disappear: incomplete ones return to Inbox; completed ones
-   remain in Completed and return to Inbox if uncompleted. Check the empty
-   list overview, an empty list view, and the three module placeholders.
-6. Restart with the same data directory. Verify names, stable IDs, task moves
-   and deletion survive. Check Tab/Enter/Escape, scrolling, narrow windows and
-   current COSMIC theme; task-editor visual polish is outside this milestone.
-7. With Kara closed, test a COPY of Stage 1 tasks.json in an isolated XDG
-   directory. Launch, verify old tasks, add a list, restart and inspect the
-   version 2 JSON. Use disposable files to test malformed JSON and a version 2
-   task referencing an unknown list: expect a visible error and unchanged bytes.
+Repeat checks
+    cargo fmt --check
+    cargo check --locked
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo test --locked
+    cargo build --locked
+Run the additional isolated protocol test:
+    KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
+This exercises exported properties/layout signatures, token delivery, activation,
+Open/Quit events, single-instance action transport, registration refusal/loss,
+watcher replacement, host false/true and a disconnected/reconnected consumer
+while the watcher still reports a host. Lifecycle tests cover close/open races,
+no-tray exit, loss while hidden/closing, recovery and Quit from every state.
 
-Limitations and delivery
-- Lists are always visible under My Lists, using the existing native sidebar's
-  indentation model; this version of the navigation widget has no tree expander.
-- No new sorting, list reordering, bulk moves or UI redesign is included.
-- Stage 1 limits remain: calendar dates only, English UI, small synchronous
-  local JSON saves, and no coordination with external editors ignoring locks.
-- Board, Matrix, Pomodoro, tray, autostart, subtasks, tags, recurring tasks,
-  reminders, themes, packaging and installation remain outside this stage.
-- Repository began clean at b8a608e. A fresh fetch confirmed Stage 1 on GitHub.
-  Commit/push outcome is reported separately in the final delivery response.
-- No implementation blockers. CachyOS graphical validation remains pending.
+Exact CachyOS COSMIC validation (not performed on Debian)
+1. Quit all older Kara instances. Transfer source with the existing Samba
+   workflow, retaining Cargo.lock. In the transferred project directory:
+       cargo build --locked
+       KARA_STAGE3_DATA=$(mktemp -d)
+       XDG_DATA_HOME="$KARA_STAGE3_DATA" ./target/debug/kara
+   Reuse this shell variable for every subsequent launch. No installation needed.
+2. Confirm the normal window and one symbolic tray icon appear. Wait several
+   seconds for tray readiness. Create a list/task and edit due date/notes to
+   establish disposable saved data. Leave an unsaved dialog draft if desired.
+3. Close using the titlebar X. Verify the window disappears, one Kara process
+   remains, and left-clicking the tray restores/focuses it with the same state.
+   Repeat with the compositor's configured close shortcut.
+   Repeat several times, including rapid close/activate clicks.
+4. Right-click the tray and choose Open Kara. Test while hidden and while
+   visible behind another application. Also minimize Kara and use Open Kara.
+   Confirm no duplicate windows. Confirm unsaved drafts survive backgrounding.
+5. While hidden, run from another terminal in the same project:
+       XDG_DATA_HOME="$KARA_STAGE3_DATA" ./target/debug/kara
+   The second launch should exit promptly and restore/focus the first. Confirm
+   one process with pgrep -ax kara. Repeat while already visible/minimized.
+6. While hidden, restart the panel if this session has the standard user unit:
+       systemctl --user status cosmic-panel.service
+       systemctl --user restart cosmic-panel.service
+   Use this only when the first command confirms the existing unit. Otherwise
+   remove/re-add the System Tray applet through COSMIC panel configuration.
+   Confirm Kara reappears when its host disconnects, the tray returns, and Open
+   Kara works again without restarting Kara. Repeat once while Kara is visible.
+7. Remove the System Tray applet in panel configuration. Within a few seconds,
+   Kara should restore if hidden and report the unavailable tray. Closing now
+   should exit; pgrep -ax kara should show no remaining Kara test process.
+   Launch with the applet absent: the window must show normally and closing must
+   exit. Restore the System Tray applet, relaunch, and verify tray recovery.
+8. Choose Quit in the tray menu, both with the window visible and hidden.
+   Verify the process and icon disappear. This should return no owner:
+       busctl --user status io.github.kordeone.Kara
+   Relaunch with the same XDG_DATA_HOME and confirm task/list data persisted.
+   Inspect the disposable JSON at:
+       $KARA_STAGE3_DATA/io.github.kordeone.Kara/tasks.json
+9. Check current theme/accent, display scaling, window focus, symbolic icon,
+   task/list dialogs and navigation for regressions. No Stage 3 graphical test
+   has been claimed; compositor focus policy must be validated on this machine.
+
+Known limits
+- Session D-Bus and the enabled libcosmic single-instance path are required for
+  tray/background operation. Without that connection (or if explicitly disabled
+  using COSMIC_SINGLE_INSTANCE), the app remains a normal visible application
+  and closes by exiting; libcosmic's fallback cannot provide D-Bus activation.
+- Full session-bus restart is not reconnected by this libcosmic activation API.
+  The window is restored on connection loss; close and relaunch to reconnect.
+- A metadata consumer is evidence of a host connection, not proof of rendered
+  pixels. A host that stays connected but deliberately stops displaying icons
+  cannot be detected reliably through SNI. Hidden overflow icons still count.
+- Focus is compositor-controlled. COSMIC tray/launcher tokens are used when
+  supplied; tokenless clients get a token request/focus or attention fallback.
+- Reopening creates a new surface; original compositor geometry is not promised.
+- No implementation blocker found in the current libcosmic public lifecycle API.
+  Actual CachyOS tray/rendering/window behavior still requires the checks above.
+
+Primary API references inspected
+- https://github.com/pop-os/libcosmic/blob/e1f2cd2/src/app/mod.rs
+- https://github.com/pop-os/libcosmic/blob/e1f2cd2/src/app/cosmic.rs
+- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/components/app.rs
+- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/components/status_menu.rs
+- https://github.com/pop-os/cosmic-applets/blob/master/cosmic-applet-status-area/src/subscriptions/status_notifier_watcher/server.rs
+Git commit/push outcome is reported separately in the final delivery response.

@@ -2647,6 +2647,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "xdgen",
+ "zbus",
 ]
 
 [[package]]

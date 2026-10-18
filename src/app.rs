@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
+    lifecycle::{Effect, Lifecycle, State},
     storage::{self, Store},
     tasks::{self, Priority, Task as KaraTask, TaskList, TaskView},
+    tray,
 };
 use cosmic::{
     app::context_drawer,
@@ -15,6 +17,9 @@ const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps
 
 pub struct AppModel {
     core: cosmic::Core,
+    lifecycle: Lifecycle,
+    tray_connection: Option<zbus::Connection>,
+    tray_error: Option<String>,
     nav: nav_bar::Model,
     store: Option<Store>,
     storage_error: Option<String>,
@@ -41,6 +46,14 @@ struct ListEditor {
 }
 #[derive(Debug, Clone)]
 pub enum Message {
+    Tray(tray::Event),
+    CloseMain,
+    WindowCloseRequested(cosmic::iced::window::Id),
+    WindowClosed(cosmic::iced::window::Id),
+    WindowOpened(cosmic::iced::window::Id),
+    FocusToken(cosmic::iced::window::Id, Option<String>),
+    Exit,
+
     Add,
     AddList,
     RenameList(String),
@@ -110,7 +123,7 @@ impl Page {
 }
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = crate::Flags;
     type Message = Message;
     const APP_ID: &'static str = storage::APP_ID;
     fn core(&self) -> &cosmic::Core {
@@ -119,7 +132,7 @@ impl cosmic::Application for AppModel {
     fn core_mut(&mut self) -> &mut cosmic::Core {
         &mut self.core
     }
-    fn init(core: cosmic::Core, _: ()) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(core: cosmic::Core, _: Self::Flags) -> (Self, Task<cosmic::Action<Message>>) {
         let nav = build_nav(&[], &Page::Tasks);
         let about = About::default()
             .name("Kara")
@@ -129,6 +142,9 @@ impl cosmic::Application for AppModel {
             .links([("Repository", env!("CARGO_PKG_REPOSITORY"))]);
         let mut app = Self {
             core,
+            lifecycle: Lifecycle::default(),
+            tray_connection: None,
+            tray_error: None,
             nav,
             store: None,
             storage_error: None,
@@ -167,6 +183,11 @@ impl cosmic::Application for AppModel {
         let spacing = cosmic::theme::spacing();
         let page = self.page();
         let mut content = widget::column::with_capacity(5).spacing(spacing.space_m);
+        if let Some(error) = &self.tray_error {
+            content = content.push(widget::text::body(format!(
+                "System tray unavailable: {error}. Closing the window will quit Kara."
+            )));
+        }
         if let Some(error) = &self.storage_error {
             content = content.push(
                 widget::settings::section()
@@ -453,7 +474,40 @@ impl cosmic::Application for AppModel {
         )
     }
     fn subscription(&self) -> Subscription<Message> {
-        cosmic::iced::time::every(Duration::from_secs(30)).map(|_| Message::DateTick)
+        let mut subscriptions = vec![
+            cosmic::iced::time::every(Duration::from_secs(30)).map(|_| Message::DateTick),
+            cosmic::iced::window::close_requests().map(Message::WindowCloseRequested),
+        ];
+        if let Some(conn) = &self.tray_connection {
+            subscriptions.push(tray::subscription(conn.clone()).map(Message::Tray));
+        }
+        Subscription::batch(subscriptions)
+    }
+    fn on_app_exit(&mut self) -> Option<Message> {
+        Some(Message::CloseMain)
+    }
+    fn on_close_requested(&self, id: cosmic::iced::window::Id) -> Option<Message> {
+        (self.core.main_window_id() == Some(id)).then_some(Message::WindowClosed(id))
+    }
+    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<cosmic::Action<Message>> {
+        self.tray_connection = Some(conn);
+        Task::none()
+    }
+    fn dbus_activation(
+        &mut self,
+        message: cosmic::dbus_activation::Message,
+    ) -> Task<cosmic::Action<Message>> {
+        let token = match message.msg {
+            cosmic::dbus_activation::Details::ActivateAction { action, args }
+                if action == "open" =>
+            {
+                args.into_iter().next()
+            }
+            _ => message.activation_token,
+        };
+        self.today = jiff::Zoned::now().date();
+        let effect = self.lifecycle.show(token);
+        self.window_effect(effect)
     }
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
         self.editor = None;
@@ -470,6 +524,55 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Tray(tray::Event::Availability(result)) => {
+                self.tray_error = result.as_ref().err().cloned();
+                let effect = self.lifecycle.availability(result.is_ok());
+                return self.window_effect(effect);
+            }
+            Message::Tray(tray::Event::Open(token)) => {
+                self.today = jiff::Zoned::now().date();
+                let effect = self.lifecycle.show(token);
+                return self.window_effect(effect);
+            }
+            Message::Tray(tray::Event::Quit) => {
+                let effect = self.lifecycle.quit();
+                return self.window_effect(effect);
+            }
+            Message::CloseMain => {
+                let effect = self.lifecycle.close();
+                return self.window_effect(effect);
+            }
+            Message::WindowCloseRequested(id) if self.core.main_window_id() == Some(id) => {
+                let effect = self.lifecycle.close();
+                return self.window_effect(effect);
+            }
+            Message::WindowClosed(id) if self.core.main_window_id() == Some(id) => {
+                self.core.set_main_window_id(None);
+                let effect = self.lifecycle.closed();
+                return self.window_effect(effect);
+            }
+            Message::WindowOpened(id) if self.core.main_window_id() == Some(id) => {
+                let effect = self.lifecycle.opened();
+                return self.window_effect(effect);
+            }
+            Message::FocusToken(id, token)
+                if self.core.main_window_id() == Some(id)
+                    && self.lifecycle.state != State::Quitting =>
+            {
+                if let Some(token) = token {
+                    return cosmic::iced::platform_specific::shell::commands::activation::activate(
+                        id, token,
+                    );
+                }
+                return Task::batch([
+                    cosmic::iced::window::gain_focus(id),
+                    cosmic::iced::window::request_user_attention(
+                        id,
+                        Some(cosmic::iced::window::UserAttention::Informational),
+                    ),
+                ]);
+            }
+            Message::Exit => return cosmic::iced::exit(),
             Message::AddList if self.can_write() => {
                 self.list_editor = Some(ListEditor {
                     id: None,
@@ -685,6 +788,62 @@ impl cosmic::Application for AppModel {
     }
 }
 impl AppModel {
+    fn window_effect(&mut self, effect: Effect) -> Task<cosmic::Action<Message>> {
+        use cosmic::iced::{Size, window};
+        match effect {
+            Effect::None => Task::none(),
+            Effect::Quit => {
+                let conn = self.tray_connection.take();
+                Task::perform(
+                    async move {
+                        if let Some(conn) = conn {
+                            let _ =
+                                tokio::time::timeout(Duration::from_secs(1), conn.close()).await;
+                        }
+                    },
+                    |_| cosmic::Action::App(Message::Exit),
+                )
+            }
+            Effect::Close => self
+                .core
+                .main_window_id()
+                .map_or_else(Task::none, window::close),
+            Effect::Open => {
+                let (id, open) = window::open(window::Settings {
+                    min_size: Some(Size::new(640., 560.)),
+                    decorations: false,
+                    transparent: true,
+                    exit_on_close_request: false,
+                    platform_specific: window::settings::PlatformSpecific {
+                        application_id: storage::APP_ID.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                self.core.set_main_window_id(Some(id));
+                Task::batch([
+                    self.update_title(),
+                    open.map(|id| cosmic::Action::App(Message::WindowOpened(id))),
+                ])
+            }
+            Effect::Focus => {
+                let Some(id) = self.core.main_window_id() else {
+                    return Task::none();
+                };
+                let token = self.lifecycle.take_token();
+                let focus = if token.is_some() {
+                    Task::done(cosmic::Action::App(Message::FocusToken(id, token)))
+                } else {
+                    cosmic::iced::platform_specific::shell::commands::activation::request_token(
+                        Some(storage::APP_ID.into()),
+                        Some(id),
+                    )
+                    .map(move |token| cosmic::Action::App(Message::FocusToken(id, token)))
+                };
+                window::minimize(id, false).chain(focus)
+            }
+        }
+    }
     fn page(&self) -> Page {
         self.nav
             .active_data::<Page>()
