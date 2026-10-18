@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
-mod config;
 mod i18n;
+mod storage;
+mod tasks;
 
 fn main() -> cosmic::iced::Result {
     // Get the system's preferred languages.
@@ -14,8 +15,8 @@ fn main() -> cosmic::iced::Result {
     // Settings for configuring the application window and iced runtime.
     let settings = cosmic::app::Settings::default().size_limits(
         cosmic::iced::Limits::NONE
-            .min_width(360.0)
-            .min_height(180.0),
+            .min_width(640.0)
+            .min_height(560.0),
     );
 
     // Starts the application's event loop with `()` as the application's flags.

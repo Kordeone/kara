@@ -2635,11 +2635,16 @@ dependencies = [
 name = "kara"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "i18n-embed",
  "i18n-embed-fl",
+ "jiff",
  "libcosmic",
  "open",
  "rust-embed",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "xdgen",
 ]
