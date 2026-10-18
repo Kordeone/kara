@@ -210,3 +210,51 @@ Stage 4 scope and limitations
   packaging, new task properties and a custom theme were not introduced.
 - See the Stage 3 report above for the existing tray requirements and known
   platform limitations; no COSMIC runtime claim is made for Stage 4.
+
+Kara — Stage 5: Tasks UI/UX Polish
+
+Implemented changes
+- Replaced the flat navigation model with a native libcosmic sidebar. Its top
+  row contains icon-only Tasks, Board View, Eisenhower Matrix and Pomodoro
+  section buttons. The selected section controls the sidebar content below.
+- Tasks navigation now contains Inbox, Today, Calendar and Lists. Inbox, Today
+  and Calendar use symbolic icons. The standalone Completed page was removed.
+- Lists is collapsible. Expanded mode shows every named list; collapsed mode
+  shows only pinned lists. Pin controls are available beside lists in the
+  sidebar and Lists page. Lists start expanded for discoverability.
+- Added `TaskList.pinned`, serialized with a default of false for existing
+  saved lists. The document remains at version 2; old list records load without
+  migration or loss of their existing fields.
+- Completed tasks remain in their Inbox, Today or named-list context, sort
+  after active tasks, and use a muted theme-derived title with strikethrough.
+  A small Completed divider separates the two groups when both are present.
+- Task edit and delete controls are icon-only libcosmic buttons with tooltips.
+  The top-right About control is now an info icon. Task dialog design and tray
+  behavior were left unchanged.
+- Board View, Eisenhower Matrix, Pomodoro and Calendar remain placeholders.
+
+Regression coverage and validation on headless Debian
+- Added tests for completed-task context visibility and active-before-completed
+  ordering in Inbox, Today and named-list views.
+- Added tests for expanded/collapsed pinned-list visibility, default-unpinned
+  state, backward-compatible deserialization without `pinned`, and pin
+  persistence across storage reopen.
+- cargo fmt --check: PASSED.
+- cargo check --locked: PASSED.
+- cargo clippy --locked: PASSED.
+- cargo test --locked: PASSED, 28 passed, 1 ignored by default because it
+  requires an isolated session bus.
+- cargo build --locked: PASSED; `target/debug/kara` was produced.
+- git diff --check: PASSED.
+
+COSMIC graphical verification still required
+- Inspect the four icon-only section controls, selection feedback and sidebar
+  collapse behavior at normal and narrow supported window sizes.
+- Verify list expand/collapse and pin/unpin behavior, including persistence
+  after restarting Kara.
+- Verify completed-task ordering, muted strikethrough rendering, checkbox
+  reactivation and the Completed divider in Inbox, Today and named lists.
+- Check symbolic icon availability and tooltip placement in the target COSMIC
+  theme, at the target display scale, in both light and dark modes.
+- Confirm the header info icon and existing tray/window lifecycle still behave
+  as expected. No Stage 5 graphical runtime validation was performed here.

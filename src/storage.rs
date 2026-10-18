@@ -100,6 +100,7 @@ impl Store {
                             doc.lists.push(TaskList {
                                 id: id.clone(),
                                 name,
+                                pinned: false,
                             });
                         }
                     }
@@ -228,7 +229,8 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut store = Store::open(path.clone()).unwrap();
         let mut first = TaskList::new("Work").unwrap();
-        let second = TaskList::new("Home").unwrap();
+        let mut second = TaskList::new("Home").unwrap();
+        second.pinned = true;
         store.upsert_list(first.clone()).unwrap();
         store.upsert_list(second.clone()).unwrap();
         let mut task = Task::new("Move me").unwrap();
@@ -256,6 +258,7 @@ mod tests {
         assert_eq!(store.lists().len(), 2);
         assert_eq!(store.lists()[0].id, first.id);
         assert_eq!(store.lists()[0].name, "Career");
+        assert!(store.lists()[1].pinned);
         assert_eq!(store.tasks()[0].list_id.as_deref(), Some(first.id.as_str()));
         assert!(store.tasks()[0].completed);
     }
@@ -296,8 +299,8 @@ mod tests {
         assert_eq!(store.lists(), &[second]);
         let today = tasks::parse_date("2026-10-18").unwrap();
         assert!(store.tasks()[0].visible(tasks::TaskView::Inbox, today));
-        assert!(!store.tasks()[1].visible(tasks::TaskView::Inbox, today));
-        assert!(store.tasks()[1].visible(tasks::TaskView::Completed, today));
+        assert!(store.tasks()[1].visible(tasks::TaskView::Inbox, today));
+        assert!(store.tasks()[1].completed);
     }
     #[test]
     fn stage1_files_load_without_rewriting_then_upgrade_without_losing_task_fields() {
