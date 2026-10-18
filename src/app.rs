@@ -9,7 +9,7 @@ use cosmic::{
     app::context_drawer,
     iced::{Alignment, Length, Subscription},
     prelude::*,
-    widget::{self, about::About, icon},
+    widget::{self, about::About, icon, nav_bar},
 };
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ pub struct AppModel {
     lifecycle: Lifecycle,
     tray_connection: Option<zbus::Connection>,
     tray_error: Option<String>,
+    nav: nav_bar::Model,
     page: Page,
     lists_expanded: bool,
     store: Option<Store>,
@@ -55,6 +56,7 @@ pub enum Message {
     FocusToken(cosmic::iced::window::Id, Option<String>),
     Exit,
 
+    NavContext(NavMenuAction),
     Add,
     AddList,
     RenameList(String),
@@ -63,8 +65,6 @@ pub enum Message {
     ListName(String),
     SaveList,
     OpenList(String),
-    SelectSection(Section),
-    Navigate(Page),
     ToggleLists,
     ToggleListPin(String),
     AssignList(usize),
@@ -83,15 +83,9 @@ pub enum Message {
     About,
     LaunchUrl(String),
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Section {
-    Tasks,
-    Board,
-    Matrix,
-    Pomodoro,
-}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Page {
+    Tasks,
     Inbox,
     Today,
     Calendar,
@@ -104,6 +98,7 @@ pub enum Page {
 impl Page {
     fn title(&self) -> &'static str {
         match self {
+            Self::Tasks => "Tasks",
             Self::Inbox => "Inbox",
             Self::Today => "Today",
             Self::Calendar => "Calendar",
@@ -112,14 +107,6 @@ impl Page {
             Self::Board => "Board View",
             Self::Matrix => "Eisenhower Matrix",
             Self::Pomodoro => "Pomodoro",
-        }
-    }
-    fn section(&self) -> Section {
-        match self {
-            Self::Board => Section::Board,
-            Self::Matrix => Section::Matrix,
-            Self::Pomodoro => Section::Pomodoro,
-            _ => Section::Tasks,
         }
     }
     fn draft_task(&self) -> Result<KaraTask, String> {
@@ -132,13 +119,26 @@ impl Page {
     }
     fn view(&self) -> Option<TaskView<'_>> {
         match self {
-            Self::Inbox => Some(TaskView::Inbox),
+            Self::Tasks | Self::Inbox => Some(TaskView::Inbox),
             Self::Today => Some(TaskView::Today),
             Self::List(id) => Some(TaskView::List(id)),
             _ => None,
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavMenuAction {
+    ToggleListPin(nav_bar::Id),
+    ToggleLists(nav_bar::Id),
+}
+impl widget::menu::Action for NavMenuAction {
+    type Message = cosmic::Action<Message>;
+
+    fn message(&self) -> Self::Message {
+        cosmic::Action::App(Message::NavContext(*self))
+    }
+}
+
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
     type Flags = crate::Flags;
@@ -151,6 +151,7 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
     fn init(core: cosmic::Core, _: Self::Flags) -> (Self, Task<cosmic::Action<Message>>) {
+        let nav = build_nav(&[], &Page::Inbox, true);
         let about = About::default()
             .name("Kara")
             .icon(icon::from_svg_bytes(APP_ICON))
@@ -162,6 +163,7 @@ impl cosmic::Application for AppModel {
             lifecycle: Lifecycle::default(),
             tray_connection: None,
             tray_error: None,
+            nav,
             page: Page::Inbox,
             lists_expanded: true,
             store: None,
@@ -178,14 +180,58 @@ impl cosmic::Application for AppModel {
         let command = app.update_title();
         (app, command)
     }
-    fn nav_model(&self) -> Option<&cosmic::widget::nav_bar::Model> {
-        None
+    fn nav_model(&self) -> Option<&nav_bar::Model> {
+        Some(&self.nav)
     }
-    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Message>>> {
-        if !self.core.nav_bar_active() {
-            return None;
+    fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Message>> {
+        self.nav.activate(id);
+        if let Some(page) = self.nav.data::<Page>(id).cloned() {
+            self.page = page;
+            if self.page == Page::Lists {
+                self.lists_expanded = !self.lists_expanded;
+            }
         }
-        Some(self.sidebar())
+        self.today = jiff::Zoned::now().date();
+        self.rebuild_nav();
+        self.update_title()
+    }
+    fn nav_context_menu(&self) -> Option<Vec<cosmic::widget::menu::Tree<cosmic::Action<Message>>>> {
+        let children = self
+            .nav
+            .iter()
+            .map(|entity| match self.nav.data::<Page>(entity) {
+                Some(Page::List(_)) => {
+                    let id = entity;
+                    let Some(Page::List(list_id)) = self.nav.data::<Page>(id) else {
+                        return Vec::new();
+                    };
+                    let pinned = self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().iter().find(|list| &list.id == list_id))
+                        .is_some_and(|list| list.pinned);
+                    vec![widget::menu::Item::Button(
+                        if pinned { "Unpin list" } else { "Pin list" },
+                        Some(icon::from_name("view-pin-symbolic").into()),
+                        NavMenuAction::ToggleListPin(id),
+                    )]
+                }
+                Some(Page::Lists) => vec![widget::menu::Item::Button(
+                    if self.lists_expanded {
+                        "Collapse lists"
+                    } else {
+                        "Expand lists"
+                    },
+                    None,
+                    NavMenuAction::ToggleLists(entity),
+                )],
+                _ => Vec::new(),
+            })
+            .collect();
+        Some(widget::menu::nav_context(
+            &std::collections::HashMap::new(),
+            children,
+        ))
     }
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
@@ -597,6 +643,14 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::NavContext(NavMenuAction::ToggleLists(_)) => {
+                return self.update(Message::ToggleLists);
+            }
+            Message::NavContext(NavMenuAction::ToggleListPin(id)) => {
+                if let Some(Page::List(id)) = self.nav.data::<Page>(id).cloned() {
+                    return self.update(Message::ToggleListPin(id));
+                }
+            }
             Message::Tray(tray::Event::Availability(result)) => {
                 self.tray_error = result.as_ref().err().cloned();
                 let effect = self.lifecycle.availability(result.is_ok());
@@ -714,6 +768,7 @@ impl cosmic::Application for AppModel {
                         }
                     }
                 }
+                self.rebuild_nav();
                 return self.update_title();
             }
             Message::DeleteList(id) if self.can_write() => self.delete_list_id = Some(id),
@@ -727,6 +782,7 @@ impl cosmic::Application for AppModel {
                         self.delete_list_id = None;
                     }
                 }
+                self.rebuild_nav();
                 return self.update_title();
             }
             Message::OpenList(id) => {
@@ -736,25 +792,25 @@ impl cosmic::Application for AppModel {
                     .is_some_and(|store| store.lists().iter().any(|list| list.id == id))
                 {
                     self.page = Page::List(id);
+                    self.rebuild_nav();
                     return self.update_title();
                 }
             }
-            Message::SelectSection(section) => {
-                self.page = match section {
-                    Section::Tasks => Page::Inbox,
-                    Section::Board => Page::Board,
-                    Section::Matrix => Page::Matrix,
-                    Section::Pomodoro => Page::Pomodoro,
-                };
-                self.today = jiff::Zoned::now().date();
+            Message::ToggleLists => {
+                self.lists_expanded = !self.lists_expanded;
+                if !self.lists_expanded
+                    && let Page::List(id) = &self.page
+                    && self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().iter().find(|list| &list.id == id))
+                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                {
+                    self.page = Page::Lists;
+                }
+                self.rebuild_nav();
                 return self.update_title();
             }
-            Message::Navigate(page) => {
-                self.page = page;
-                self.today = jiff::Zoned::now().date();
-                return self.update_title();
-            }
-            Message::ToggleLists => self.lists_expanded = !self.lists_expanded,
             Message::ToggleListPin(id) if self.can_write() => {
                 if let Some(store) = &mut self.store
                     && let Some(mut list) = store.lists().iter().find(|list| list.id == id).cloned()
@@ -762,6 +818,18 @@ impl cosmic::Application for AppModel {
                     list.pinned = !list.pinned;
                     self.storage_error = store.upsert_list(list).err();
                 }
+                if !self.lists_expanded
+                    && self.page == Page::List(id.clone())
+                    && self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().iter().find(|list| list.id == id))
+                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                {
+                    self.page = Page::Lists;
+                }
+                self.rebuild_nav();
+                return self.update_title();
             }
             Message::AssignList(index) => {
                 if let Some(editor) = &mut self.editor {
@@ -896,129 +964,6 @@ impl cosmic::Application for AppModel {
     }
 }
 impl AppModel {
-    fn sidebar(&self) -> Element<'_, cosmic::Action<Message>> {
-        let spacing = cosmic::theme::spacing();
-        let section_items = [
-            (Section::Tasks, "view-list-symbolic", "Tasks"),
-            (Section::Board, "view-grid-symbolic", "Board View"),
-            (
-                Section::Matrix,
-                "view-app-grid-symbolic",
-                "Eisenhower Matrix",
-            ),
-            (Section::Pomodoro, "alarm-symbolic", "Pomodoro"),
-        ];
-        let mut section_bar = widget::row::with_capacity(section_items.len())
-            .spacing(spacing.space_xxs)
-            .align_y(Alignment::Center);
-        for (section, icon_name, label) in section_items {
-            section_bar = section_bar.push(
-                widget::button::icon(icon::from_name(icon_name))
-                    .tooltip(label)
-                    .vertical(true)
-                    .selected(self.page.section() == section)
-                    .on_press(cosmic::Action::App(Message::SelectSection(section))),
-            );
-        }
-
-        let mut sidebar = widget::column::with_capacity(8)
-            .spacing(spacing.space_s)
-            .push(section_bar)
-            .push(widget::divider::horizontal::default());
-
-        if self.page.section() == Section::Tasks {
-            let mut links = widget::column::with_capacity(8).spacing(spacing.space_xxs);
-            for (page, label, icon_name) in [
-                (Page::Inbox, "Inbox", "mail-inbox-symbolic"),
-                (Page::Today, "Today", "view-calendar-symbolic"),
-                (Page::Calendar, "Calendar", "x-office-calendar-symbolic"),
-            ] {
-                links = links.push(
-                    widget::button::icon(icon::from_name(icon_name))
-                        .label(label)
-                        .vertical(true)
-                        .selected(self.page == page)
-                        .width(Length::Fill)
-                        .on_press(cosmic::Action::App(Message::Navigate(page))),
-                );
-            }
-
-            let lists_selected = matches!(self.page, Page::Lists | Page::List(_));
-            let lists_header = widget::row::with_capacity(3)
-                .align_y(Alignment::Center)
-                .push(
-                    widget::button::icon(icon::from_name("view-list-symbolic"))
-                        .label("Lists")
-                        .vertical(true)
-                        .selected(lists_selected && self.page == Page::Lists)
-                        .width(Length::Fill)
-                        .on_press(cosmic::Action::App(Message::Navigate(Page::Lists))),
-                )
-                .push(
-                    widget::button::icon(icon::from_name(if self.lists_expanded {
-                        "pan-down-symbolic"
-                    } else {
-                        "pan-end-symbolic"
-                    }))
-                    .tooltip(if self.lists_expanded {
-                        "Collapse lists"
-                    } else {
-                        "Expand lists"
-                    })
-                    .on_press(cosmic::Action::App(Message::ToggleLists)),
-                );
-            links = links.push(lists_header);
-
-            match &self.store {
-                Some(store) => {
-                    for list in store
-                        .lists()
-                        .iter()
-                        .filter(|list| list.visible_in_sidebar(self.lists_expanded))
-                    {
-                        let list_id = list.id.clone();
-                        let list_row = widget::row::with_capacity(2)
-                            .align_y(Alignment::Center)
-                            .push(
-                                widget::button::icon(icon::from_name("view-list-symbolic"))
-                                    .label(list.name.clone())
-                                    .vertical(true)
-                                    .selected(self.page == Page::List(list.id.clone()))
-                                    .width(Length::Fill)
-                                    .on_press(cosmic::Action::App(Message::Navigate(Page::List(
-                                        list.id.clone(),
-                                    )))),
-                            )
-                            .push(
-                                widget::button::icon(icon::from_name("view-pin-symbolic"))
-                                    .tooltip(if list.pinned {
-                                        "Unpin list"
-                                    } else {
-                                        "Pin list"
-                                    })
-                                    .selected(list.pinned)
-                                    .on_press_maybe(self.can_write().then_some(
-                                        cosmic::Action::App(Message::ToggleListPin(list_id)),
-                                    )),
-                            );
-                        links = links.push(list_row);
-                    }
-                }
-                None if self.lists_expanded => {
-                    links = links.push(widget::text::caption("Lists are unavailable."));
-                }
-                None => {}
-            }
-            sidebar = sidebar.push(widget::scrollable(links).height(Length::Fill));
-        }
-
-        widget::container(sidebar)
-            .padding(spacing.space_s)
-            .width(Length::Fixed(240.0))
-            .height(Length::Fill)
-            .into()
-    }
-
     fn window_effect(&mut self, effect: Effect) -> Task<cosmic::Action<Message>> {
         use cosmic::iced::{Size, window};
         match effect {
@@ -1089,11 +1034,19 @@ impl AppModel {
     fn can_write(&self) -> bool {
         self.store.is_some() && self.storage_error.is_none()
     }
+    fn rebuild_nav(&mut self) {
+        self.nav = build_nav(
+            self.store.as_ref().map_or(&[], Store::lists),
+            &self.page,
+            self.lists_expanded,
+        );
+    }
     fn load(&mut self) {
         match storage::data_path().and_then(Store::open) {
             Ok(store) => {
                 self.store = Some(store);
                 self.storage_error = None;
+                self.rebuild_nav();
             }
             Err(error) => {
                 self.storage_error = Some(error);
@@ -1122,6 +1075,81 @@ impl AppModel {
     }
 }
 
+fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar::Model {
+    let mut nav = nav_bar::Model::default();
+    nav.insert()
+        .text("Tasks")
+        .data(Page::Tasks)
+        .icon(icon::from_name("view-list-symbolic"));
+
+    for (page, icon_name) in [
+        (Page::Inbox, "mail-inbox-symbolic"),
+        (Page::Today, "view-calendar-symbolic"),
+        (Page::Calendar, "x-office-calendar-symbolic"),
+        (
+            Page::Lists,
+            if lists_expanded {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            },
+        ),
+    ] {
+        let id = nav
+            .insert()
+            .text(page.title())
+            .data(page.clone())
+            .icon(icon::from_name(icon_name))
+            .id();
+        nav.indent_set(id, 1);
+        if page == Page::Lists {
+            for list in lists
+                .iter()
+                .filter(|list| list.visible_in_sidebar(lists_expanded))
+            {
+                let id = nav
+                    .insert()
+                    .text(list.name.clone())
+                    .data(Page::List(list.id.clone()))
+                    .icon(icon::from_name(if list.pinned {
+                        "view-pin-symbolic"
+                    } else {
+                        "view-list-symbolic"
+                    }))
+                    .id();
+                nav.indent_set(id, 2);
+            }
+        }
+    }
+
+    for (page, icon_name) in [
+        (Page::Board, "view-grid-symbolic"),
+        (Page::Matrix, "view-app-grid-symbolic"),
+        (Page::Pomodoro, "alarm-symbolic"),
+    ] {
+        nav.insert()
+            .text(page.title())
+            .data(page)
+            .icon(icon::from_name(icon_name));
+    }
+
+    let selected = nav
+        .iter()
+        .find(|id| nav.data::<Page>(*id) == Some(active))
+        .or_else(|| {
+            matches!(active, Page::List(_))
+                .then(|| {
+                    nav.iter()
+                        .find(|id| nav.data::<Page>(*id) == Some(&Page::Lists))
+                })
+                .flatten()
+        });
+    if let Some(selected) = selected {
+        nav.activate(selected);
+    }
+    nav
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,19 +1160,55 @@ mod tests {
         assert!(!task.completed);
         assert!(task.due_date.is_none());
         assert_eq!(task.priority, Priority::Normal);
-        for page in [Page::Inbox, Page::Today, Page::Calendar, Page::Lists] {
+        for page in [
+            Page::Tasks,
+            Page::Inbox,
+            Page::Today,
+            Page::Calendar,
+            Page::Lists,
+        ] {
             assert!(page.draft_task().unwrap().list_id.is_none());
         }
     }
     #[test]
-    fn section_selection_and_task_subpages_map_to_their_expected_sections() {
-        assert_eq!(Page::Inbox.section(), Section::Tasks);
-        assert_eq!(Page::Today.section(), Section::Tasks);
-        assert_eq!(Page::Calendar.section(), Section::Tasks);
-        assert_eq!(Page::Lists.section(), Section::Tasks);
-        assert_eq!(Page::List("work".into()).section(), Section::Tasks);
-        assert_eq!(Page::Board.section(), Section::Board);
-        assert_eq!(Page::Matrix.section(), Section::Matrix);
-        assert_eq!(Page::Pomodoro.section(), Section::Pomodoro);
+    fn native_sidebar_keeps_task_navigation_and_matrix_as_top_level_sections() {
+        let mut pinned = TaskList::new("Pinned").unwrap();
+        pinned.pinned = true;
+        let unpinned = TaskList::new("Unpinned").unwrap();
+        let lists = [pinned.clone(), unpinned.clone()];
+        let active = Page::List(pinned.id.clone());
+        let expanded = build_nav(&lists, &active, true);
+        let pages: Vec<_> = expanded
+            .iter()
+            .map(|id| expanded.data::<Page>(id).unwrap().clone())
+            .collect();
+
+        assert_eq!(
+            pages,
+            vec![
+                Page::Tasks,
+                Page::Inbox,
+                Page::Today,
+                Page::Calendar,
+                Page::Lists,
+                Page::List(pinned.id.clone()),
+                Page::List(unpinned.id.clone()),
+                Page::Board,
+                Page::Matrix,
+                Page::Pomodoro,
+            ]
+        );
+        assert_eq!(expanded.active_data::<Page>(), Some(&active));
+        assert_eq!(expanded.indent(expanded.active()), Some(2));
+
+        let collapsed = build_nav(&lists, &Page::Lists, false);
+        let collapsed_pages: Vec<_> = collapsed
+            .iter()
+            .map(|id| collapsed.data::<Page>(id).unwrap().clone())
+            .collect();
+        assert!(collapsed_pages.contains(&Page::List(pinned.id)));
+        assert!(!collapsed_pages.contains(&Page::List(unpinned.id)));
+        assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
+        assert!(collapsed_pages.contains(&Page::Matrix));
     }
 }
