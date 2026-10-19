@@ -1,208 +1,153 @@
-Kara Tasks toolbar refinement
+Kara — Eisenhower Matrix Drag-and-Drop
 
-Implementation
-- Replaced the text dropdown in Inbox, Today, and named-list toolbars with a
-  compact COSMIC icon button that opens a native popover containing Creation
-  date, Due date, Priority, and Name choices. A check icon marks the active
-  choice; the icon-only trigger has a tooltip and accessible name.
-- Added an adjacent icon-only direction toggle with ascending/descending
-  symbolic icons, state-specific tooltip, and accessible name. Natural defaults
-  preserve existing behavior: Creation date newest-first, Due date earliest-
-  first, Priority P3-first, and Name A–Z. Selecting a different mode selects
-  that mode's natural default; reselecting the active mode preserves its current
-  direction. Reversing date sorts leaves undated and unknown-creation-time tasks
-  last and stable.
-- Moved Show Completed to the far right of the toolbar using a flexible spacer.
-  Its label, default, filtering behavior, and persistence remain unchanged.
-- Bundled the mode, ascending, descending, and active-mode check symbols as
-  embedded theme-tinted SVGs. The sidebar and its existing bundled icons were
-  not changed.
-- Persisted sort direction alongside the existing mode and completed-filter
-  preferences. Matrix ordering remains outside the task-view sort operation.
+Delivery status: implemented/validated; shared-tree integration blocked
+- Baseline: main at b744b6b (contextual module navigation, not visually accepted).
+- During final audit, unrelated sidebar-repair edits were found in src/app.rs
+  and an appended 'Kara contextual sidebar repair' section in report.txt.
+  These remove MatrixLists, alter build_nav/list hierarchy and change module
+  selector sizing. They are outside this milestone and were not made by this
+  task. HEAD remains b744b6b; no integration commit or push has been performed.
+- Shared files were left untouched after detection. The preserved working-files
+  directory contains the complete combined state. matrix-only-review contains
+  HEAD plus only the reviewed DnD changes and this consolidated report; its
+  navigation is byte-for-byte the committed baseline. Coordinate the editor
+  before integrating; do not blindly apply the patch to the combined tree.
 
-Storage compatibility
-- Bumped the existing atomic JSON document from version 5 to version 6 to
-  record direction explicitly. Existing v4 and v5 documents retain their
-  established sort defaults; for v5 files without direction, the selected
-  mode's natural direction is inferred.
-- Before upgrading v4 or v5 data on its first write, Kara saves and verifies an
-  exact recoverable copy at `tasks.json.pre-tasks-v6.bak`. Older v1–v3 migration
-  backup behavior remains intact. No live task data was used in migration tests.
+Technical approach
+- Uses the locked libcosmic DndSource and DndDestination widgets and iced MIME /
+  Move-action negotiation. No custom D-Bus, backend fork or new DnD library.
+- A small grip handle starts a native drag after the widget's 8px threshold.
+  Checkbox, flag selector and edit/order buttons retain their own normal input.
+- Dropping onto a task inserts before that task, shown by a 2px system-accent
+  line. Dropping on a quadrant header/background appends within the moving
+  task's active/completed block; the quadrant outline highlights that target.
+  The source row is outlined and native grab/move cursor feedback is retained.
+- Active tasks stay ahead of completed tasks. Before-task drops across that
+  completion boundary are invalid. Use quadrant header/background to append a
+  completed task after other completed tasks or an active task before them.
+- Existing four-quadrant layout, task details, completion styling and accessible
+  priority chooser/Up/Down controls remain. Edit/Up/Down are now a compact group
+  at the far right of the full-width row; the old 640px row cap is removed.
 
-Files changed
-- src/app.rs: icon-based popover, direction toggle, right-aligned completed
-  checkbox, keyboard dismissal and icon-handle tests.
-- src/tasks.rs: ascending/descending sorting, natural per-mode defaults, and
-  direction/order regression tests.
-- src/storage.rs: persisted direction, v6 compatibility/backup, restart tests.
-- resources/icons/hicolor/scalable/actions/sort-mode-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-selected-symbolic.svg
-- report.txt
+Reliability and data safety
+- Private MIME payload contains only task ID and per-drag token, not task notes
+  or a task copy. Only an in-process drag session with an unchanged source
+  snapshot and matching current list can authorize a move.
+- Source start, hover, finish and cancellation never mutate records. A physical
+  drop must be observed, followed by valid Move data for the same placement and
+  token. Data is consumed once. Wrong MIME/actions, malformed/oversized data,
+  stale sessions/tasks, changed list scope, invalid anchors, canceled gestures,
+  duplicate deliveries and self/no-op drops cannot create or delete records.
+- Native source Finished can precede destination data; an already-observed
+  physical drop remains pending for that delivery. Finished without a drop
+  clears the session. Cancellation always invalidates the session.
+- Locked DndDestination routes by numeric widget IDs even for named widgets.
+  The implementation retains actual source/target IDs across view rebuilds so
+  indicator redraws do not invalidate the current offer. Tests verify this.
+- The locked scrollable translates child drop rectangles but does not clip
+  them. A Matrix-only wrapper intersects them with each visible scroll viewport,
+  including the outer narrow/short grid scroller. Off-screen rows cannot steal
+  drops. The wrapper forwards keyboard operations, overlays, events and a11y.
+- The wrapper names iced_accessibility directly to preserve the native a11y
+  return type. That package already existed in Cargo.lock through libcosmic;
+  the lock change adds only Kara's dependency edge, with no changed packages,
+  versions, sources or checksums. No dependency download/upgrade was required.
+- The movement helper validates the position before mutation, changes priority
+  plus source/destination ranks together and never rearranges the task vector.
+  IDs, titles, completion, dates, notes, creation time and list IDs are preserved.
+- Store moves work on a clone and use the existing validated/synced atomic JSON
+  replacement. Write errors remain visible and retain prior live/disk state.
+  No-op drops avoid a save. Only affected groups' rank values change; existing
+  persistence normalization remains idempotent for other canonical groups.
+- Existing schema v6, migrations/backups, Tasks sort/direction/Show Completed
+  preferences and list behavior remain. Tests use disposable temporary files;
+  no personal task data was opened or changed.
 
-Validation on headless Debian
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED (72 passed, 0 failed, 1 ignored because it needs
-  an isolated session bus).
-- Isolated tray D-Bus regression: PASSED (1 passed):
-  `KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture`
-- cargo build --locked: PASSED.
-- Bundled sort SVG resources parsed as XML; regression tests confirm the
-  embedded handles resolve as symbolic SVGs.
-- Tests cover each mode in both directions, stable ties, date unknowns, natural
-  defaults, preference persistence, v4/v5 backup compatibility, and completed
-  filtering. No COSMIC graphical testing was performed.
-
-CachyOS COSMIC graphical acceptance checklist
-1. Open Inbox, Today, and a named list. Confirm the toolbar has two compact
-   icon-only sorting controls aligned left and Show Completed aligned at the
-   far right, with no long sort text visible until the mode popover opens.
-2. Open the mode popover by mouse and keyboard. Confirm it shows the four
-   expected labels, clearly marks the active mode, uses an opaque theme surface,
-   and closes on selection, Escape, and outside click.
-3. Confirm the direction icon and tooltip identify current state and the
-   opposite action. Test both directions for creation date, due date, priority,
-   and name, including undated/legacy tasks remaining last for date sorts.
-   Confirm equal sort keys retain relative order and completed tasks follow the
-   same chosen ordering.
-4. Confirm each mode initially uses its natural existing order; changing modes
-   restores that mode's natural direction, while reselecting the current mode
-   leaves a manually reversed direction intact.
-5. Toggle Show Completed in Inbox, Today, and a named list. Confirm it remains
-   on the right, updates rows immediately, preserves original context, and
-   persists after restart. Verify Today still excludes future and undated tasks.
-6. Verify sort mode and direction persist after restart. On a disposable copy
-   of a v5 data file, confirm the v6 upgrade's `.pre-tasks-v6.bak` is byte-exact.
-   Confirm the Matrix's task order is unchanged by task sorting.
-7. Inspect narrow and normal window sizes, light/dark themes, keyboard focus,
-   tooltip visibility, icon clarity, popover placement, and toolbar clipping.
-
-Known limitations
-- Graphical appearance, focus traversal, accessibility announcements, and
-  popover placement require the owner's CachyOS COSMIC review.
-- Calendar remains its existing placeholder and has no task sorting toolbar.
-
-Kara icon clarity correction
-
-Implementation
-- Replaced the crowded task-list-plus-pin glyph with a compact bookmark
-  silhouette. It remains shown only for pinned lists through the existing
-  sidebar logic; pinning, collapse, and selection behavior are unchanged.
-- Replaced the sort-direction symbols with distinct shapes: ascending uses
-  short-to-long horizontal bars and an upward arrow; descending uses tall-to-
-  short vertical bars and a downward arrow. The existing separate direction
-  control, sorting semantics, persistence, tooltip text, and accessible names
-  are unchanged.
-- All three resources are bundled SVGs loaded as symbolic handles, so their
-  foreground is tintable by the COSMIC theme and does not depend on theme icon
-  lookup. The existing icon-resource regression test verifies the handles.
-
-Files changed
-- resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg
-- report.txt
+Intended changed files
+- src/matrix.rs: validated stable-ID placement and affected-group ordering/tests.
+- src/matrix_drag.rs: native MIME payload, session/offer lifecycle, stable IDs,
+  cancellation/replay/staleness checks and protocol tests.
+- src/matrix_clip.rs: visible-target clipping and native widget/a11y forwarding.
+- src/matrix_view.rs: grip sources, row/background destinations, indicators,
+  themed feedback and right-aligned actions; keyboard fallback preserved.
+- src/storage.rs: one atomic drop operation and persistence/error tests.
+- src/app.rs: Matrix session state, events and source lifecycle subscription;
+  intended patch does not alter sidebar, dialog, sorting or date-picker logic.
+- src/main.rs: register the two Matrix-only modules.
+- Cargo.toml/Cargo.lock: direct reference to already locked a11y package.
+- report.txt: this report. No packaging, installation or autostart changes.
 
 Validation on headless Debian
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED (72 passed, 0 failed, 1 ignored because it
-  requires an isolated session bus).
-- Isolated tray D-Bus regression: PASSED (1 passed).
-- cargo build --locked: PASSED.
-- All three changed SVG resources parsed as XML and contain a drawable path.
-- No COSMIC graphical testing was performed.
+- Current combined working tree: fmt/check/strict Clippy/tests/build PASSED
+  before the final scope audit identified unrelated navigation changes.
+- Isolated Matrix-only review, preserving committed navigation:
+    cargo fmt --check: PASSED
+    cargo check --locked: PASSED
+    cargo clippy --locked --all-targets -- -D warnings: PASSED
+    cargo test --locked: PASSED, 87 passed, 0 failed, 1 ignored private-bus test
+    cargo build --locked: PASSED
+- Isolated D-Bus regression: PASSED separately, 1 test. All 88 tests exercised:
+    KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
+- Review builds reused CARGO_TARGET_DIR=/home/rapper/projects/kara/target.
+- 13 new tests cover cross/same-quadrant positions, priority synchronization,
+  unchanged IDs/fields/document order, unaffected groups, completed movement,
+  invalid positions, cancel/no-drop/replay, stale sessions, native finish timing,
+  stable routing IDs, clipped viewports, restart persistence/preferences and
+  denied/external/no-op writes. Retained tests cover task/list/migration/tray.
+- No Wayland/COSMIC graphical testing was performed or claimed on Debian.
 
-CachyOS COSMIC graphical acceptance checklist
-1. In a light theme and a dark theme, pin and unpin a named list. Confirm the
-   compact bookmark indicator appears only while pinned, remains legible, and
-   aligns with the list label without affecting selection or disclosure.
-2. Collapse and expand Lists; confirm pinned lists remain visible while
-   collapsed and unpinned lists return when expanded.
-3. Inspect the sort-direction button in both states at normal and narrow
-   window sizes. Confirm ascending reads as rising/short-to-long and descending
-   as falling/tall-to-short, with clear active feedback and unchanged tooltip
-   and accessible-name behavior.
-4. Exercise both directions for each sort mode and restart Kara; confirm task
-   order and the saved direction remain unchanged from before this icon-only
-   correction.
+CachyOS acceptance steps (after coordinated integration)
+1. Quit Kara through the tray. Transfer the coordinated source and Cargo.lock
+   through Samba. Build/launch without installation using disposable data:
+       cargo build --locked
+       KARA_DND_DATA=$(mktemp -d)
+       XDG_DATA_HOME="$KARA_DND_DATA" ./target/debug/kara
+   Keep KARA_DND_DATA for restart tests; quit existing instances before launching
+   a different binary because single-instance activation otherwise restores it.
+2. Open Matrix through the existing navigation and select Inbox/Work scopes.
+   If the reported contextual sidebar prevents reaching Matrix/selecting lists,
+   record the inaccessible control and screenshot. This milestone intentionally
+   does not fix it; the owner must coordinate that separate navigation repair.
+3. Create several active tasks per quadrant and some completed tasks in Work
+   and Inbox, using existing editors. Confirm Edit/Up/Down are at the far right
+   at wide/narrow widths and existing flag/arrow keyboard movement still works.
+4. Drag only from a grip. Verify threshold, grab/move cursor, source outline,
+   subtle insertion line and quadrant highlight using current theme colors.
+   Drop before the first/middle task and on header/background to append. Repeat
+   upward/downward within a quadrant and across all priorities. Confirm exact
+   indicator position, correct priority/flag and no duplicate/lost records.
+5. Drag completed tasks before other completed tasks and between quadrants.
+   They must remain completed and follow active tasks. Drop across an active/
+   completed before-row boundary: no data change. Reactivate afterwards and
+   confirm original context and normal completed/active grouping are preserved.
+6. Press Escape during a drag, release outside the window, drop on sidebar or
+   outside any target, click a grip without dragging, and attempt an invalid
+   destination. Verify all task fields/order remain unchanged. Try repeated
+   moves and rapid successive drags; no stale indication or duplicate move.
+7. Populate quadrants enough to scroll. Pre-scroll to middle/bottom and verify
+   drops hit visible rows, not clipped rows above/below. Repeat with the outer
+   grid scroller in narrow/short windows, long titles and display scaling. Check
+   native priority popovers/checkbox/edit still operate without starting drags.
+8. Test in light/dark themes with mouse and trackpad. Verify independent task
+   scrolling, accessible flag/arrows and focus visibility. There is no new edge
+   auto-scroll feature; pre-scroll a target or use the keyboard fallback for
+   positions that are off-screen during the native drag.
+9. Quit/relaunch with the same XDG_DATA_HOME. Verify priority, rank, completion,
+   IDs, list assignments, notes/dates/creation times persist. Tasks sort/filter
+   preferences and original document order must remain unchanged by Matrix
+   reordering. Smoke-test task/list CRUD, tray Open/Quit and repeated launch.
+10. On disposable copied data only, induce a save failure (unwritable directory
+    or an external file change) and drop a task. Expect the visible storage
+    error and unchanged task records; resolve the error and retry normally.
 
-Remaining limitation
-- Actual icon legibility, theme tinting, alignment, hover/focus states, and
-  narrow-window appearance require CachyOS COSMIC graphical verification.
-
-Kara contextual module sidebar
-
-Implementation
-- Kept the COSMIC application shell and existing sidebar panel. Overrode only
-  the panel contents to place four equal-width, icon-only native COSMIC buttons
-  above libcosmic's existing labeled navigation rows. The module buttons use
-  normal theme-selected, hover, focus, tooltip, and accessible-name behavior.
-- Bundled symbolic SVGs for Tasks, Board View, Eisenhower Matrix, and Pomodoro.
-  Existing Tasks rows remain Inbox, Today, Calendar, and collapsible Lists;
-  pinned lists remain visible while collapsed.
-- Board View shows Inbox and Lists, with each page identified as a placeholder.
-  Pomodoro shows Focus Timer, History, Statistics, and Settings placeholders.
-- Matrix shows Inbox and collapsible Lists with named scopes. Selecting Inbox
-  clears the existing Matrix list filter; selecting a named list updates it.
-  Removed the duplicate list dropdown from Matrix content. Matrix classification
-  and quadrant ordering are unchanged.
-- Each module retains its selected subsection while switching modules for the
-  lifetime of the app process. This is in-memory navigation state; no storage
-  schema or persisted task data changed.
-
-Files changed
-- src/app.rs: module selectors, contextual page routing, remembered navigation,
-  sidebar model, and regression tests.
-- src/matrix_view.rs: removed the in-content list selector; retained the
-  existing Matrix scope filter and quadrant presentation.
-- resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg
-- resources/icons/hicolor/scalable/actions/module-board-symbolic.svg
-- resources/icons/hicolor/scalable/actions/module-matrix-symbolic.svg
-- resources/icons/hicolor/scalable/actions/module-pomodoro-symbolic.svg
-- report.txt
-
-Validation on headless Debian
-- cargo fmt --check: PASSED.
-- cargo check --locked: PASSED.
-- cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED (74 passed, 0 failed, 1 ignored because it
-  requires an isolated session bus).
-- Isolated tray D-Bus regression: PASSED (1 passed).
-- cargo build --locked: PASSED.
-- Bundled module SVGs parsed as XML; regression tests verify the embedded
-  module icons resolve as symbolic SVG handles.
-- No COSMIC graphical testing was performed.
-
-CachyOS COSMIC graphical screenshot and acceptance checklist
-1. At a normal desktop window size, capture the full app with Tasks active.
-   Confirm the existing sidebar width, surface, and native labeled row styling
-   are retained; the four module selectors form one horizontal row of equal
-   width; their labels are not stacked beneath the icons; and selected, hover,
-   focus, tooltip, and keyboard activation are clear.
-2. In Tasks, capture Inbox, Today, Calendar, and expanded Lists. Collapse Lists
-   and confirm pinned lists remain visible while unpinned lists hide. Switch to
-   Today and back to Inbox and confirm the prior Tasks subsection is restored.
-3. Switch to Board View and capture Inbox and Lists. Confirm both show clear
-   Board placeholder content and switching away and back restores the last
-   Board subsection.
-4. In Eisenhower Matrix, capture Inbox and a named list scope. Confirm the
-   sidebar selection updates the tasks shown in the existing quadrants, there
-   is no duplicate Task list dropdown in the Matrix content, and returning from
-   another module restores the Matrix subsection. Verify classifications and
-   ordering remain intact.
-5. Capture Pomodoro Focus Timer, History, Statistics, and Settings; each should
-   be clearly labeled as a placeholder and the last subsection should be
-   restored after switching modules.
-6. Repeat module switching and navigation with a narrow window and in both
-   light and dark COSMIC themes. Check icon tint, spacing, selected state,
-   focus traversal, sidebar scrolling, and content width for clipping.
-
-Remaining limitation
-- Visual alignment, compact-window behavior, actual theme icon rendering,
-  accessibility announcements, and the screenshots above require CachyOS
-  COSMIC graphical acceptance.
+Known limitations / integration gate
+- Actual native Wayland drag negotiation, pointer cancellation, visual hit areas,
+  viewport scrolling, theme/scaling and a11y need CachyOS acceptance. Unit tests
+  verify app/native state transitions and geometry, not a graphical session.
+- Insertion is explicitly before the hovered task; header/background appends.
+  Active/completed groups stay separate. No touch-drag or edge auto-scroll is
+  added; existing accessible controls remain the fallback.
+- The contextual sidebar at baseline is reported broken/unaccepted. A separate
+  uncommitted repair also appeared during this task. The Matrix-only snapshot
+  excludes that repair. Shared-tree edits and commit are paused for ownership
+  coordination; no reset, clean, checkout, merge, push or sidebar overwrite.

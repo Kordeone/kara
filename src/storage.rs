@@ -432,6 +432,17 @@ impl Store {
         matrix::reorder(&mut tasks, id, direction)?;
         self.replace(tasks)
     }
+    pub fn move_matrix_task(
+        &mut self,
+        id: &str,
+        placement: &matrix::Placement,
+    ) -> Result<(), String> {
+        let mut tasks = self.tasks.clone();
+        if matrix::move_task(&mut tasks, id, placement)? {
+            self.replace(tasks)?;
+        }
+        Ok(())
+    }
     pub fn toggle(&mut self, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.clone();
         let task = tasks
@@ -466,6 +477,128 @@ mod tests {
             .collect()
     }
     const LEGACY_MATRIX: &[u8] = include_bytes!("../tests/fixtures/priority-v3.json");
+    #[test]
+    fn matrix_drop_position_priority_and_preferences_survive_restart_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let mut list = TaskList::new("Work").unwrap();
+        list.pinned = true;
+        store.upsert_list(list.clone()).unwrap();
+        store
+            .set_preferences(TaskSort::Priority, false, false)
+            .unwrap();
+        let mut moving = matrix_task("Moving", Some(&list.id), Q1);
+        moving.notes = Some("Keep notes".into());
+        moving.due_date = Some("2026-10-18".into());
+        let id = moving.id.clone();
+        let first = matrix_task("First", Some(&list.id), Q2);
+        let last = matrix_task("Last", Some(&list.id), Q2);
+        let last_id = last.id.clone();
+        let mut done = matrix_task("Completed", Some(&list.id), Q1);
+        done.completed = true;
+        let done_id = done.id.clone();
+        for task in [moving, first, last, done, Task::new("Inbox").unwrap()] {
+            store.upsert(task).unwrap();
+        }
+        let document_ids = store
+            .tasks()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>();
+        let original = store.tasks().iter().find(|t| t.id == id).unwrap().clone();
+        let target = matrix::Placement {
+            list_id: Some(list.id.clone()),
+            quadrant: Q2,
+            before: Some(last_id),
+        };
+        store.move_matrix_task(&id, &target).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q2),
+            ["First", "Moving", "Last"]
+        );
+        let target = matrix::Placement {
+            before: None,
+            ..target
+        };
+        store.move_matrix_task(&id, &target).unwrap();
+        store.move_matrix_task(&done_id, &target).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q2),
+            ["First", "Last", "Moving", "Completed"]
+        );
+        let expected = store.tasks().to_vec();
+        assert_eq!(
+            expected.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            document_ids
+        );
+        let updated = expected.iter().find(|t| t.id == id).unwrap();
+        let mut original = original;
+        original.priority = Q2.priority();
+        original.matrix_order = updated.matrix_order;
+        assert_eq!(updated, &original);
+        drop(store);
+        let store = Store::open(path).unwrap();
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(store.lists(), &[list]);
+        assert_eq!(store.sort_mode(), TaskSort::Priority);
+        assert!(!store.sort_ascending());
+        assert!(!store.show_completed());
+        assert!(
+            store
+                .tasks()
+                .iter()
+                .find(|t| t.id == done_id)
+                .unwrap()
+                .completed
+        );
+    }
+    #[test]
+    fn invalid_noop_denied_and_external_drop_writes_preserve_live_and_disk_state() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let moving = matrix_task("Keep", None, Q1);
+        let id = moving.id.clone();
+        store.upsert(moving).unwrap();
+        let before = fs::read(&path).unwrap();
+        let tasks = store.tasks().to_vec();
+        let inode = fs::metadata(&path).unwrap().ino();
+        let no_op = matrix::Placement {
+            list_id: None,
+            quadrant: Q1,
+            before: None,
+        };
+        store.move_matrix_task(&id, &no_op).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode); // no save for a no-op
+        assert!(
+            store
+                .move_matrix_task(
+                    &id,
+                    &matrix::Placement {
+                        before: Some("missing".into()),
+                        ..no_op
+                    }
+                )
+                .is_err()
+        );
+        let target = matrix::Placement {
+            list_id: None,
+            quadrant: Q2,
+            before: None,
+        };
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.move_matrix_task(&id, &target);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.tasks(), tasks);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::write(&path, b"external data").unwrap();
+        assert!(store.move_matrix_task(&id, &target).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external data");
+        assert_eq!(store.tasks(), tasks);
+    }
     #[test]
     fn migration_preserves_properties_order_and_exact_backup_then_is_idempotent() {
         use std::os::unix::fs::PermissionsExt;

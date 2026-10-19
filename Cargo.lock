@@ -2638,6 +2638,7 @@ dependencies = [
  "getrandom 0.4.3",
  "i18n-embed",
  "i18n-embed-fl",
+ "iced_accessibility",
  "jiff",
  "libcosmic",
  "open",

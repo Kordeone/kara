@@ -2,7 +2,9 @@
 //! Matrix-specific widgets; Tasks navigation and dialogs stay in the existing app.
 use crate::{
     app::{Message, edit_task_icon, priority_button},
+    matrix::Placement,
     matrix::{self, Direction},
+    matrix_drag::{self, Payload},
     storage::Store,
     tasks::{Priority, Quadrant, Task},
 };
@@ -19,6 +21,18 @@ pub enum Action {
     Add(Quadrant),
     Classify(String, Quadrant),
     Reorder(String, Direction),
+    DragStart(Payload, Task),
+    DragHover(Placement),
+    DragOffered(Placement),
+    DragLeave(Placement),
+    DragCancel,
+    DragEnd,
+    Drop(
+        Placement,
+        String,
+        Vec<u8>,
+        cosmic::iced::clipboard::dnd::DndAction,
+    ),
 }
 
 // Minimum readable panel dimensions are fallbacks, not desktop quadrant sizes.
@@ -46,6 +60,7 @@ pub fn view<'a>(
     list: Option<&'a str>,
     can_write: bool,
     priority_task: Option<&'a str>,
+    drag: &'a matrix_drag::State,
 ) -> Element<'a, Message> {
     let Some(store) = store else {
         return widget::column::with_capacity(2)
@@ -78,23 +93,38 @@ pub fn view<'a>(
                         .spacing(spacing.space_m)
                         .height(panel_height)
                         .width(Length::Fill)
-                        .push(quadrant(store, list, pair[0], can_write, priority_task))
-                        .push(quadrant(store, list, pair[1], can_write, priority_task)),
+                        .push(quadrant(
+                            store,
+                            list,
+                            pair[0],
+                            can_write,
+                            priority_task,
+                            drag,
+                        ))
+                        .push(quadrant(
+                            store,
+                            list,
+                            pair[1],
+                            can_write,
+                            priority_task,
+                            drag,
+                        )),
                 );
             }
         } else {
             for value in Quadrant::ALL {
                 grid = grid.push(
-                    widget::container(quadrant(store, list, value, can_write, priority_task))
+                    widget::container(quadrant(store, list, value, can_write, priority_task, drag))
                         .height(panel_height),
                 );
             }
         }
         if layout.scroll_grid {
-            widget::scrollable(grid)
-                .height(Length::Fill)
-                .width(Length::Fill)
-                .into()
+            crate::matrix_clip::clip(
+                widget::scrollable(grid)
+                    .height(Length::Fill)
+                    .width(Length::Fill),
+            )
         } else {
             grid.height(Length::Fill).into()
         }
@@ -113,6 +143,7 @@ fn task_content<'a>(
     quadrant: Quadrant,
     can_write: bool,
     priority_task: Option<&'a str>,
+    drag: &'a matrix_drag::State,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let mut content = widget::column::with_capacity(6)
@@ -125,11 +156,24 @@ fn task_content<'a>(
     let mut completed = false;
     for task in tasks {
         if task.completed && !completed {
+            let end = placement(list, quadrant, None);
+            content = content.push(drop_line(
+                drag.hover.as_ref() == Some(&end) && drag.source().is_some_and(|t| !t.completed),
+            ));
             content = content.push(widget::text::caption("Completed"));
             completed = true;
         }
-        content = content.push(task_row(store, task, can_write, priority_task));
+        let target = placement(list, quadrant, Some(&task.id));
+        let row = widget::column::with_capacity(2)
+            .push(drop_line(drag.hover.as_ref() == Some(&target)))
+            .push(task_row(store, task, can_write, priority_task, drag));
+        content = content.push(drop_zone(row.into(), target, can_write, drag));
     }
+    let end = placement(list, quadrant, None);
+    content = content.push(drop_line(
+        drag.hover.as_ref() == Some(&end)
+            && (drag.source().is_some_and(|t| t.completed) || !completed),
+    ));
     widget::container(content)
         .padding(spacing.space_s)
         .width(Length::Fill)
@@ -152,6 +196,7 @@ fn quadrant<'a>(
     quadrant: Quadrant,
     can_write: bool,
     priority_task: Option<&'a str>,
+    drag: &'a matrix_drag::State,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let header = widget::row::with_capacity(3)
@@ -166,23 +211,27 @@ fn quadrant<'a>(
         .class(cosmic::theme::Container::Primary);
     let content = widget::column::with_capacity(2)
         .push(header)
-        .push(
+        .push(crate::matrix_clip::clip(
             widget::scrollable(task_content(
                 store,
                 list,
                 quadrant,
                 can_write,
                 priority_task,
+                drag,
             ))
             .height(Length::Fill)
             .width(Length::Fill),
-        )
+        ))
         .height(Length::Fill);
-    widget::container(content)
-        .class(cosmic::theme::Container::Card)
+    let end = placement(list, quadrant, None);
+    let highlighted = drag.hover.as_ref() == Some(&end);
+    let panel: Element<'a, Message> = widget::container(content)
+        .class(highlight_style(highlighted, true))
         .height(Length::Fill)
         .width(Length::Fill)
-        .into()
+        .into();
+    drop_zone(panel, end, can_write, drag)
 }
 
 fn task_row<'a>(
@@ -190,6 +239,7 @@ fn task_row<'a>(
     task: &'a Task,
     can_write: bool,
     priority_task: Option<&str>,
+    drag: &'a matrix_drag::State,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let id = task.id.clone();
@@ -237,12 +287,9 @@ fn task_row<'a>(
     } else {
         popover
     };
-    let mut header = widget::row::with_capacity(6)
-        .spacing(spacing.space_s)
+    let mut actions = widget::row::with_capacity(3)
+        .spacing(spacing.space_xxs)
         .align_y(Alignment::Center)
-        .push(check)
-        .push(priority_control)
-        .push(title)
         .push(
             widget::button::icon(edit_task_icon())
                 .width(Length::Fixed(36.0))
@@ -251,12 +298,19 @@ fn task_row<'a>(
                 .tooltip("Edit task")
                 .on_press_maybe(can_write.then(|| Message::Edit(task.id.clone()))),
         );
+    let header = widget::row::with_capacity(6)
+        .spacing(spacing.space_s)
+        .align_y(Alignment::Center)
+        .push(drag_handle(task, can_write, drag))
+        .push(check)
+        .push(priority_control)
+        .push(title);
 
     for (direction, icon_name, label) in [
         (Direction::Up, "go-up-symbolic", "Move task up"),
         (Direction::Down, "go-down-symbolic", "Move task down"),
     ] {
-        header = header.push(
+        actions = actions.push(
             widget::button::icon(icon::from_name(icon_name))
                 .width(Length::Fixed(36.0))
                 .height(Length::Fixed(36.0))
@@ -268,6 +322,7 @@ fn task_row<'a>(
                 ),
         );
     }
+    let header = header.push(actions).width(Length::Fill);
     let mut content = widget::column::with_capacity(2)
         .spacing(spacing.space_xxs)
         .push(header);
@@ -276,9 +331,99 @@ fn task_row<'a>(
     }
     widget::container(content)
         .padding(spacing.space_xxs)
-        .max_width(640)
+        .class(highlight_style(
+            drag.source().is_some_and(|source| source.id == task.id),
+            false,
+        ))
         .width(Length::Fill)
         .into()
+}
+
+fn placement(list: Option<&str>, quadrant: Quadrant, before: Option<&str>) -> Placement {
+    Placement {
+        list_id: list.map(str::to_string),
+        quadrant,
+        before: before.map(str::to_string),
+    }
+}
+
+fn drop_zone<'a>(
+    content: Element<'a, Message>,
+    target: Placement,
+    enabled: bool,
+    drag: &matrix_drag::State,
+) -> Element<'a, Message> {
+    use cosmic::iced::clipboard::dnd::DndAction;
+    if !enabled {
+        return content;
+    }
+    let enter = target.clone();
+    let leave = target.clone();
+    let offered = target.clone();
+    let id = drag.widget_id(format!("matrix-drop:{target:?}"));
+    widget::DndDestination::with_id(content, id, vec![matrix_drag::MIME.into()])
+        .action(DndAction::Move)
+        .preferred_action(DndAction::Move)
+        .on_enter(move |_, _, _| Message::Matrix(Action::DragHover(enter.clone())))
+        .on_leave(move || Message::Matrix(Action::DragLeave(leave.clone())))
+        .on_drop(move |_, _| Message::Matrix(Action::DragOffered(offered.clone())))
+        .on_finish(move |mime, bytes, action, _, _| {
+            Message::Matrix(Action::Drop(target.clone(), mime, bytes, action))
+        })
+        .into()
+}
+
+fn drag_handle(task: &Task, enabled: bool, drag: &matrix_drag::State) -> Element<'static, Message> {
+    let handle = widget::mouse_area(
+        widget::container(widget::icon(icon::from_name("grip-lines-symbolic").into()).size(16))
+            .padding(4),
+    )
+    .interaction(cosmic::iced::mouse::Interaction::Grab);
+    let handle = widget::tooltip(
+        handle,
+        widget::text::body("Drag task; use the flag or arrows for keyboard movement"),
+        widget::tooltip::Position::Top,
+    );
+    if !enabled {
+        return handle.into();
+    }
+    let payload = Payload::new(&task.id);
+    let start = Message::Matrix(Action::DragStart(payload.clone(), task.clone()));
+    widget::DndSource::with_id(handle, drag.widget_id(format!("matrix-handle:{}", task.id)))
+        .action(cosmic::iced::clipboard::dnd::DndAction::Move)
+        .drag_content(move || payload.clone())
+        .on_start(Some(start))
+        .on_cancel(Some(Message::Matrix(Action::DragCancel)))
+        .on_finish(Some(Message::Matrix(Action::DragEnd)))
+        .into()
+}
+
+fn drop_line(active: bool) -> Element<'static, Message> {
+    widget::container(widget::space::horizontal())
+        .height(2)
+        .width(Length::Fill)
+        .class(cosmic::theme::Container::custom(move |theme| {
+            cosmic::widget::container::Style {
+                background: active.then(|| theme.cosmic().accent_color().into()),
+                ..Default::default()
+            }
+        }))
+        .into()
+}
+fn highlight_style(active: bool, card: bool) -> cosmic::theme::Container<'static> {
+    cosmic::theme::Container::custom(move |theme| {
+        use cosmic::widget::container::Catalog;
+        let mut style = theme.style(&if card {
+            cosmic::theme::Container::Card
+        } else {
+            cosmic::theme::Container::Transparent
+        });
+        if active {
+            style.border.width = 1.;
+            style.border.color = theme.cosmic().accent_color().into();
+        }
+        style
+    })
 }
 
 /// The same native selected flag buttons as the task editor; labels only in

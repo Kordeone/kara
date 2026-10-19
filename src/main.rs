@@ -5,6 +5,8 @@ mod date_entry;
 mod i18n;
 mod lifecycle;
 mod matrix;
+mod matrix_clip;
+mod matrix_drag;
 mod matrix_view;
 mod priority_style;
 mod storage;

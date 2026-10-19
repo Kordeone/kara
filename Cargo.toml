@@ -23,6 +23,10 @@ getrandom = "0.4"
 tempfile = "3"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
+# Already locked through libcosmic; names the accessibility return type in the
+# Matrix drop-viewport wrapper so native accessibility remains delegated.
+iced_accessibility = { git = "https://github.com/pop-os/libcosmic.git" }
+
 [build-dependencies]
 xdgen = "0.1"
 

@@ -2,7 +2,7 @@
 use crate::{
     date_entry,
     lifecycle::{Effect, Lifecycle, State},
-    matrix, matrix_view,
+    matrix, matrix_drag, matrix_view,
     storage::{self, Store},
     tasks::{self, Priority, Task as KaraTask, TaskList, TaskView},
     tray,
@@ -54,6 +54,7 @@ pub struct AppModel {
     matrix_lists_expanded: bool,
     matrix_list: Option<String>,
     matrix_priority_task: Option<String>,
+    matrix_drag: matrix_drag::State,
     store: Option<Store>,
     storage_error: Option<String>,
     editor: Option<Editor>,
@@ -308,6 +309,7 @@ impl cosmic::Application for AppModel {
             matrix_lists_expanded: true,
             matrix_list: None,
             matrix_priority_task: None,
+            matrix_drag: matrix_drag::State::default(),
             store: None,
             storage_error: None,
             editor: None,
@@ -715,6 +717,7 @@ impl cosmic::Application for AppModel {
                 self.matrix_list.as_deref(),
                 self.can_write(),
                 self.matrix_priority_task.as_deref(),
+                &self.matrix_drag,
             ));
         } else if page == Page::Lists {
             let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
@@ -1022,6 +1025,20 @@ impl cosmic::Application for AppModel {
         if let Some(conn) = &self.tray_connection {
             subscriptions.push(tray::subscription(conn.clone()).map(Message::Tray));
         }
+        if self.matrix_drag.pending() {
+            subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
+                use cosmic::iced::clipboard::dnd::{DndEvent, SourceEvent};
+                match event {
+                    cosmic::iced::Event::Dnd(DndEvent::Source(SourceEvent::Cancelled)) => {
+                        Some(Message::Matrix(matrix_view::Action::DragCancel))
+                    }
+                    cosmic::iced::Event::Dnd(DndEvent::Source(SourceEvent::Finished)) => {
+                        Some(Message::Matrix(matrix_view::Action::DragEnd))
+                    }
+                    _ => None,
+                }
+            }));
+        }
         if self.page.is_matrix() && self.matrix_priority_task.is_some() && self.editor.is_none() {
             subscriptions.push(cosmic::iced::event::listen_with(
                 |event, _, _| match event {
@@ -1128,6 +1145,71 @@ impl cosmic::Application for AppModel {
                     }
                     _ => {}
                 }
+            }
+            Message::Matrix(matrix_view::Action::DragStart(payload, task))
+                if self.can_write() && self.page.is_matrix() && self.editor.is_none() =>
+            {
+                self.matrix_priority_task = None;
+                if self
+                    .store
+                    .as_ref()
+                    .is_some_and(|store| store.tasks().contains(&task))
+                    && task.list_id == self.matrix_list
+                {
+                    self.matrix_drag.start(payload, task);
+                } else {
+                    self.matrix_drag.cancel();
+                }
+            }
+            Message::Matrix(matrix_view::Action::DragHover(target)) => {
+                if self.can_write()
+                    && self.page.is_matrix()
+                    && self.editor.is_none()
+                    && self.matrix_drag.source().is_some()
+                    && self.store.as_ref().is_some_and(|store| {
+                        self.matrix_drag
+                            .allows(store.tasks(), self.matrix_list.as_deref(), &target)
+                    })
+                {
+                    self.matrix_drag.hover = Some(target);
+                } else {
+                    self.matrix_drag.hover = None;
+                }
+            }
+            Message::Matrix(matrix_view::Action::DragOffered(target)) => {
+                if self.can_write()
+                    && self.page.is_matrix()
+                    && self.editor.is_none()
+                    && let Some(store) = &self.store
+                {
+                    self.matrix_drag
+                        .offer(store.tasks(), self.matrix_list.as_deref(), target);
+                }
+            }
+            Message::Matrix(matrix_view::Action::DragLeave(target)) => {
+                if self.matrix_drag.hover.as_ref() == Some(&target) {
+                    self.matrix_drag.hover = None;
+                }
+            }
+            Message::Matrix(matrix_view::Action::DragCancel) => self.matrix_drag.cancel(),
+            Message::Matrix(matrix_view::Action::DragEnd) => self.matrix_drag.end(),
+            Message::Matrix(matrix_view::Action::Drop(target, mime, bytes, action)) => {
+                if self.can_write()
+                    && self.page.is_matrix()
+                    && self.editor.is_none()
+                    && let Some(store) = &mut self.store
+                {
+                    let payload = matrix_drag::Payload::decode(&mime, &bytes, action);
+                    if let Some(id) = self.matrix_drag.request(
+                        store.tasks(),
+                        self.matrix_list.as_deref(),
+                        &target,
+                        payload,
+                    ) {
+                        self.storage_error = store.move_matrix_task(&id, &target).err();
+                    }
+                }
+                self.matrix_drag.cancel();
             }
             Message::Matrix(matrix_view::Action::OpenPriority(id)) if self.can_write() => {
                 self.matrix_priority_task = Some(id);

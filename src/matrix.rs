@@ -99,6 +99,94 @@ pub fn reorder(tasks: &mut [Task], id: &str, direction: Direction) -> Result<(),
     Ok(())
 }
 
+/// A position in the current list. `before` is a stable task ID; None means
+/// append within the moving task's completion group (active always precede done).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    pub list_id: Option<String>,
+    pub quadrant: Quadrant,
+    pub before: Option<String>,
+}
+
+fn destination(
+    tasks: &[Task],
+    id: &str,
+    placement: &Placement,
+) -> Result<(usize, Vec<usize>), String> {
+    let source = tasks
+        .iter()
+        .position(|t| t.id == id)
+        .ok_or("Dragged task no longer exists.")?;
+    let task = &tasks[source];
+    if task.list_id != placement.list_id {
+        return Err("A Matrix drop cannot change the task list.".into());
+    }
+    let ordered = ordered(tasks, placement.list_id.as_deref(), placement.quadrant);
+    let mut indices: Vec<_> = ordered
+        .into_iter()
+        .filter(|t| t.id != id)
+        .map(|t| tasks.iter().position(|other| other.id == t.id).unwrap())
+        .collect();
+    let position = if let Some(before) = &placement.before {
+        if before == id && task.priority.quadrant() == placement.quadrant {
+            return Ok((source, Vec::new())); // drop on itself is a no-op
+        }
+        let anchor = indices
+            .iter()
+            .position(|&i| &tasks[i].id == before)
+            .ok_or("Drop position no longer exists in this quadrant.")?;
+        if tasks[indices[anchor]].completed != task.completed {
+            return Err("Active and completed tasks keep separate ordering groups.".into());
+        }
+        anchor
+    } else if task.completed {
+        indices.len()
+    } else {
+        indices
+            .iter()
+            .position(|&i| tasks[i].completed)
+            .unwrap_or(indices.len())
+    };
+    indices.insert(position, source);
+    Ok((source, indices))
+}
+
+pub fn can_move(tasks: &[Task], id: &str, placement: &Placement) -> bool {
+    destination(tasks, id, placement).is_ok()
+}
+
+/// Validate before mutation. Only priority/ranks in the source and destination
+/// groups change; shared document order, identity and all task fields survive.
+pub fn move_task(tasks: &mut [Task], id: &str, placement: &Placement) -> Result<bool, String> {
+    let (source, indices) = destination(tasks, id, placement)?;
+    if indices.is_empty() {
+        return Ok(false);
+    }
+    let old = tasks[source].priority.quadrant();
+    let unchanged = old == placement.quadrant
+        && indices
+            .iter()
+            .enumerate()
+            .all(|(rank, &index)| tasks[index].matrix_order == Some(rank as u64));
+    if unchanged {
+        return Ok(false);
+    }
+    tasks[source].priority = placement.quadrant.priority();
+    if old != placement.quadrant {
+        let remaining: Vec<_> = ordered(tasks, placement.list_id.as_deref(), old)
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        for (rank, id) in remaining.iter().enumerate() {
+            tasks.iter_mut().find(|t| &t.id == id).unwrap().matrix_order = Some(rank as u64);
+        }
+    }
+    for (rank, &index) in indices.iter().enumerate() {
+        tasks[index].matrix_order = Some(rank as u64);
+    }
+    Ok(true)
+}
+
 /// List deletion is a batch move: append each former quadrant in its prior
 /// relative order, after the existing Inbox tasks of the same completion state.
 pub fn move_list_to_inbox(tasks: &mut [Task], list_id: &str) {
@@ -154,6 +242,135 @@ mod tests {
             .into_iter()
             .map(|task| task.id.clone())
             .collect()
+    }
+    fn drop_at(quadrant: Quadrant, before: Option<&str>) -> Placement {
+        Placement {
+            list_id: None,
+            quadrant,
+            before: before.map(str::to_string),
+        }
+    }
+    #[test]
+    fn drops_move_between_quadrants_at_exact_positions_without_changing_other_fields() {
+        let mut tasks = vec![
+            task("moving", None, A, Some(0), false),
+            task("remaining", None, A, Some(1), false),
+            task("first", None, B, Some(0), false),
+            task("last", None, B, Some(1), false),
+            task("done", None, B, Some(2), true),
+            task("untouched", Some("work"), A, Some(42), false),
+        ];
+        tasks[0].notes = Some("Notes and Unicode: café".into());
+        tasks[0].due_date = Some("2026-10-18".into());
+        tasks[0].created_at = Some(123);
+        let original = tasks.clone();
+        assert!(move_task(&mut tasks, "moving", &drop_at(B, Some("last"))).unwrap());
+        assert_eq!(ids(&tasks, None, A), ["remaining"]);
+        assert_eq!(ids(&tasks, None, B), ["first", "moving", "last", "done"]);
+        assert_eq!(
+            tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
+            original.iter().map(|t| &t.id).collect::<Vec<_>>()
+        );
+        for (before, after) in original.iter().zip(&tasks) {
+            let mut expected = before.clone();
+            expected.matrix_order = after.matrix_order;
+            if before.id == "moving" {
+                expected.priority = B.priority();
+            }
+            assert_eq!(&expected, after);
+        }
+        assert_eq!(tasks[5], original[5]); // unrelated scope is not reindexed
+        assert_eq!(tasks[1].matrix_order, Some(0));
+    }
+    #[test]
+    fn same_quadrant_drops_reorder_up_down_first_and_last_without_duplicates() {
+        let mut tasks = vec![
+            task("a", None, A, Some(0), false),
+            task("b", None, A, Some(1), false),
+            task("c", None, A, Some(2), false),
+        ];
+        for (id, before, expected) in [
+            ("c", Some("a"), ["c", "a", "b"]),
+            ("c", Some("b"), ["a", "c", "b"]),
+            ("a", None, ["c", "b", "a"]),
+            ("b", Some("c"), ["b", "c", "a"]),
+        ] {
+            move_task(&mut tasks, id, &drop_at(A, before)).unwrap();
+            assert_eq!(ids(&tasks, None, A), expected);
+            assert_eq!(tasks.len(), 3);
+            assert_eq!(
+                tasks
+                    .iter()
+                    .map(|t| &t.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                3
+            );
+            assert_eq!(
+                ordered(&tasks, None, A)
+                    .iter()
+                    .map(|t| t.matrix_order)
+                    .collect::<Vec<_>>(),
+                [Some(0), Some(1), Some(2)]
+            );
+        }
+        let before = tasks.clone();
+        assert!(!move_task(&mut tasks, "a", &drop_at(A, None)).unwrap());
+        assert!(!move_task(&mut tasks, "b", &drop_at(A, Some("b"))).unwrap());
+        assert_eq!(tasks, before);
+    }
+    #[test]
+    fn invalid_drop_positions_leave_every_record_unchanged() {
+        let tasks = vec![
+            task("active", None, A, Some(0), false),
+            task("done", None, A, Some(1), true),
+            task("other", Some("work"), B, Some(0), false),
+        ];
+        for (id, target) in [
+            ("missing", drop_at(A, None)),
+            ("active", drop_at(B, Some("missing"))),
+            ("active", drop_at(B, Some("other"))),
+            ("active", drop_at(A, Some("done"))),
+            ("done", drop_at(A, Some("active"))),
+            (
+                "active",
+                Placement {
+                    list_id: Some("work".into()),
+                    quadrant: B,
+                    before: None,
+                },
+            ),
+        ] {
+            let mut actual = tasks.clone();
+            assert!(move_task(&mut actual, id, &target).is_err());
+            assert_eq!(actual, tasks);
+        }
+    }
+    #[test]
+    fn completed_drops_retain_completion_and_stay_after_active_tasks() {
+        let mut tasks = vec![
+            task("moving-done", None, A, Some(0), true),
+            task("active", None, B, Some(0), false),
+            task("done1", None, B, Some(1), true),
+            task("done2", None, B, Some(2), true),
+        ];
+        move_task(&mut tasks, "moving-done", &drop_at(B, Some("done2"))).unwrap();
+        assert_eq!(
+            ids(&tasks, None, B),
+            ["active", "done1", "moving-done", "done2"]
+        );
+        assert!(tasks[0].completed);
+        move_task(&mut tasks, "moving-done", &drop_at(B, None)).unwrap();
+        assert_eq!(
+            ids(&tasks, None, B),
+            ["active", "done1", "done2", "moving-done"]
+        );
+        tasks[0].completed = false;
+        normalize(&mut tasks);
+        assert_eq!(
+            ids(&tasks, None, B),
+            ["active", "moving-done", "done1", "done2"]
+        );
     }
     #[test]
     fn priority_drives_all_quadrants_and_dates_never_change_it() {
