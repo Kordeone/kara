@@ -136,3 +136,103 @@ CachyOS COSMIC graphical acceptance
 4. Click an unselected mode and confirm it becomes selected with that mode's established default direction. Click it again and confirm direction reverses. Restart Kara and confirm mode/direction preferences persist.
 5. Use mouse hover and keyboard Tab/activation. Confirm native COSMIC hover and selected states are clear, keyboard focus remains visually distinct, tooltips/accessibility labels identify mode and direction, and Show Completed stays aligned at the far right.
 6. Check the toolbar and sidebar at normal and narrow window widths for clipping or overlap.
+
+Kara — Owner Tabler SVG collection and pinned-list shortcuts
+
+Source and copy verification
+- Owner source directory: /home/rapper/projects/svgs
+- Application-owned destination: assets/tabler/
+- SVGs copied: 67 of 67, retaining all original filenames. Originals were copied
+  only; the source directory was not modified.
+- SHA-256: all 67 destination files matched their source counterparts exactly.
+  Each source and destination SVG also parsed as XML. Every icon uses the
+  theme-tintable currentColor stroke. The requested alarm.svg, flag-3.svg and
+  sort-a-z.svg were present and copied.
+- Added assets/tabler/LICENSE.txt with the Tabler Icons MIT license and
+  attribution (Paweł Kuna, 2020–2026; see github.com/tabler/tabler-icons).
+- The owner's KARA application logo remains separate and unchanged.
+- Only assets directly referenced by Rust include_bytes! are compiled into the
+  binary; the complete 67-file collection remains available under assets/tabler.
+
+Icon mapping and implementation
+- Four-module selector: existing module symbols -> list-check.svg (Tasks),
+  layout-kanban.svg (Board), columns-3.svg (Eisenhower Matrix), and
+  stopwatch.svg (Pomodoro).
+- Task navigation: inbox-tray -> inbox.svg; Today keeps its calendar-check
+  meaning via calendar-check.svg; Calendar uses calendar-month.svg. List rows
+  use list.svg, with pinned rows and shortcuts using pinned.svg.
+- Pin actions: theme pin glyphs -> pin.svg when unpinned and pinned-off.svg for
+  the unpin action. Context menus and the Lists page use the same state-aware
+  assets. Pinning remains the existing persisted list property.
+- Sort toolbar: creation -> calendar-plus.svg; due -> calendar-due.svg;
+  priority -> flag-3.svg; name -> sort-a-z.svg; ascending/descending ->
+  arrow-up.svg / arrow-down.svg. Selection, direction indicator, persistence,
+  tooltips and sorting logic are unchanged.
+- Task actions: edit -> pencil.svg; delete -> trash.svg; About -> info-circle.svg.
+  The task date-picker action uses calendar-month.svg.
+- Matrix actions: priority -> flag-3.svg; add -> plus.svg; drag handle ->
+  grip-vertical.svg; neutral drag badge -> list-check.svg; Move Up/Down ->
+  arrow-up.svg / arrow-down.svg. Matrix classification, ordering and drag logic
+  are unchanged.
+- Existing Pomodoro placeholder navigation now uses alarm.svg, history.svg,
+  chart-bar.svg and settings.svg. This adds no Pomodoro functionality.
+- Native COSMIC checkbox controls, theme styling and window decorations remain.
+
+Pinned-list behavior
+- Pinned lists appear as persistent shortcuts above Tasks > Lists and Matrix >
+  Lists. In an expanded Lists section, the same list appears again at the top
+  of the internal list rows; both navigation entries reference the same
+  existing list ID and task data.
+- Collapsing Lists hides every internal entry, including pinned entries, while
+  the pinned shortcuts remain visible and usable. Pinned items stay ahead of
+  unpinned items inside the expanded section; relative order within either
+  group is retained.
+- The Tasks divider is placed immediately after Calendar, before the shortcuts
+  and Lists section. Pin/collapse storage and schemas are unchanged.
+
+Changed files
+- src/app.rs
+- src/matrix_view.rs
+- src/priority_style.rs
+- report.txt
+- assets/tabler/LICENSE.txt and the 67 copied SVGs retaining their source names
+
+Validation — headless Debian
+- cargo fmt --check: PASSED
+- cargo check --locked: PASSED
+- cargo clippy --locked --all-targets -- -D warnings: PASSED
+- cargo test --locked: PASSED, 98 passed, 0 failed, 1 ignored private-bus test
+- cargo build --locked: PASSED
+- Isolated D-Bus tray/single-instance regression: PASSED, 1 test:
+  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
+  tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
+  -- --ignored --exact --nocapture
+- Source-to-copy SHA-256 check: PASSED, 67/67 exact matches; source XML and all
+  copied XML parsed; all SVGs were currentColor stroke assets.
+- App and Matrix resource tests: PASSED; resolved handles are embedded symbolic
+  SVGs. No COSMIC graphical session was available on Debian.
+
+CachyOS COSMIC graphical acceptance checklist
+1. In light and dark themes, inspect the four-module selector and all subsection
+   rows. Confirm centered recognizable Tabler symbols, native alignment, selected
+   states and no regressions in keyboard focus or hover. Check normal and narrow
+   window widths.
+2. In Tasks, confirm Inbox, Today and Calendar icons; verify the divider sits
+   immediately below Calendar. Pin two lists and confirm shortcuts appear above
+   Lists in pin order, then appear again first inside expanded Lists.
+3. Collapse Lists: confirm all internal list rows disappear while pinned
+   shortcuts remain visible and open the same list. Expand again; pin/unpin a
+   list from its shortcut context menu and from the Lists page, confirming both
+   representations update immediately and the setting survives restart.
+4. Repeat list selection, pinned shortcuts, expanded/collapsed behavior and
+   Matrix scope selection under Eisenhower Matrix > Lists. Verify Matrix task
+   classifications and order remain unchanged.
+5. In Inbox, Today and a named list, check creation, due, priority and A–Z sort
+   symbols, the selected-mode direction marker, arrow direction, tooltips,
+   keyboard access and preference persistence.
+6. Verify Edit/Delete task actions, task dialog calendar button, About icon, and
+   Matrix priority/add/drag/move controls. Exercise Matrix drag movement and
+   confirm actions still apply to the intended task.
+7. Repeat the visual check at display scaling and a narrow window; confirm no
+   clipped or overlapping sidebar controls. Restart Kara and verify existing
+   tasks, lists, pinning and sort preferences are preserved.

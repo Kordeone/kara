@@ -188,13 +188,15 @@ fn task_content<'a>(
 }
 
 fn add_button(quadrant: Quadrant, can_write: bool) -> Element<'static, Message> {
-    widget::button::icon(icon::from_name("list-add-symbolic"))
-        .tooltip(format!("Add task to {}", quadrant.label()))
-        .name("Add task")
-        .width(Length::Fixed(36.0))
-        .height(Length::Fixed(36.0))
-        .on_press_maybe(can_write.then_some(Message::Matrix(Action::Add(quadrant))))
-        .into()
+    widget::button::icon(
+        icon::from_svg_bytes(include_bytes!("../assets/tabler/plus.svg")).symbolic(true),
+    )
+    .tooltip(format!("Add task to {}", quadrant.label()))
+    .name("Add task")
+    .width(Length::Fixed(36.0))
+    .height(Length::Fixed(36.0))
+    .on_press_maybe(can_write.then_some(Message::Matrix(Action::Add(quadrant))))
+    .into()
 }
 
 fn quadrant<'a>(
@@ -320,12 +322,20 @@ fn task_row<'a>(
         .push(priority_control)
         .push(title);
 
-    for (direction, icon_name, label) in [
-        (Direction::Up, "go-up-symbolic", "Move task up"),
-        (Direction::Down, "go-down-symbolic", "Move task down"),
+    for (direction, asset, label) in [
+        (
+            Direction::Up,
+            include_bytes!("../assets/tabler/arrow-up.svg").as_slice(),
+            "Move task up",
+        ),
+        (
+            Direction::Down,
+            include_bytes!("../assets/tabler/arrow-down.svg").as_slice(),
+            "Move task down",
+        ),
     ] {
         actions = actions.push(
-            widget::button::icon(icon::from_name(icon_name))
+            widget::button::icon(icon::from_svg_bytes(asset).symbolic(true))
                 .width(Length::Fixed(36.0))
                 .height(Length::Fixed(36.0))
                 .name(label)
@@ -393,8 +403,14 @@ fn drop_zone<'a>(
 
 fn drag_handle(task: &Task, enabled: bool, drag: &matrix_drag::State) -> Element<'static, Message> {
     let handle = widget::mouse_area(
-        widget::container(widget::icon(icon::from_name("grip-lines-symbolic").into()).size(16))
-            .padding(4),
+        widget::container(
+            widget::icon(
+                icon::from_svg_bytes(include_bytes!("../assets/tabler/grip-vertical.svg"))
+                    .symbolic(true),
+            )
+            .size(16),
+        )
+        .padding(4),
     )
     .interaction(cosmic::iced::mouse::Interaction::Grab);
     let handle = widget::tooltip(
@@ -509,10 +525,7 @@ fn feedback_appearance(
 fn drag_preview_icon() -> icon::Icon {
     // Bundled symbolic task-list silhouette; no source or destination priority.
     widget::icon(
-        icon::from_svg_bytes(include_bytes!(
-            "../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg"
-        ))
-        .symbolic(true),
+        icon::from_svg_bytes(include_bytes!("../assets/tabler/list-check.svg")).symbolic(true),
     )
     .size(16)
 }
@@ -559,6 +572,23 @@ fn metadata(task: &Task) -> Option<String> {
 mod tests {
     use super::*;
     #[test]
+    fn matrix_controls_resolve_to_theme_tintable_tabler_svgs() {
+        for asset in [
+            include_bytes!("../assets/tabler/plus.svg").as_slice(),
+            include_bytes!("../assets/tabler/arrow-up.svg").as_slice(),
+            include_bytes!("../assets/tabler/arrow-down.svg").as_slice(),
+            include_bytes!("../assets/tabler/grip-vertical.svg").as_slice(),
+            include_bytes!("../assets/tabler/list-check.svg").as_slice(),
+        ] {
+            let svg = std::str::from_utf8(asset).unwrap();
+            assert!(svg.contains("stroke=\"currentColor\""));
+            let handle = icon::from_svg_bytes(asset).symbolic(true);
+            assert!(handle.symbolic);
+            assert!(matches!(handle.data, icon::Data::Svg(_)));
+        }
+    }
+
+    #[test]
     fn native_drag_badge_is_bundled_symbolic_and_not_a_priority_flag() {
         let neutral = drag_preview_icon().into_svg_handle().unwrap();
         for priority in Priority::ALL {
@@ -573,9 +603,7 @@ mod tests {
         match neutral.data() {
             cosmic::iced::advanced::svg::Data::Bytes(bytes) => assert_eq!(
                 bytes.as_ref(),
-                include_bytes!(
-                    "../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg"
-                )
+                include_bytes!("../assets/tabler/list-check.svg")
             ),
             _ => panic!("Native drag badge must use the bundled task symbol"),
         }

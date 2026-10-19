@@ -17,34 +17,30 @@ use jiff::civil::{Date, Weekday};
 use std::time::Duration;
 
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
-const EDIT_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/edit-symbolic.svg");
-const INBOX_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/inbox-tray-symbolic.svg");
-const TODAY_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/calendar-check-symbolic.svg");
-const PINNED_LIST_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg");
-const SORT_CREATED_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-created-symbolic.svg");
-const SORT_DUE_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-due-symbolic.svg");
-const PRIORITY_FLAG_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/priority-flag-symbolic.svg");
-const SORT_NAME_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-name-symbolic.svg");
-const SORT_ASCENDING_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg");
-const SORT_DESCENDING_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg");
-const MODULE_TASKS_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg");
-const MODULE_BOARD_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/module-board-symbolic.svg");
-const MODULE_MATRIX_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/module-matrix-symbolic.svg");
-const MODULE_POMODORO_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/module-pomodoro-symbolic.svg");
+const EDIT_ICON: &[u8] = include_bytes!("../assets/tabler/pencil.svg");
+const DELETE_ICON: &[u8] = include_bytes!("../assets/tabler/trash.svg");
+const INFO_ICON: &[u8] = include_bytes!("../assets/tabler/info-circle.svg");
+const CALENDAR_ICON: &[u8] = include_bytes!("../assets/tabler/calendar-month.svg");
+const LIST_ICON: &[u8] = include_bytes!("../assets/tabler/list.svg");
+const PIN_ICON: &[u8] = include_bytes!("../assets/tabler/pin.svg");
+const PINNED_OFF_ICON: &[u8] = include_bytes!("../assets/tabler/pinned-off.svg");
+const INBOX_ICON: &[u8] = include_bytes!("../assets/tabler/inbox.svg");
+const TODAY_ICON: &[u8] = include_bytes!("../assets/tabler/calendar-check.svg");
+const PINNED_LIST_ICON: &[u8] = include_bytes!("../assets/tabler/pinned.svg");
+const SORT_CREATED_ICON: &[u8] = include_bytes!("../assets/tabler/calendar-plus.svg");
+const SORT_DUE_ICON: &[u8] = include_bytes!("../assets/tabler/calendar-due.svg");
+const PRIORITY_FLAG_ICON: &[u8] = include_bytes!("../assets/tabler/flag-3.svg");
+const SORT_NAME_ICON: &[u8] = include_bytes!("../assets/tabler/sort-a-z.svg");
+const SORT_ASCENDING_ICON: &[u8] = include_bytes!("../assets/tabler/arrow-up.svg");
+const SORT_DESCENDING_ICON: &[u8] = include_bytes!("../assets/tabler/arrow-down.svg");
+const MODULE_TASKS_ICON: &[u8] = include_bytes!("../assets/tabler/list-check.svg");
+const MODULE_BOARD_ICON: &[u8] = include_bytes!("../assets/tabler/layout-kanban.svg");
+const MODULE_MATRIX_ICON: &[u8] = include_bytes!("../assets/tabler/columns-3.svg");
+const MODULE_POMODORO_ICON: &[u8] = include_bytes!("../assets/tabler/stopwatch.svg");
+const POMODORO_TIMER_ICON: &[u8] = include_bytes!("../assets/tabler/alarm.svg");
+const POMODORO_HISTORY_ICON: &[u8] = include_bytes!("../assets/tabler/history.svg");
+const POMODORO_STATISTICS_ICON: &[u8] = include_bytes!("../assets/tabler/chart-bar.svg");
+const POMODORO_SETTINGS_ICON: &[u8] = include_bytes!("../assets/tabler/settings.svg");
 
 const MODULE_CELL_HEIGHT: f32 = 36.;
 const SIDEBAR_MAX_WIDTH: f32 = 280.;
@@ -537,7 +533,10 @@ impl cosmic::Application for AppModel {
                         .is_some_and(|list| list.pinned);
                     vec![widget::menu::Item::Button(
                         if pinned { "Unpin list" } else { "Pin list" },
-                        Some(icon::from_name("view-pin-symbolic").into()),
+                        Some(
+                            icon::from_svg_bytes(if pinned { PINNED_OFF_ICON } else { PIN_ICON })
+                                .symbolic(true),
+                        ),
                         NavMenuAction::ToggleListPin(id),
                     )]
                 }
@@ -569,7 +568,7 @@ impl cosmic::Application for AppModel {
     }
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
-            widget::button::icon(icon::from_name("dialog-information-symbolic"))
+            widget::button::icon(icon::from_svg_bytes(INFO_ICON).symbolic(true))
                 .tooltip("About Kara")
                 .on_press(Message::About)
                 .into(),
@@ -768,7 +767,7 @@ impl cosmic::Application for AppModel {
                                 ),
                         )
                         .push(
-                            widget::button::icon(icon::from_name("user-trash-symbolic"))
+                            widget::button::icon(icon::from_svg_bytes(DELETE_ICON).symbolic(true))
                                 .width(Length::Fixed(36.0))
                                 .height(Length::Fixed(36.0))
                                 .tooltip("Delete task")
@@ -848,8 +847,13 @@ impl cosmic::Application for AppModel {
                                 )
                                 .push(widget::space::horizontal())
                                 .push(
-                                    widget::button::icon(icon::from_name("view-pin-symbolic"))
+                                    widget::button::icon(pin_action_icon(list.pinned))
                                         .tooltip(if list.pinned {
+                                            "Unpin list"
+                                        } else {
+                                            "Pin list"
+                                        })
+                                        .name(if list.pinned {
                                             "Unpin list"
                                         } else {
                                             "Pin list"
@@ -965,11 +969,10 @@ impl cosmic::Application for AppModel {
         }
         if let Some(editor) = &self.editor {
             let spacing = cosmic::theme::spacing();
-            let calendar_button =
-                widget::button::icon(icon::from_name("x-office-calendar-symbolic"))
-                    .tooltip("Choose date")
-                    .name("Choose due date")
-                    .on_press(Message::ToggleCalendar);
+            let calendar_button = widget::button::icon(calendar_icon())
+                .tooltip("Choose date")
+                .name("Choose due date")
+                .on_press(Message::ToggleCalendar);
             let calendar_button = widget::popover(calendar_button)
                 .position(widget::popover::Position::Bottom)
                 .on_close(Message::CloseCalendar);
@@ -1489,7 +1492,7 @@ impl cosmic::Application for AppModel {
                         .store
                         .as_ref()
                         .and_then(|store| store.lists().iter().find(|list| &list.id == id))
-                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                        .is_none_or(|list| !list.pinned)
                 {
                     self.page = Page::Lists;
                 }
@@ -1504,7 +1507,7 @@ impl cosmic::Application for AppModel {
                         .store
                         .as_ref()
                         .and_then(|store| store.lists().iter().find(|list| &list.id == id))
-                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                        .is_none_or(|list| !list.pinned)
                 {
                     self.page = Page::MatrixLists;
                 }
@@ -1524,7 +1527,7 @@ impl cosmic::Application for AppModel {
                         .store
                         .as_ref()
                         .and_then(|store| store.lists().iter().find(|list| list.id == id))
-                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                        .is_none_or(|list| !list.pinned)
                 {
                     self.page = Page::Lists;
                 }
@@ -1534,7 +1537,7 @@ impl cosmic::Application for AppModel {
                         .store
                         .as_ref()
                         .and_then(|store| store.lists().iter().find(|list| list.id == id))
-                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                        .is_none_or(|list| !list.pinned)
                 {
                     self.page = Page::MatrixLists;
                 }
@@ -1930,6 +1933,18 @@ fn pinned_list_icon() -> icon::Handle {
     icon::from_svg_bytes(PINNED_LIST_ICON).symbolic(true)
 }
 
+fn pin_action_icon(is_pinned: bool) -> icon::Handle {
+    icon::from_svg_bytes(if is_pinned { PINNED_OFF_ICON } else { PIN_ICON }).symbolic(true)
+}
+
+fn calendar_icon() -> icon::Handle {
+    icon::from_svg_bytes(CALENDAR_ICON).symbolic(true)
+}
+
+fn list_icon() -> icon::Handle {
+    icon::from_svg_bytes(LIST_ICON).symbolic(true)
+}
+
 fn module_icon(module: Module) -> icon::Handle {
     let asset = match module {
         Module::Tasks => MODULE_TASKS_ICON,
@@ -2031,14 +2046,11 @@ fn build_nav(
             for (page, label, nav_icon) in [
                 (Page::Inbox, "Inbox", icon::icon(inbox_icon())),
                 (Page::Today, "Today", icon::icon(today_icon())),
-                (
-                    Page::Calendar,
-                    "Calendar",
-                    icon::from_name("x-office-calendar-symbolic").icon(),
-                ),
+                (Page::Calendar, "Calendar", icon::icon(calendar_icon())),
             ] {
                 add(&mut nav, page, label, nav_icon);
             }
+            let shortcut_ids = insert_pinned_shortcuts(&mut nav, lists, Module::Tasks);
             let lists_id = add(
                 &mut nav,
                 Page::Lists,
@@ -2050,7 +2062,7 @@ fn build_nav(
                 })
                 .icon(),
             );
-            nav.divider_above_set(lists_id, true);
+            nav.divider_above_set(shortcut_ids.first().copied().unwrap_or(lists_id), true);
             nav.indent_set(lists_id, 0);
             if lists_expanded {
                 insert_list_rows(&mut nav, lists, Module::Tasks, true);
@@ -2060,15 +2072,11 @@ fn build_nav(
         }
         Module::Board => {
             add(&mut nav, Page::Board, "Inbox", icon::icon(inbox_icon()));
-            add(
-                &mut nav,
-                Page::BoardLists,
-                "Lists",
-                icon::from_name("view-list-symbolic").icon(),
-            );
+            add(&mut nav, Page::BoardLists, "Lists", icon::icon(list_icon()));
         }
         Module::Matrix => {
             add(&mut nav, Page::Matrix, "Inbox", icon::icon(inbox_icon()));
+            insert_pinned_shortcuts(&mut nav, lists, Module::Matrix);
             let lists_id = add(
                 &mut nav,
                 Page::MatrixLists,
@@ -2084,21 +2092,22 @@ fn build_nav(
             insert_list_rows(&mut nav, lists, Module::Matrix, matrix_lists_expanded);
         }
         Module::Pomodoro => {
-            for (page, label, icon_name) in [
-                (Page::Pomodoro, "Focus Timer", "alarm-symbolic"),
-                (Page::PomodoroHistory, "History", "view-history-symbolic"),
+            for (page, label, asset) in [
+                (Page::Pomodoro, "Focus Timer", POMODORO_TIMER_ICON),
+                (Page::PomodoroHistory, "History", POMODORO_HISTORY_ICON),
                 (
                     Page::PomodoroStatistics,
                     "Statistics",
-                    "view-statistics-symbolic",
+                    POMODORO_STATISTICS_ICON,
                 ),
-                (
-                    Page::PomodoroSettings,
-                    "Settings",
-                    "preferences-system-symbolic",
-                ),
+                (Page::PomodoroSettings, "Settings", POMODORO_SETTINGS_ICON),
             ] {
-                add(&mut nav, page, label, icon::from_name(icon_name).icon());
+                add(
+                    &mut nav,
+                    page,
+                    label,
+                    icon::icon(icon::from_svg_bytes(asset).symbolic(true)),
+                );
             }
         }
     }
@@ -2126,6 +2135,32 @@ fn build_nav(
     nav
 }
 
+fn insert_pinned_shortcuts(
+    nav: &mut nav_bar::Model,
+    lists: &[TaskList],
+    module: Module,
+) -> Vec<nav_bar::Id> {
+    lists
+        .iter()
+        .filter(|list| list.pinned)
+        .filter_map(|list| {
+            let page = match module {
+                Module::Tasks => Page::List(list.id.clone()),
+                Module::Matrix => Page::MatrixList(list.id.clone()),
+                _ => return None,
+            };
+            let id = nav
+                .insert()
+                .text(list.name.clone())
+                .data(page)
+                .icon(icon::icon(pinned_list_icon()))
+                .id();
+            nav.indent_set(id, 0);
+            Some(id)
+        })
+        .collect()
+}
+
 fn insert_list_rows(nav: &mut nav_bar::Model, lists: &[TaskList], module: Module, expanded: bool) {
     let mut visible: Vec<_> = lists
         .iter()
@@ -2145,7 +2180,7 @@ fn insert_list_rows(nav: &mut nav_bar::Model, lists: &[TaskList], module: Module
             .icon(if list.pinned {
                 icon::icon(pinned_list_icon())
             } else {
-                icon::from_name("view-list-symbolic").icon()
+                icon::icon(list_icon())
             })
             .id();
         nav.indent_set(id, 1);
@@ -2524,6 +2559,16 @@ mod tests {
     #[test]
     fn task_navigation_assets_are_bundled_symbolic_svgs() {
         for (asset, handle) in [
+            (EDIT_ICON, edit_task_icon()),
+            (
+                DELETE_ICON,
+                icon::from_svg_bytes(DELETE_ICON).symbolic(true),
+            ),
+            (INFO_ICON, icon::from_svg_bytes(INFO_ICON).symbolic(true)),
+            (CALENDAR_ICON, calendar_icon()),
+            (LIST_ICON, list_icon()),
+            (PIN_ICON, pin_action_icon(false)),
+            (PINNED_OFF_ICON, pin_action_icon(true)),
             (INBOX_ICON, inbox_icon()),
             (TODAY_ICON, today_icon()),
             (PINNED_LIST_ICON, pinned_list_icon()),
@@ -2543,8 +2588,26 @@ mod tests {
             (MODULE_BOARD_ICON, module_icon(Module::Board)),
             (MODULE_MATRIX_ICON, module_icon(Module::Matrix)),
             (MODULE_POMODORO_ICON, module_icon(Module::Pomodoro)),
+            (
+                POMODORO_TIMER_ICON,
+                icon::from_svg_bytes(POMODORO_TIMER_ICON).symbolic(true),
+            ),
+            (
+                POMODORO_HISTORY_ICON,
+                icon::from_svg_bytes(POMODORO_HISTORY_ICON).symbolic(true),
+            ),
+            (
+                POMODORO_STATISTICS_ICON,
+                icon::from_svg_bytes(POMODORO_STATISTICS_ICON).symbolic(true),
+            ),
+            (
+                POMODORO_SETTINGS_ICON,
+                icon::from_svg_bytes(POMODORO_SETTINGS_ICON).symbolic(true),
+            ),
         ] {
-            assert!(std::str::from_utf8(asset).unwrap().contains("<path"));
+            let svg = std::str::from_utf8(asset).unwrap();
+            assert!(svg.contains("<path"));
+            assert!(svg.contains("stroke=\"currentColor\""));
             assert!(handle.symbolic);
             assert!(matches!(&handle.data, icon::Data::Svg(_)));
         }
@@ -2588,6 +2651,8 @@ mod tests {
                 Page::Inbox,
                 Page::Today,
                 Page::Calendar,
+                Page::List(pinned_first.id.clone()),
+                Page::List(pinned_second.id.clone()),
                 Page::Lists,
                 Page::List(pinned_first.id.clone()),
                 Page::List(pinned_second.id.clone()),
@@ -2595,25 +2660,55 @@ mod tests {
                 Page::List(unpinned_second.id.clone()),
             ]
         );
-        let lists_row = expanded
+        let first_shortcut = expanded
             .iter()
-            .find(|id| expanded.data::<Page>(*id) == Some(&Page::Lists))
+            .find(|id| expanded.data::<Page>(*id) == Some(&active))
             .unwrap();
-        assert_eq!(expanded.divider_above(lists_row), Some(true));
+        assert_eq!(expanded.divider_above(first_shortcut), Some(true));
         assert_eq!(expanded.active_data::<Page>(), Some(&active));
-        assert_eq!(expanded.indent(expanded.active()), Some(1));
+        assert_eq!(expanded.indent(expanded.active()), Some(0));
+        assert_eq!(
+            pages.iter().filter(|page| **page == active).count(),
+            2,
+            "shortcut and expanded entry must target the same list"
+        );
 
         let collapsed = build_nav(&lists, &Page::Lists, Module::Tasks, false, true);
         let collapsed_pages: Vec<_> = collapsed
             .iter()
             .map(|id| collapsed.data::<Page>(id).unwrap().clone())
             .collect();
-        assert!(
-            !collapsed_pages
-                .iter()
-                .any(|page| matches!(page, Page::List(_)))
+        assert_eq!(
+            collapsed_pages,
+            vec![
+                Page::Inbox,
+                Page::Today,
+                Page::Calendar,
+                Page::List(pinned_first.id.clone()),
+                Page::List(pinned_second.id.clone()),
+                Page::Lists,
+            ]
         );
         assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
+        let collapsed_pinned = build_nav(
+            &lists,
+            &Page::List(pinned_first.id.clone()),
+            Module::Tasks,
+            false,
+            true,
+        );
+        assert_eq!(
+            collapsed_pinned.active_data::<Page>(),
+            Some(&Page::List(pinned_first.id.clone()))
+        );
+        let collapsed_unpinned = build_nav(
+            &lists,
+            &Page::List(unpinned_first.id.clone()),
+            Module::Tasks,
+            false,
+            true,
+        );
+        assert_eq!(collapsed_unpinned.active_data::<Page>(), Some(&Page::Lists));
 
         let matrix = build_nav(
             &lists,
@@ -2641,13 +2736,13 @@ mod tests {
             .filter_map(|id| matrix.data::<Page>(id))
             .cloned()
             .collect();
-        let matrix_list_start = matrix_pages
-            .iter()
-            .position(|page| matches!(page, Page::MatrixList(_)))
-            .unwrap();
         assert_eq!(
-            &matrix_pages[matrix_list_start..],
-            &[
+            matrix_pages,
+            vec![
+                Page::Matrix,
+                Page::MatrixList(pinned_first.id.clone()),
+                Page::MatrixList(pinned_second.id.clone()),
+                Page::MatrixLists,
                 Page::MatrixList(pinned_first.id.clone()),
                 Page::MatrixList(pinned_second.id.clone()),
                 Page::MatrixList(unpinned_first.id.clone()),
@@ -2655,10 +2750,19 @@ mod tests {
             ]
         );
         let matrix_collapsed = build_nav(&lists, &Page::MatrixLists, Module::Matrix, true, false);
-        assert!(
-            !matrix_collapsed
-                .iter()
-                .any(|id| matches!(matrix_collapsed.data::<Page>(id), Some(Page::MatrixList(_))))
+        let matrix_collapsed_pages: Vec<_> = matrix_collapsed
+            .iter()
+            .filter_map(|id| matrix_collapsed.data::<Page>(id))
+            .cloned()
+            .collect();
+        assert_eq!(
+            matrix_collapsed_pages,
+            vec![
+                Page::Matrix,
+                Page::MatrixList(pinned_first.id.clone()),
+                Page::MatrixList(pinned_second.id.clone()),
+                Page::MatrixLists,
+            ]
         );
 
         let board = build_nav(&lists, &Page::BoardLists, Module::Board, true, true);

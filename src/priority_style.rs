@@ -7,8 +7,7 @@ use cosmic::{
     widget::{self, icon},
 };
 
-const FLAG_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/priority-flag-symbolic.svg");
+const FLAG_ICON: &[u8] = include_bytes!("../assets/tabler/flag-3.svg");
 
 fn flag_handle() -> icon::Handle {
     icon::from_svg_bytes(FLAG_ICON).symbolic(true)
@@ -109,7 +108,8 @@ mod tests {
             }
         }
         let svg = std::str::from_utf8(FLAG_ICON).unwrap();
-        assert!(svg.contains("viewBox=\"0 0 16 16\""));
+        assert!(svg.contains("viewBox=\"0 0 24 24\""));
+        assert!(svg.contains("stroke=\"currentColor\""));
         assert!(svg.contains("<path"));
         assert!(!svg.contains("<text"));
     }
