@@ -1,104 +1,86 @@
-Kara Tasks sorting, completed filter, and icon repairs
+Kara Tasks toolbar refinement
 
 Implementation
-- Added four stable task view sort modes: creation date newest-first (default),
-  due date earliest-first with undated tasks last, priority P3 to P0, and
-  case-insensitive name A–Z. Equal keys preserve the task document's relative
-  order. Completed tasks follow the same ordering and are no longer grouped at
-  the bottom.
-- Added a native sort dropdown and labeled Show Completed checkbox beside the
-  Tasks page heading. Show Completed defaults to checked. Unchecking it filters
-  completed rows out of the current Inbox, Today, or named-list view without
-  deleting or moving them. Both preferences save immediately and persist across
-  restarts.
-- Kept Today membership unchanged: tasks with valid due dates on or before the
-  local current date remain eligible; future and undated tasks remain excluded.
-  Calendar remains its existing placeholder.
-- Added optional `created_at` timestamps to newly created tasks at nanosecond
-  resolution. Legacy tasks keep `created_at: None`; the application does not
-  guess historical times. In Creation date mode, timestamped tasks sort newest
-  first and unknown-time tasks follow them in their existing relative order.
-- Replaced Inbox's generic icon with a bundled symbolic inbox tray, added a
-  bundled symbolic calendar-check icon for Today, and added a bundled list-plus-
-  pin glyph for pinned sidebar lists. Existing Calendar icon and sidebar layout
-  remain in place. Assets are embedded, theme-tinted SVGs; pin/unpin still
-  rebuilds the sidebar immediately.
-- Task view sorting only orders references in memory. It does not edit task
-  records or Matrix ordering indices.
+- Replaced the text dropdown in Inbox, Today, and named-list toolbars with a
+  compact COSMIC icon button that opens a native popover containing Creation
+  date, Due date, Priority, and Name choices. A check icon marks the active
+  choice; the icon-only trigger has a tooltip and accessible name.
+- Added an adjacent icon-only direction toggle with ascending/descending
+  symbolic icons, state-specific tooltip, and accessible name. Natural defaults
+  preserve existing behavior: Creation date newest-first, Due date earliest-
+  first, Priority P3-first, and Name A–Z. Selecting a different mode selects
+  that mode's natural default; reselecting the active mode preserves its current
+  direction. Reversing date sorts leaves undated and unknown-creation-time tasks
+  last and stable.
+- Moved Show Completed to the far right of the toolbar using a flexible spacer.
+  Its label, default, filtering behavior, and persistence remain unchanged.
+- Bundled the mode, ascending, descending, and active-mode check symbols as
+  embedded theme-tinted SVGs. The sidebar and its existing bundled icons were
+  not changed.
+- Persisted sort direction alongside the existing mode and completed-filter
+  preferences. Matrix ordering remains outside the task-view sort operation.
 
 Storage compatibility
-- Extended the existing atomic JSON document to version 5 with optional task
-  creation timestamps and persisted sort/show-completed preferences. Missing
-  preference fields default to Creation date and Show Completed enabled.
-- Version 4 documents load with unknown creation times and default preferences.
-  Before the first write upgrades v4 data, Kara writes and verifies an exact
-  recoverable copy at `tasks.json.pre-tasks-v5.bak`; the data replacement remains
-  atomic. Earlier v1–v3 migrations retain their established exact backup path.
-- Migration tests use temporary fixture copies only; no user task file was
-  opened or modified during testing.
+- Bumped the existing atomic JSON document from version 5 to version 6 to
+  record direction explicitly. Existing v4 and v5 documents retain their
+  established sort defaults; for v5 files without direction, the selected
+  mode's natural direction is inferred.
+- Before upgrading v4 or v5 data on its first write, Kara saves and verifies an
+  exact recoverable copy at `tasks.json.pre-tasks-v6.bak`. Older v1–v3 migration
+  backup behavior remains intact. No live task data was used in migration tests.
 
 Files changed
-- src/app.rs: toolbar, preference updates, task view integration, sidebar icon
-  resources and icon regression tests.
-- src/tasks.rs: creation timestamp, sort modes, stable filtering/sorting and
-  focused task behavior tests.
-- src/storage.rs: v5 preferences, safe v4 migration backup, and persistence and
-  compatibility tests.
-- resources/icons/hicolor/scalable/actions/inbox-tray-symbolic.svg
-- resources/icons/hicolor/scalable/actions/calendar-check-symbolic.svg
-- resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg
+- src/app.rs: icon-based popover, direction toggle, right-aligned completed
+  checkbox, keyboard dismissal and icon-handle tests.
+- src/tasks.rs: ascending/descending sorting, natural per-mode defaults, and
+  direction/order regression tests.
+- src/storage.rs: persisted direction, v6 compatibility/backup, restart tests.
+- resources/icons/hicolor/scalable/actions/sort-mode-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-selected-symbolic.svg
 - report.txt
 
 Validation on headless Debian
 - cargo fmt --check: PASSED.
 - cargo check --locked: PASSED.
 - cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED (70 passed, 0 failed, 1 ignored because it needs
+- cargo test --locked: PASSED (72 passed, 0 failed, 1 ignored because it needs
   an isolated session bus).
-- Isolated D-Bus tray regression: PASSED (1 passed):
+- Isolated tray D-Bus regression: PASSED (1 passed):
   `KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture`
 - cargo build --locked: PASSED.
-- Bundled inbox, Today, and pinned-list SVGs parsed as XML; Rust regression tests
-  confirm each icon is embedded and marked symbolic.
-- Sorting tests cover all four orders, stable ties, undated-last behavior,
-  mixed completion ordering, Show Completed filtering, legacy unknown-time
-  ordering, and unchanged Matrix ranks. Storage tests cover preference restart
-  persistence, v4 backup/recovery, legacy timestamps, and new-task timestamp
-  persistence through edits.
-- No COSMIC graphical testing was performed.
+- Bundled sort SVG resources parsed as XML; regression tests confirm the
+  embedded handles resolve as symbolic SVGs.
+- Tests cover each mode in both directions, stable ties, date unknowns, natural
+  defaults, preference persistence, v4/v5 backup compatibility, and completed
+  filtering. No COSMIC graphical testing was performed.
+
+CachyOS COSMIC graphical acceptance checklist
+1. Open Inbox, Today, and a named list. Confirm the toolbar has two compact
+   icon-only sorting controls aligned left and Show Completed aligned at the
+   far right, with no long sort text visible until the mode popover opens.
+2. Open the mode popover by mouse and keyboard. Confirm it shows the four
+   expected labels, clearly marks the active mode, uses an opaque theme surface,
+   and closes on selection, Escape, and outside click.
+3. Confirm the direction icon and tooltip identify current state and the
+   opposite action. Test both directions for creation date, due date, priority,
+   and name, including undated/legacy tasks remaining last for date sorts.
+   Confirm equal sort keys retain relative order and completed tasks follow the
+   same chosen ordering.
+4. Confirm each mode initially uses its natural existing order; changing modes
+   restores that mode's natural direction, while reselecting the current mode
+   leaves a manually reversed direction intact.
+5. Toggle Show Completed in Inbox, Today, and a named list. Confirm it remains
+   on the right, updates rows immediately, preserves original context, and
+   persists after restart. Verify Today still excludes future and undated tasks.
+6. Verify sort mode and direction persist after restart. On a disposable copy
+   of a v5 data file, confirm the v6 upgrade's `.pre-tasks-v6.bak` is byte-exact.
+   Confirm the Matrix's task order is unchanged by task sorting.
+7. Inspect narrow and normal window sizes, light/dark themes, keyboard focus,
+   tooltip visibility, icon clarity, popover placement, and toolbar clipping.
 
 Known limitations
-- Legacy tasks have no known creation time and sort after timestamped tasks in
-  their prior document order when Creation date is selected.
-- The existing Calendar page is still a placeholder and is not part of the task
-  view sorting/filter controls.
-- Actual icon sizing, theme tint, toolbar fit, and checkbox/dropdown interaction
-  need CachyOS COSMIC graphical review.
-
-CachyOS COSMIC acceptance checklist
-1. Launch the build with a temporary XDG_DATA_HOME. Confirm the sidebar keeps
-   its existing structure; Inbox shows a tray icon, Today shows a calendar with
-   a check, Calendar retains its existing icon, and pinned named lists show a
-   small pin beside the list glyph. Pin and unpin lists and confirm the icon
-   changes immediately and still respects collapsed-list visibility.
-2. In Inbox and a named list, create tasks with different creation times,
-   due dates, priorities P0–P3, mixed case names, equal sort keys, and no due
-   date. Check each selector choice: newest-first creation date, earliest-first
-   due date with undated tasks last, P3-to-P0 priority, and case-insensitive
-   A–Z name. Confirm equal keys keep their prior relative order.
-3. In Today, verify the existing membership rule remains unchanged: due-today
-   and overdue tasks appear; future-due and undated tasks do not. Exercise all
-   sort choices and confirm task assignment and Matrix placement do not change.
-4. Confirm Show Completed starts checked. Uncheck it in Inbox, Today, and a
-   named list: completed tasks should disappear from that view only, with no
-   deletion or movement. Recheck it and confirm completed tasks return in the
-   selected sort position, remain muted/struck through, and have no Completed
-   subsection. Toggle task completion and confirm the view updates immediately.
-5. Restart Kara and confirm both preferences persist. Confirm a newly created
-   task remains newest in Creation date mode after restart and after editing.
-   Verify existing legacy tasks retain their relative order without a fabricated
-   creation date. Inspect a disposable copy if validating the v4 upgrade and
-   confirm the `.pre-tasks-v5.bak` file exactly matches the original JSON.
-6. Check normal and narrow window sizes, light and dark themes, dropdown and
-   checkbox keyboard navigation/focus, icon clarity/tint, toolbar alignment,
-   and that long list labels and task controls do not clip or overlap.
+- Graphical appearance, focus traversal, accessibility announcements, and
+  popover placement require the owner's CachyOS COSMIC review.
+- Calendar remains its existing placeholder and has no task sorting toolbar.

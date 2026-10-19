@@ -20,14 +20,29 @@ impl TaskSort {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::CreationDate => "Creation date (newest first)",
-            Self::DueDate => "Due date (earliest first)",
-            Self::Priority => "Priority (P3 first)",
-            Self::Name => "Name (A–Z)",
+            Self::CreationDate => "Creation date",
+            Self::DueDate => "Due date",
+            Self::Priority => "Priority",
+            Self::Name => "Name",
         }
     }
+    pub fn default_ascending(self) -> bool {
+        matches!(self, Self::DueDate | Self::Name)
+    }
 }
-
+pub fn sort_mode_at(index: usize) -> Option<TaskSort> {
+    TaskSort::ALL.get(index).copied()
+}
+pub fn sort_order_label(ascending: bool) -> &'static str {
+    if ascending { "Ascending" } else { "Descending" }
+}
+fn in_requested_direction(ordering: std::cmp::Ordering, ascending: bool) -> std::cmp::Ordering {
+    if ascending {
+        ordering
+    } else {
+        ordering.reverse()
+    }
+}
 /// The sole persisted classification. Numeric values are part of schema v4.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -173,6 +188,7 @@ pub fn sorted_visible_tasks<'a>(
     view: TaskView<'_>,
     today: Date,
     sort: TaskSort,
+    ascending: bool,
     show_completed: bool,
 ) -> Vec<&'a Task> {
     let mut visible: Vec<_> = tasks
@@ -181,26 +197,36 @@ pub fn sorted_visible_tasks<'a>(
         .collect();
     visible.sort_by(|a, b| match sort {
         TaskSort::CreationDate => match (a.created_at, b.created_at) {
-            (Some(a), Some(b)) => b.cmp(&a),
+            (Some(a), Some(b)) => in_requested_direction(a.cmp(&b), ascending),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         },
         TaskSort::DueDate => match (&a.due_date, &b.due_date) {
-            (Some(a), Some(b)) => a.cmp(b),
+            (Some(a), Some(b)) => in_requested_direction(a.cmp(b), ascending),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         },
-        TaskSort::Priority => b.priority.cmp(&a.priority),
-        TaskSort::Name => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        TaskSort::Priority => in_requested_direction(a.priority.cmp(&b.priority), ascending),
+        TaskSort::Name => in_requested_direction(
+            a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            ascending,
+        ),
     });
     visible
 }
 
 #[cfg(test)]
 pub fn visible_tasks<'a>(tasks: &'a [Task], view: TaskView<'_>, today: Date) -> Vec<&'a Task> {
-    sorted_visible_tasks(tasks, view, today, TaskSort::CreationDate, true)
+    sorted_visible_tasks(
+        tasks,
+        view,
+        today,
+        TaskSort::CreationDate,
+        TaskSort::CreationDate.default_ascending(),
+        true,
+    )
 }
 
 pub(crate) fn unix_timestamp() -> i64 {
@@ -373,6 +399,7 @@ mod tests {
                 TaskView::Inbox,
                 today,
                 TaskSort::CreationDate,
+                TaskSort::CreationDate.default_ascending(),
                 true,
             ),
             vec![&completed_inbox, &task]
@@ -429,6 +456,7 @@ mod tests {
             TaskView::List("first"),
             today,
             TaskSort::CreationDate,
+            TaskSort::CreationDate.default_ascending(),
             true,
         );
         assert_eq!(visible, vec![&first, &active]);
@@ -437,6 +465,7 @@ mod tests {
             TaskView::List("first"),
             today,
             TaskSort::CreationDate,
+            TaskSort::CreationDate.default_ascending(),
             false,
         );
         assert_eq!(hidden, vec![&active]);
@@ -503,10 +532,17 @@ mod tests {
         let ranks: Vec<_> = tasks.iter().map(|task| task.matrix_order).collect();
         let today = parse_date("2026-10-18").unwrap();
         let titles = |sort| {
-            sorted_visible_tasks(&tasks, TaskView::Inbox, today, sort, true)
-                .into_iter()
-                .map(|task| task.id.as_str())
-                .collect::<Vec<_>>()
+            sorted_visible_tasks(
+                &tasks,
+                TaskView::Inbox,
+                today,
+                sort,
+                sort.default_ascending(),
+                true,
+            )
+            .into_iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>()
         };
 
         assert_eq!(
@@ -549,6 +585,52 @@ mod tests {
                 "unknown-second"
             ]
         );
+        let ids_in_direction = |sort, ascending| {
+            sorted_visible_tasks(&tasks, TaskView::Inbox, today, sort, ascending, true)
+                .into_iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids_in_direction(TaskSort::CreationDate, true),
+            [
+                "old",
+                "new",
+                "same-time-first",
+                "unknown-first",
+                "unknown-second"
+            ]
+        );
+        assert_eq!(
+            ids_in_direction(TaskSort::DueDate, false),
+            [
+                "old",
+                "same-time-first",
+                "unknown-first",
+                "new",
+                "unknown-second"
+            ]
+        );
+        assert_eq!(
+            ids_in_direction(TaskSort::Priority, true),
+            [
+                "old",
+                "same-time-first",
+                "unknown-first",
+                "unknown-second",
+                "new"
+            ]
+        );
+        assert_eq!(
+            ids_in_direction(TaskSort::Name, false),
+            [
+                "unknown-second",
+                "unknown-first",
+                "old",
+                "new",
+                "same-time-first"
+            ]
+        );
         assert_eq!(
             tasks
                 .iter()
@@ -557,8 +639,14 @@ mod tests {
             ranks
         );
 
-        let active_only =
-            sorted_visible_tasks(&tasks, TaskView::Inbox, today, TaskSort::Name, false);
+        let active_only = sorted_visible_tasks(
+            &tasks,
+            TaskView::Inbox,
+            today,
+            TaskSort::Name,
+            TaskSort::Name.default_ascending(),
+            false,
+        );
         assert_eq!(
             active_only
                 .iter()
@@ -567,6 +655,21 @@ mod tests {
             ["same-time-first", "old", "unknown-first"]
         );
         assert!(tasks[1].completed && tasks[4].completed);
+    }
+
+    #[test]
+    fn sort_mode_choices_and_default_directions_match_the_task_toolbar() {
+        assert_eq!(sort_mode_at(0), Some(TaskSort::CreationDate));
+        assert_eq!(sort_mode_at(1), Some(TaskSort::DueDate));
+        assert_eq!(sort_mode_at(2), Some(TaskSort::Priority));
+        assert_eq!(sort_mode_at(3), Some(TaskSort::Name));
+        assert_eq!(sort_mode_at(4), None);
+        assert!(!TaskSort::CreationDate.default_ascending());
+        assert!(TaskSort::DueDate.default_ascending());
+        assert!(!TaskSort::Priority.default_ascending());
+        assert!(TaskSort::Name.default_ascending());
+        assert_eq!(sort_order_label(true), "Ascending");
+        assert_eq!(sort_order_label(false), "Descending");
     }
 
     #[test]

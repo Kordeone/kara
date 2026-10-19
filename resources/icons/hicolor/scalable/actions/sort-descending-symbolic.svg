@@ -1,0 +1,4 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <path fill="#232323" d="M2 2.5h4V4H2V2.5Zm0 4.25h6v1.5H2v-1.5ZM2 11h8v1.5H2V11ZM12 3l3 3h-2v6h-2V6H9l3-3Z"/>
+</svg>

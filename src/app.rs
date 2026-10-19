@@ -25,6 +25,14 @@ const TODAY_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/calendar-check-symbolic.svg");
 const PINNED_LIST_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg");
+const SORT_MODE_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-mode-symbolic.svg");
+const SORT_ASCENDING_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg");
+const SORT_DESCENDING_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg");
+const SORT_SELECTED_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-selected-symbolic.svg");
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -44,7 +52,9 @@ pub struct AppModel {
     delete_list_id: Option<String>,
     today: jiff::civil::Date,
     task_sort: tasks::TaskSort,
+    task_sort_ascending: bool,
     show_completed: bool,
+    sort_menu_open: bool,
     about: About,
     title_input: cosmic::iced::widget::Id,
 }
@@ -107,7 +117,10 @@ pub enum Message {
     Save,
     RetryStorage,
     DateTick,
-    SortTasks(usize),
+    ToggleSortMenu,
+    CloseSortMenu,
+    SelectSortMode(usize),
+    ToggleSortDirection,
     ShowCompleted(bool),
     About,
     LaunchUrl(String),
@@ -205,7 +218,9 @@ impl cosmic::Application for AppModel {
             delete_list_id: None,
             today: jiff::Zoned::now().date(),
             task_sort: tasks::TaskSort::default(),
+            task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
+            sort_menu_open: false,
             about,
             title_input: cosmic::iced::widget::Id::unique(),
         };
@@ -321,20 +336,62 @@ impl cosmic::Application for AppModel {
             content = content.push(header);
         }
         if page.view().is_some() {
-            let options = tasks::TaskSort::ALL
-                .into_iter()
-                .map(|sort| sort.label().to_string())
-                .collect::<Vec<_>>();
-            let selected = tasks::TaskSort::ALL
-                .iter()
-                .position(|sort| *sort == self.task_sort);
+            let mut options = widget::column::with_capacity(4).spacing(spacing.space_xxs);
+            for (index, sort) in tasks::TaskSort::ALL.into_iter().enumerate() {
+                let option = widget::button::text(sort.label()).width(Length::Fill);
+                let option = if sort == self.task_sort {
+                    option.leading_icon(sort_selected_icon())
+                } else {
+                    option
+                };
+                options = options.push(
+                    option
+                        .name(format!("Sort by {}", sort.label()))
+                        .on_press_maybe(self.can_write().then_some(Message::SelectSortMode(index))),
+                );
+            }
+            let sort_mode_button = widget::button::icon(sort_mode_icon())
+                .width(Length::Fixed(36.0))
+                .height(Length::Fixed(36.0))
+                .name(format!("Sort mode: {}", self.task_sort.label()))
+                .tooltip("Choose task sort mode")
+                .on_press_maybe(self.can_write().then_some(Message::ToggleSortMenu));
+            let sort_mode_button = widget::popover(sort_mode_button)
+                .position(widget::popover::Position::Bottom)
+                .on_close(Message::CloseSortMenu);
+            let sort_mode_button = if self.sort_menu_open {
+                sort_mode_button.popup(
+                    widget::container(options)
+                        .width(Length::Fixed(176.0))
+                        .padding(spacing.space_xxs)
+                        .class(cosmic::theme::Container::Card),
+                )
+            } else {
+                sort_mode_button
+            };
+            let direction_label = tasks::sort_order_label(self.task_sort_ascending);
+            let direction_tooltip = if self.task_sort_ascending {
+                "Ascending order; click to switch to descending"
+            } else {
+                "Descending order; click to switch to ascending"
+            };
+            let sort_controls = widget::row::with_capacity(2)
+                .spacing(spacing.space_xxs)
+                .align_y(Alignment::Center)
+                .push(sort_mode_button)
+                .push(
+                    widget::button::icon(sort_direction_icon(self.task_sort_ascending))
+                        .width(Length::Fixed(36.0))
+                        .height(Length::Fixed(36.0))
+                        .name(format!("Sort direction: {direction_label}"))
+                        .tooltip(direction_tooltip)
+                        .on_press_maybe(self.can_write().then_some(Message::ToggleSortDirection)),
+                );
             let toolbar = widget::row::with_capacity(3)
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center)
-                .push(
-                    widget::dropdown(options, selected, Message::SortTasks)
-                        .width(Length::Fixed(220.0)),
-                )
+                .push(sort_controls)
+                .push(widget::space::horizontal())
                 .push(
                     widget::checkbox(self.show_completed)
                         .label("Show Completed")
@@ -367,6 +424,7 @@ impl cosmic::Application for AppModel {
                     view,
                     self.today,
                     self.task_sort,
+                    self.task_sort_ascending,
                     self.show_completed,
                 );
                 for task in visible {
@@ -797,6 +855,20 @@ impl cosmic::Application for AppModel {
                 },
             ));
         }
+        if self.sort_menu_open && self.editor.is_none() {
+            subscriptions.push(cosmic::iced::event::listen_with(
+                |event, _, _| match event {
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                        key:
+                            cosmic::iced::keyboard::Key::Named(
+                                cosmic::iced::keyboard::key::Named::Escape,
+                            ),
+                        ..
+                    }) => Some(Message::CloseSortMenu),
+                    _ => None,
+                },
+            ));
+        }
         if self
             .editor
             .as_ref()
@@ -844,6 +916,7 @@ impl cosmic::Application for AppModel {
         self.window_effect(effect)
     }
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
+        self.sort_menu_open = false;
         self.editor = None;
         self.delete_id = None;
         self.list_editor = None;
@@ -1264,13 +1337,30 @@ impl cosmic::Application for AppModel {
                 return self.update_title();
             }
             Message::DateTick => self.today = jiff::Zoned::now().date(),
-            Message::SortTasks(index) if self.can_write() => {
-                if let Some(sort) = tasks::TaskSort::ALL.get(index).copied() {
-                    self.save_task_preferences(sort, self.show_completed);
+            Message::ToggleSortMenu if self.can_write() => {
+                self.sort_menu_open = !self.sort_menu_open;
+            }
+            Message::CloseSortMenu => self.sort_menu_open = false,
+            Message::SelectSortMode(index) if self.can_write() => {
+                if let Some(sort) = tasks::sort_mode_at(index) {
+                    let ascending = if sort == self.task_sort {
+                        self.task_sort_ascending
+                    } else {
+                        sort.default_ascending()
+                    };
+                    self.save_task_preferences(sort, ascending, self.show_completed);
                 }
+                self.sort_menu_open = false;
+            }
+            Message::ToggleSortDirection if self.can_write() => {
+                self.save_task_preferences(
+                    self.task_sort,
+                    !self.task_sort_ascending,
+                    self.show_completed,
+                );
             }
             Message::ShowCompleted(show) if self.can_write() => {
-                self.save_task_preferences(self.task_sort, show);
+                self.save_task_preferences(self.task_sort, self.task_sort_ascending, show);
             }
             Message::About => self.core.window.show_context = !self.core.window.show_context,
             Message::LaunchUrl(url) => {
@@ -1365,6 +1455,7 @@ impl AppModel {
         match storage::data_path().and_then(Store::open) {
             Ok(store) => {
                 self.task_sort = store.sort_mode();
+                self.task_sort_ascending = store.sort_ascending();
                 self.show_completed = store.show_completed();
                 self.store = Some(store);
                 self.storage_error = None;
@@ -1375,11 +1466,17 @@ impl AppModel {
             }
         }
     }
-    fn save_task_preferences(&mut self, sort: tasks::TaskSort, show_completed: bool) {
+    fn save_task_preferences(
+        &mut self,
+        sort: tasks::TaskSort,
+        ascending: bool,
+        show_completed: bool,
+    ) {
         if let Some(store) = &mut self.store {
-            match store.set_preferences(sort, show_completed) {
+            match store.set_preferences(sort, ascending, show_completed) {
                 Ok(()) => {
                     self.task_sort = sort;
+                    self.task_sort_ascending = ascending;
                     self.show_completed = show_completed;
                     self.storage_error = None;
                 }
@@ -1458,6 +1555,23 @@ fn today_icon() -> icon::Handle {
 
 fn pinned_list_icon() -> icon::Handle {
     icon::from_svg_bytes(PINNED_LIST_ICON).symbolic(true)
+}
+
+fn sort_mode_icon() -> icon::Handle {
+    icon::from_svg_bytes(SORT_MODE_ICON).symbolic(true)
+}
+
+fn sort_direction_icon(ascending: bool) -> icon::Handle {
+    icon::from_svg_bytes(if ascending {
+        SORT_ASCENDING_ICON
+    } else {
+        SORT_DESCENDING_ICON
+    })
+    .symbolic(true)
+}
+
+fn sort_selected_icon() -> icon::Handle {
+    icon::from_svg_bytes(SORT_SELECTED_ICON).symbolic(true)
 }
 
 fn priority_accessible_name(selected: Priority, priority: Priority) -> String {
@@ -1610,6 +1724,10 @@ mod tests {
             (INBOX_ICON, inbox_icon()),
             (TODAY_ICON, today_icon()),
             (PINNED_LIST_ICON, pinned_list_icon()),
+            (SORT_MODE_ICON, sort_mode_icon()),
+            (SORT_ASCENDING_ICON, sort_direction_icon(true)),
+            (SORT_DESCENDING_ICON, sort_direction_icon(false)),
+            (SORT_SELECTED_ICON, sort_selected_icon()),
         ] {
             assert!(std::str::from_utf8(asset).unwrap().contains("<path"));
             assert!(handle.symbolic);
