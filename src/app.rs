@@ -51,6 +51,115 @@ fn module_selector_min_width(gap: u16, padding: u16) -> f32 {
     4. * 40. + 3. * f32::from(gap) + 2. * f32::from(padding)
 }
 
+fn module_cell_width(allocated: f32, gap: u16) -> f32 {
+    ((allocated - 5. * f32::from(gap)).max(0.)) / 4.
+}
+
+fn module_selector(
+    allocated: f32,
+    gap: u16,
+    active: Module,
+) -> Element<'static, cosmic::Action<Message>> {
+    let cell_width = module_cell_width(allocated, gap);
+    let mut row = widget::row::with_capacity(4)
+        .width((allocated - 2. * f32::from(gap)).max(0.))
+        .height(MODULE_CELL_HEIGHT)
+        .spacing(gap);
+    for (module, label) in [
+        (Module::Tasks, "Tasks"),
+        (Module::Board, "Board View"),
+        (Module::Matrix, "Eisenhower Matrix"),
+        (Module::Pomodoro, "Pomodoro"),
+    ] {
+        let selected = active == module;
+        let cell = widget::button::custom(
+            widget::container(widget::icon(module_icon(module)).size(16))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(cell_width)
+        .height(MODULE_CELL_HEIGHT)
+        .padding(0)
+        .class(module_cell_style(selected))
+        .selected(selected)
+        .name(label)
+        .on_press(cosmic::Action::App(Message::SelectModule(module)));
+        row = row.push(widget::tooltip(
+            cell,
+            widget::text::body(label),
+            widget::tooltip::Position::Bottom,
+        ));
+    }
+    widget::container(row)
+        .padding(gap)
+        .width(allocated)
+        .height(MODULE_CELL_HEIGHT + 2. * f32::from(gap))
+        .into()
+}
+
+#[derive(Clone, Copy)]
+enum ModuleCellState {
+    Active,
+    Hovered,
+    Pressed,
+}
+fn module_cell_appearance(
+    theme: &cosmic::Theme,
+    selected: bool,
+    focused: bool,
+    state: ModuleCellState,
+) -> widget::button::Style {
+    use widget::button::Catalog;
+    let class = cosmic::theme::Button::IconVertical;
+    let mut style = match state {
+        ModuleCellState::Active => theme.active(focused, selected, &class),
+        ModuleCellState::Hovered => theme.hovered(focused, selected, &class),
+        ModuleCellState::Pressed => theme.pressed(focused, selected, &class),
+    };
+    style.border_radius = theme.cosmic().radius_s().into();
+    if selected {
+        let base: cosmic::iced::Color = theme.cosmic().primary_container_color().into();
+        let accent: cosmic::iced::Color = theme.cosmic().accent_color().into();
+        let amount = match state {
+            ModuleCellState::Active => 0.22,
+            ModuleCellState::Hovered => 0.30,
+            ModuleCellState::Pressed => 0.36,
+        };
+        style.background = Some(
+            cosmic::iced::Color::from_rgb(
+                base.r + (accent.r - base.r) * amount,
+                base.g + (accent.g - base.g) * amount,
+                base.b + (accent.b - base.b) * amount,
+            )
+            .into(),
+        );
+        style.overlay = None;
+        style.icon_color = Some(theme.cosmic().on_bg_color().into());
+        if !focused {
+            style.border_width = 1.;
+            style.border_color = accent;
+        }
+    }
+    style
+}
+fn module_cell_style(selected: bool) -> cosmic::theme::Button {
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |focused, theme| {
+            module_cell_appearance(theme, selected, focused, ModuleCellState::Active)
+        }),
+        hovered: Box::new(move |focused, theme| {
+            module_cell_appearance(theme, selected, focused, ModuleCellState::Hovered)
+        }),
+        pressed: Box::new(move |focused, theme| {
+            module_cell_appearance(theme, selected, focused, ModuleCellState::Pressed)
+        }),
+        disabled: Box::new(|theme| {
+            use widget::button::Catalog;
+            theme.disabled(&cosmic::theme::Button::IconVertical)
+        }),
+    }
+}
+
 pub struct AppModel {
     core: cosmic::Core,
     lifecycle: Lifecycle,
@@ -369,41 +478,11 @@ impl cosmic::Application for AppModel {
             return None;
         }
         let spacing = cosmic::theme::spacing();
-        let selectors = [
-            (Module::Tasks, "Tasks"),
-            (Module::Board, "Board View"),
-            (Module::Matrix, "Eisenhower Matrix"),
-            (Module::Pomodoro, "Pomodoro"),
-        ];
-        let mut module_row = widget::row::with_capacity(4)
-            .spacing(spacing.space_xxs)
-            .width(Length::Fill)
-            .height(Length::Fill);
-        for (module, label) in selectors {
-            let cell = widget::button::custom(
-                widget::container(widget::icon(module_icon(module)).size(16))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
-            .width(Length::FillPortion(1))
-            .height(MODULE_CELL_HEIGHT)
-            .padding(0)
-            .class(cosmic::theme::Button::IconVertical)
-            .selected(self.navigation.active == module)
-            .name(label)
-            .on_press(cosmic::Action::App(Message::SelectModule(module)));
-            module_row = module_row.push(widget::tooltip(
-                cell,
-                widget::text::body(label),
-                widget::tooltip::Position::Bottom,
-            ));
-        }
-        // The fixed height defers this fluid-width row until native navigation
-        // and the spacer have established the sidebar's bounded width.
-        let module_row = widget::container(module_row)
-            .padding(spacing.space_xxs)
-            .height(MODULE_CELL_HEIGHT + 2. * f32::from(spacing.space_xxs))
-            .width(Length::Fill);
+        let active = self.navigation.active;
+        let module_row = widget::responsive(move |allocated| {
+            module_selector(allocated.width, spacing.space_xxs, active)
+        })
+        .height(MODULE_CELL_HEIGHT + 2. * f32::from(spacing.space_xxs));
         let nav = cosmic::widget::nav_bar(&self.nav, |id| {
             cosmic::Action::Cosmic(cosmic::app::Action::NavBar(id))
         })
@@ -2111,6 +2190,150 @@ fn matrix_scope_after_page(page: &Page, current: Option<String>) -> Option<Strin
 mod tests {
     use super::*;
 
+    // No init/load: exercise the actual navigation tree without opening task data.
+    fn sidebar_fixture() -> AppModel {
+        AppModel {
+            core: cosmic::Core::default(),
+            lifecycle: Lifecycle::default(),
+            tray_connection: None,
+            tray_error: None,
+            nav: build_nav(&[], &Page::Inbox, Module::Tasks, true, true),
+            navigation: ModuleNavigation::default(),
+            page: Page::Inbox,
+            lists_expanded: true,
+            matrix_lists_expanded: true,
+            matrix_list: None,
+            matrix_priority_task: None,
+            matrix_drag: matrix_drag::State::default(),
+            store: None,
+            storage_error: None,
+            editor: None,
+            delete_id: None,
+            list_editor: None,
+            delete_list_id: None,
+            today: "2026-10-19".parse().unwrap(),
+            task_sort: tasks::TaskSort::default(),
+            task_sort_ascending: tasks::TaskSort::default().default_ascending(),
+            show_completed: true,
+            sort_menu_open: false,
+            about: About::default(),
+            title_input: cosmic::iced::widget::Id::unique(),
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_cosmic_sidebar_and_frame_fill_the_selector_bounds() {
+        use cosmic::iced::{
+            Size,
+            advanced::{
+                layout::{Limits, Node},
+                renderer::Headless,
+                widget::Tree,
+            },
+        };
+        let renderer = cosmic::Renderer::new(cosmic::font::default(), 14.into(), Some("tiny-skia"))
+            .await
+            .expect("locked software renderer must work without a display/GPU");
+        let gap = cosmic::theme::spacing().space_xxs;
+        fn check(node: &Node, gap: u16) -> Option<f32> {
+            // Locate the production panel: selector, native navigation, and
+            // zero-height intrinsic spacer. Works inside the full COSMIC frame.
+            let column = node.children().first()?;
+            let children = column.children();
+            if children.len() == 3
+                && children[2].size().height == 0.
+                && children[0].size().height == MODULE_CELL_HEIGHT + 2. * f32::from(gap)
+            {
+                let selector = &children[0];
+                let container = &selector.children()[0];
+                let row = &container.children()[0];
+                let width = node.size().width;
+                assert_eq!(column.size().width, width);
+                assert_eq!(selector.size().width, width);
+                assert_eq!(container.size().width, width);
+                assert_eq!(row.size().width, width - 2. * f32::from(gap));
+                let expected_cell = module_cell_width(width, gap);
+                assert_eq!(row.children().len(), 4);
+                for (index, cell) in row.children().iter().enumerate() {
+                    assert!((cell.size().width - expected_cell).abs() < 0.01);
+                    assert_eq!(cell.size().height, MODULE_CELL_HEIGHT);
+                    assert!(
+                        (cell.bounds().x - index as f32 * (expected_cell + f32::from(gap))).abs()
+                            < 0.01
+                    );
+                    let center = &cell.children()[0];
+                    let icon = &center.children()[0];
+                    assert!(
+                        (center.bounds().x + icon.bounds().center_x() - expected_cell / 2.).abs()
+                            < 0.01
+                    );
+                    assert!(
+                        (center.bounds().y + icon.bounds().center_y() - MODULE_CELL_HEIGHT / 2.)
+                            .abs()
+                            < 0.01
+                    );
+                }
+                let last = row.children().last().unwrap();
+                assert!((last.bounds().x + last.size().width - row.size().width).abs() < 0.01);
+                assert!((4. * expected_cell + 3. * f32::from(gap) - row.size().width).abs() < 0.01);
+                return Some(width);
+            }
+            None
+        }
+        fn find(node: &Node, gap: u16) -> Option<f32> {
+            check(node, gap).or_else(|| node.children().iter().find_map(|child| find(child, gap)))
+        }
+        for module in [Module::Tasks, Module::Matrix] {
+            let mut app = sidebar_fixture();
+            app.navigation.active = module;
+            app.page = if module == Module::Tasks {
+                Page::Inbox
+            } else {
+                Page::Matrix
+            };
+            let long_list = TaskList::new(
+                "A deliberately long navigation list label to exercise the sidebar cap",
+            )
+            .unwrap();
+            app.nav = build_nav(&[long_list], &app.page, module, true, true);
+            for available in [200_f32, 240., 280., 640., 1024.] {
+                let mut nav = cosmic::Application::nav_bar(&app).unwrap();
+                let mut tree = Tree::new(&nav);
+                for _ in 0..2 {
+                    let layout = nav.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &Limits::new(Size::ZERO, Size::new(available, 560.)),
+                    );
+                    let width = find(&layout, gap).expect("production sidebar must be measured");
+                    assert_eq!(width, available.min(SIDEBAR_MAX_WIDTH));
+                    println!(
+                        "sidebar={width} padding={gap} inner={} cell={} gap={gap}",
+                        width - 2. * f32::from(gap),
+                        module_cell_width(width, gap)
+                    );
+                }
+            }
+            for viewport in [640_f32, 800., 1024., 1440.] {
+                let mut frame = cosmic::app::ApplicationExt::view_main(&app);
+                let mut tree = Tree::new(&frame);
+                let layout = frame.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &Limits::new(Size::ZERO, Size::new(viewport, 768.)),
+                );
+                let width =
+                    find(&layout, gap).expect("full native frame must contain the selector");
+                assert_eq!(width, SIDEBAR_MAX_WIDTH);
+                println!(
+                    "frame={viewport} sidebar={width} inner={} four_cells_plus_gaps={}",
+                    width - 2. * f32::from(gap),
+                    4. * module_cell_width(width, gap) + 3. * f32::from(gap)
+                );
+            }
+        }
+    }
+
     #[test]
     fn module_cells_fill_the_measured_sidebar_and_center_their_icons() {
         use cosmic::iced::{
@@ -2210,29 +2433,47 @@ mod tests {
     }
 
     #[test]
-    fn native_module_cell_style_distinguishes_selection_hover_and_focus() {
-        use widget::button::Catalog;
+    fn module_cell_selection_has_opaque_fill_and_distinct_hover_and_focus() {
         for theme in [
             cosmic::Theme::light(),
             cosmic::Theme::dark(),
             cosmic::Theme::light_hc(),
             cosmic::Theme::dark_hc(),
         ] {
-            let class = cosmic::theme::Button::IconVertical;
-            let idle = theme.active(false, false, &class);
-            let selected = theme.active(false, true, &class);
-            assert!(idle.overlay.is_none());
-            assert!(selected.overlay.is_some());
-            assert_eq!(
-                selected.border_radius,
-                theme.cosmic().corner_radii.radius_m.into()
-            );
-            assert_ne!(
-                theme.hovered(false, true, &class).background,
-                selected.background
-            );
-            let focused = theme.active(true, true, &class);
+            let idle = module_cell_appearance(&theme, false, false, ModuleCellState::Active);
+            let selected = module_cell_appearance(&theme, true, false, ModuleCellState::Active);
+            let hover = module_cell_appearance(&theme, true, false, ModuleCellState::Hovered);
+            let pressed = module_cell_appearance(&theme, true, false, ModuleCellState::Pressed);
+            let focused = module_cell_appearance(&theme, true, true, ModuleCellState::Active);
+            assert_ne!(selected.background, idle.background);
+            assert_ne!(hover.background, selected.background);
+            assert_ne!(pressed.background, hover.background);
+            assert_eq!(selected.border_width, 1.);
+            assert_eq!(selected.border_radius, theme.cosmic().radius_s().into());
             assert!(focused.outline_width > selected.outline_width);
+            for style in [selected, hover, pressed] {
+                let Some(cosmic::iced::Background::Color(color)) = style.background else {
+                    panic!("selected cells require an opaque rounded background");
+                };
+                assert_eq!(color.a, 1.);
+                assert!(style.overlay.is_none());
+                fn luminance(color: cosmic::iced::Color) -> f32 {
+                    let linear = |v: f32| {
+                        if v <= 0.04045 {
+                            v / 12.92
+                        } else {
+                            ((v + 0.055) / 1.055).powf(2.4)
+                        }
+                    };
+                    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+                }
+                let foreground = luminance(style.icon_color.unwrap());
+                let background = luminance(color);
+                assert!(
+                    (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+                        >= 4.5
+                );
+            }
         }
     }
 
