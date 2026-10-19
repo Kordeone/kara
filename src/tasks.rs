@@ -36,6 +36,17 @@ pub fn sort_mode_at(index: usize) -> Option<TaskSort> {
 pub fn sort_order_label(ascending: bool) -> &'static str {
     if ascending { "Ascending" } else { "Descending" }
 }
+pub fn sort_preferences_after_click(
+    current: TaskSort,
+    ascending: bool,
+    clicked: TaskSort,
+) -> (TaskSort, bool) {
+    if current == clicked {
+        (current, !ascending)
+    } else {
+        (clicked, clicked.default_ascending())
+    }
+}
 fn in_requested_direction(ordering: std::cmp::Ordering, ascending: bool) -> std::cmp::Ordering {
     if ascending {
         ordering
@@ -256,7 +267,7 @@ impl TaskList {
     }
 
     pub fn visible_in_sidebar(&self, expanded: bool) -> bool {
-        expanded || self.pinned
+        expanded
     }
 }
 fn new_id() -> Result<String, String> {
@@ -686,14 +697,15 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_lists_show_only_pinned_lists() {
+    fn lists_are_hidden_while_collapsed_regardless_of_pinning() {
         let mut pinned = TaskList::new("Pinned").unwrap();
         let unpinned = TaskList::new("Unpinned").unwrap();
         assert!(!pinned.pinned);
         assert!(pinned.visible_in_sidebar(true));
         assert!(!pinned.visible_in_sidebar(false));
         pinned.pinned = true;
-        assert!(pinned.visible_in_sidebar(false));
+        assert!(!pinned.visible_in_sidebar(false));
+        assert!(pinned.visible_in_sidebar(true));
         assert!(unpinned.visible_in_sidebar(true));
         assert!(!unpinned.visible_in_sidebar(false));
 
@@ -703,6 +715,28 @@ mod tests {
         let restored: TaskList = serde_json::from_value(legacy.into()).unwrap();
         assert!(!restored.pinned);
     }
+
+    #[test]
+    fn clicking_sort_modes_toggles_selected_direction_and_keeps_mode_defaults() {
+        for current in TaskSort::ALL {
+            let default = current.default_ascending();
+            assert_eq!(
+                sort_preferences_after_click(current, default, current),
+                (current, !default)
+            );
+            assert_eq!(
+                sort_preferences_after_click(current, !default, current),
+                (current, default)
+            );
+            for clicked in TaskSort::ALL.into_iter().filter(|mode| *mode != current) {
+                assert_eq!(
+                    sort_preferences_after_click(current, !default, clicked),
+                    (clicked, clicked.default_ascending())
+                );
+            }
+        }
+    }
+
     #[test]
     fn dates_and_titles_are_validated() {
         for date in [

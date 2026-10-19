@@ -25,14 +25,18 @@ const TODAY_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/calendar-check-symbolic.svg");
 const PINNED_LIST_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg");
-const SORT_MODE_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-mode-symbolic.svg");
+const SORT_CREATED_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-created-symbolic.svg");
+const SORT_DUE_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-due-symbolic.svg");
+const PRIORITY_FLAG_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/priority-flag-symbolic.svg");
+const SORT_NAME_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-name-symbolic.svg");
 const SORT_ASCENDING_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg");
 const SORT_DESCENDING_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg");
-const SORT_SELECTED_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/actions/sort-selected-symbolic.svg");
 const MODULE_TASKS_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg");
 const MODULE_BOARD_ICON: &[u8] =
@@ -183,7 +187,6 @@ pub struct AppModel {
     task_sort: tasks::TaskSort,
     task_sort_ascending: bool,
     show_completed: bool,
-    sort_menu_open: bool,
     about: About,
     title_input: cosmic::iced::widget::Id,
 }
@@ -248,10 +251,7 @@ pub enum Message {
     Save,
     RetryStorage,
     DateTick,
-    ToggleSortMenu,
-    CloseSortMenu,
     SelectSortMode(usize),
-    ToggleSortDirection,
     ShowCompleted(bool),
     About,
     LaunchUrl(String),
@@ -438,7 +438,6 @@ impl cosmic::Application for AppModel {
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
-            sort_menu_open: false,
             about,
             title_input: cosmic::iced::widget::Id::unique(),
         };
@@ -623,57 +622,54 @@ impl cosmic::Application for AppModel {
             content = content.push(header);
         }
         if page.view().is_some() {
-            let mut options = widget::column::with_capacity(4).spacing(spacing.space_xxs);
-            for (index, sort) in tasks::TaskSort::ALL.into_iter().enumerate() {
-                let option = widget::button::text(sort.label()).width(Length::Fill);
-                let option = if sort == self.task_sort {
-                    option.leading_icon(sort_selected_icon())
-                } else {
-                    option
-                };
-                options = options.push(
-                    option
-                        .name(format!("Sort by {}", sort.label()))
-                        .on_press_maybe(self.can_write().then_some(Message::SelectSortMode(index))),
-                );
-            }
-            let sort_mode_button = widget::button::icon(sort_mode_icon())
-                .width(Length::Fixed(36.0))
-                .height(Length::Fixed(36.0))
-                .name(format!("Sort mode: {}", self.task_sort.label()))
-                .tooltip("Choose task sort mode")
-                .on_press_maybe(self.can_write().then_some(Message::ToggleSortMenu));
-            let sort_mode_button = widget::popover(sort_mode_button)
-                .position(widget::popover::Position::Bottom)
-                .on_close(Message::CloseSortMenu);
-            let sort_mode_button = if self.sort_menu_open {
-                sort_mode_button.popup(
-                    widget::container(options)
-                        .width(Length::Fixed(176.0))
-                        .padding(spacing.space_xxs)
-                        .class(cosmic::theme::Container::Card),
-                )
-            } else {
-                sort_mode_button
-            };
-            let direction_label = tasks::sort_order_label(self.task_sort_ascending);
-            let direction_tooltip = if self.task_sort_ascending {
-                "Ascending order; click to switch to descending"
-            } else {
-                "Descending order; click to switch to ascending"
-            };
-            let sort_controls = widget::row::with_capacity(2)
+            let mut sort_controls = widget::row::with_capacity(4)
                 .spacing(spacing.space_xxs)
-                .align_y(Alignment::Center)
-                .push(sort_mode_button)
-                .push(
-                    widget::button::icon(sort_direction_icon(self.task_sort_ascending))
-                        .width(Length::Fixed(36.0))
-                        .height(Length::Fixed(36.0))
-                        .name(format!("Sort direction: {direction_label}"))
-                        .tooltip(direction_tooltip)
-                        .on_press_maybe(self.can_write().then_some(Message::ToggleSortDirection)),
-                );
+                .align_y(Alignment::Center);
+            for (index, sort) in tasks::TaskSort::ALL.into_iter().enumerate() {
+                let selected = sort == self.task_sort;
+                let icon = widget::container(widget::icon(task_sort_icon(sort)).size(20))
+                    .width(Length::Fixed(24.0))
+                    .height(Length::Fixed(24.0))
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center);
+                let icon: cosmic::Element<'_, Message> = if selected {
+                    let direction = widget::container(
+                        widget::icon(sort_direction_icon(self.task_sort_ascending)).size(10),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::Start);
+                    cosmic::iced::widget::stack([icon.into(), direction.into()])
+                        .width(Length::Fixed(24.0))
+                        .height(Length::Fixed(24.0))
+                        .into()
+                } else {
+                    icon.into()
+                };
+                let order = tasks::sort_order_label(self.task_sort_ascending);
+                let label = if selected {
+                    format!(
+                        "Sort by {} ({order}; selected; click to reverse)",
+                        sort.label()
+                    )
+                } else {
+                    format!("Sort by {}", sort.label())
+                };
+                let button = widget::button::custom(icon)
+                    .width(Length::Fixed(36.0))
+                    .height(Length::Fixed(36.0))
+                    .padding(0)
+                    .class(cosmic::theme::Button::IconVertical)
+                    .selected(selected)
+                    .name(label.clone())
+                    .on_press_maybe(self.can_write().then_some(Message::SelectSortMode(index)));
+                sort_controls = sort_controls.push(widget::tooltip(
+                    button,
+                    widget::text::body(label),
+                    widget::tooltip::Position::Top,
+                ));
+            }
             let toolbar = widget::row::with_capacity(3)
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center)
@@ -1161,20 +1157,6 @@ impl cosmic::Application for AppModel {
                 },
             ));
         }
-        if self.sort_menu_open && self.editor.is_none() {
-            subscriptions.push(cosmic::iced::event::listen_with(
-                |event, _, _| match event {
-                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                        key:
-                            cosmic::iced::keyboard::Key::Named(
-                                cosmic::iced::keyboard::key::Named::Escape,
-                            ),
-                        ..
-                    }) => Some(Message::CloseSortMenu),
-                    _ => None,
-                },
-            ));
-        }
         if self
             .editor
             .as_ref()
@@ -1222,7 +1204,6 @@ impl cosmic::Application for AppModel {
         self.window_effect(effect)
     }
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
-        self.sort_menu_open = false;
         self.editor = None;
         self.delete_id = None;
         self.list_editor = None;
@@ -1737,27 +1718,15 @@ impl cosmic::Application for AppModel {
                 return self.update_title();
             }
             Message::DateTick => self.today = jiff::Zoned::now().date(),
-            Message::ToggleSortMenu if self.can_write() => {
-                self.sort_menu_open = !self.sort_menu_open;
-            }
-            Message::CloseSortMenu => self.sort_menu_open = false,
             Message::SelectSortMode(index) if self.can_write() => {
-                if let Some(sort) = tasks::sort_mode_at(index) {
-                    let ascending = if sort == self.task_sort {
-                        self.task_sort_ascending
-                    } else {
-                        sort.default_ascending()
-                    };
+                if let Some(clicked) = tasks::sort_mode_at(index) {
+                    let (sort, ascending) = tasks::sort_preferences_after_click(
+                        self.task_sort,
+                        self.task_sort_ascending,
+                        clicked,
+                    );
                     self.save_task_preferences(sort, ascending, self.show_completed);
                 }
-                self.sort_menu_open = false;
-            }
-            Message::ToggleSortDirection if self.can_write() => {
-                self.save_task_preferences(
-                    self.task_sort,
-                    !self.task_sort_ascending,
-                    self.show_completed,
-                );
             }
             Message::ShowCompleted(show) if self.can_write() => {
                 self.save_task_preferences(self.task_sort, self.task_sort_ascending, show);
@@ -1971,8 +1940,14 @@ fn module_icon(module: Module) -> icon::Handle {
     icon::from_svg_bytes(asset).symbolic(true)
 }
 
-fn sort_mode_icon() -> icon::Handle {
-    icon::from_svg_bytes(SORT_MODE_ICON).symbolic(true)
+fn task_sort_icon(sort: tasks::TaskSort) -> icon::Handle {
+    let asset = match sort {
+        tasks::TaskSort::CreationDate => SORT_CREATED_ICON,
+        tasks::TaskSort::DueDate => SORT_DUE_ICON,
+        tasks::TaskSort::Priority => PRIORITY_FLAG_ICON,
+        tasks::TaskSort::Name => SORT_NAME_ICON,
+    };
+    icon::from_svg_bytes(asset).symbolic(true)
 }
 
 fn sort_direction_icon(ascending: bool) -> icon::Handle {
@@ -1982,10 +1957,6 @@ fn sort_direction_icon(ascending: bool) -> icon::Handle {
         SORT_DESCENDING_ICON
     })
     .symbolic(true)
-}
-
-fn sort_selected_icon() -> icon::Handle {
-    icon::from_svg_bytes(SORT_SELECTED_ICON).symbolic(true)
 }
 
 fn priority_accessible_name(selected: Priority, priority: Priority) -> String {
@@ -2079,6 +2050,7 @@ fn build_nav(
                 })
                 .icon(),
             );
+            nav.divider_above_set(lists_id, true);
             nav.indent_set(lists_id, 0);
             if lists_expanded {
                 insert_list_rows(&mut nav, lists, Module::Tasks, true);
@@ -2155,10 +2127,12 @@ fn build_nav(
 }
 
 fn insert_list_rows(nav: &mut nav_bar::Model, lists: &[TaskList], module: Module, expanded: bool) {
-    for list in lists
+    let mut visible: Vec<_> = lists
         .iter()
         .filter(|list| list.visible_in_sidebar(expanded))
-    {
+        .collect();
+    visible.sort_by_key(|list| !list.pinned);
+    for list in visible {
         let page = match module {
             Module::Tasks => Page::List(list.id.clone()),
             Module::Matrix => Page::MatrixList(list.id.clone()),
@@ -2215,7 +2189,6 @@ mod tests {
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
-            sort_menu_open: false,
             about: About::default(),
             title_input: cosmic::iced::widget::Id::unique(),
         }
@@ -2554,10 +2527,18 @@ mod tests {
             (INBOX_ICON, inbox_icon()),
             (TODAY_ICON, today_icon()),
             (PINNED_LIST_ICON, pinned_list_icon()),
-            (SORT_MODE_ICON, sort_mode_icon()),
+            (
+                SORT_CREATED_ICON,
+                task_sort_icon(tasks::TaskSort::CreationDate),
+            ),
+            (SORT_DUE_ICON, task_sort_icon(tasks::TaskSort::DueDate)),
+            (
+                PRIORITY_FLAG_ICON,
+                task_sort_icon(tasks::TaskSort::Priority),
+            ),
+            (SORT_NAME_ICON, task_sort_icon(tasks::TaskSort::Name)),
             (SORT_ASCENDING_ICON, sort_direction_icon(true)),
             (SORT_DESCENDING_ICON, sort_direction_icon(false)),
-            (SORT_SELECTED_ICON, sort_selected_icon()),
             (MODULE_TASKS_ICON, module_icon(Module::Tasks)),
             (MODULE_BOARD_ICON, module_icon(Module::Board)),
             (MODULE_MATRIX_ICON, module_icon(Module::Matrix)),
@@ -2582,11 +2563,19 @@ mod tests {
     }
     #[test]
     fn contextual_sidebar_builds_only_the_selected_module_navigation() {
-        let mut pinned = TaskList::new("Pinned").unwrap();
-        pinned.pinned = true;
-        let unpinned = TaskList::new("Unpinned").unwrap();
-        let lists = [pinned.clone(), unpinned.clone()];
-        let active = Page::List(pinned.id.clone());
+        let unpinned_first = TaskList::new("Unpinned first").unwrap();
+        let mut pinned_first = TaskList::new("Pinned first").unwrap();
+        pinned_first.pinned = true;
+        let unpinned_second = TaskList::new("Unpinned second").unwrap();
+        let mut pinned_second = TaskList::new("Pinned second").unwrap();
+        pinned_second.pinned = true;
+        let lists = [
+            unpinned_first.clone(),
+            pinned_first.clone(),
+            unpinned_second.clone(),
+            pinned_second.clone(),
+        ];
+        let active = Page::List(pinned_first.id.clone());
         let expanded = build_nav(&lists, &active, Module::Tasks, true, true);
         let pages: Vec<_> = expanded
             .iter()
@@ -2600,10 +2589,17 @@ mod tests {
                 Page::Today,
                 Page::Calendar,
                 Page::Lists,
-                Page::List(pinned.id.clone()),
-                Page::List(unpinned.id.clone()),
+                Page::List(pinned_first.id.clone()),
+                Page::List(pinned_second.id.clone()),
+                Page::List(unpinned_first.id.clone()),
+                Page::List(unpinned_second.id.clone()),
             ]
         );
+        let lists_row = expanded
+            .iter()
+            .find(|id| expanded.data::<Page>(*id) == Some(&Page::Lists))
+            .unwrap();
+        assert_eq!(expanded.divider_above(lists_row), Some(true));
         assert_eq!(expanded.active_data::<Page>(), Some(&active));
         assert_eq!(expanded.indent(expanded.active()), Some(1));
 
@@ -2612,20 +2608,23 @@ mod tests {
             .iter()
             .map(|id| collapsed.data::<Page>(id).unwrap().clone())
             .collect();
-        assert!(collapsed_pages.contains(&Page::List(pinned.id.clone())));
-        assert!(!collapsed_pages.contains(&Page::List(unpinned.id)));
+        assert!(
+            !collapsed_pages
+                .iter()
+                .any(|page| matches!(page, Page::List(_)))
+        );
         assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
 
         let matrix = build_nav(
             &lists,
-            &Page::MatrixList(pinned.id.clone()),
+            &Page::MatrixList(pinned_first.id.clone()),
             Module::Matrix,
             true,
             true,
         );
         assert_eq!(
             matrix.active_data::<Page>(),
-            Some(&Page::MatrixList(pinned.id))
+            Some(&Page::MatrixList(pinned_first.id.clone()))
         );
         assert!(
             !matrix
@@ -2636,6 +2635,30 @@ mod tests {
             matrix
                 .iter()
                 .any(|id| matrix.data::<Page>(id) == Some(&Page::Matrix))
+        );
+        let matrix_pages: Vec<_> = matrix
+            .iter()
+            .filter_map(|id| matrix.data::<Page>(id))
+            .cloned()
+            .collect();
+        let matrix_list_start = matrix_pages
+            .iter()
+            .position(|page| matches!(page, Page::MatrixList(_)))
+            .unwrap();
+        assert_eq!(
+            &matrix_pages[matrix_list_start..],
+            &[
+                Page::MatrixList(pinned_first.id.clone()),
+                Page::MatrixList(pinned_second.id.clone()),
+                Page::MatrixList(unpinned_first.id.clone()),
+                Page::MatrixList(unpinned_second.id.clone()),
+            ]
+        );
+        let matrix_collapsed = build_nav(&lists, &Page::MatrixLists, Module::Matrix, true, false);
+        assert!(
+            !matrix_collapsed
+                .iter()
+                .any(|id| matches!(matrix_collapsed.data::<Page>(id), Some(Page::MatrixList(_))))
         );
 
         let board = build_nav(&lists, &Page::BoardLists, Module::Board, true, true);

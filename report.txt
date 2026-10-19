@@ -100,3 +100,39 @@ CachyOS acceptance instructions
 Delivery boundary
 - Commit only on integration/matrix-feedback. No merge into main and no push.
 - Shared main, Luna's worktree and the original Matrix branch are preserved.
+
+
+Kara Tasks UI polish — Lists sidebar and sorting toolbar
+
+Implementation
+- Pinned lists now appear first within expanded Tasks and Matrix Lists navigation; each pinned/unpinned group retains its prior relative order. Collapsing either Lists group hides every list. Pin state and task/list storage remain unchanged.
+- Added libcosmic's native divider above Tasks Lists, immediately after Calendar.
+- Replaced the sort-mode popover and separate direction button with four compact controls for creation date, due date, priority, and name. The selected control shows a small direction glyph at the upper-right and uses COSMIC selected, hover, and focus states. Clicking the active mode reverses direction; selecting another mode restores that mode's existing default. Show Completed remains at the toolbar's far right.
+- Added bundled symbolic SVG assets for creation date, due date, and alphabetical sorting; the existing bundled priority flag and direction icons are reused.
+- No storage schema or Matrix classification/order behavior changed. Matrix list navigation uses the same pinned-first and collapse rules.
+
+Files changed
+- src/app.rs
+- src/tasks.rs
+- resources/icons/hicolor/scalable/actions/sort-created-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-due-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-name-symbolic.svg
+- report.txt
+
+Validation on headless Debian
+- cargo fmt --check: PASSED
+- cargo check --locked: PASSED
+- cargo clippy --locked --all-targets -- -D warnings: PASSED
+- cargo test --locked: PASSED
+- cargo build --locked: PASSED
+- Isolated D-Bus tray regression: PASSED
+  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
+- No COSMIC graphical testing was performed.
+
+CachyOS COSMIC graphical acceptance
+1. In light and dark themes, expand Tasks > Lists and confirm pinned lists lead, both groups retain their existing order, and the divider sits between Calendar and Lists. Collapse Lists and confirm all named lists disappear; expand it and verify pin/unpin changes persist and reorder immediately.
+2. Repeat list ordering, collapse/expand, pinning and selection under Matrix > Lists. Confirm selecting a named list changes Matrix scope as before and no duplicate list selector appears in Matrix content.
+3. In Inbox, Today, and a named list, verify four compact icons: creation date, due date, priority flag, and alphabetical name. Confirm only one has selected styling and its small direction indicator sits at the icon's upper-right.
+4. Click an unselected mode and confirm it becomes selected with that mode's established default direction. Click it again and confirm direction reverses. Restart Kara and confirm mode/direction preferences persist.
+5. Use mouse hover and keyboard Tab/activation. Confirm native COSMIC hover and selected states are clear, keyboard focus remains visually distinct, tooltips/accessibility labels identify mode and direction, and Show Completed stays aligned at the far right.
+6. Check the toolbar and sidebar at normal and narrow window widths for clipping or overlap.
