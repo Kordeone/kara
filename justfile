@@ -15,7 +15,7 @@ appdata := appid + '.metainfo.xml'
 # Application's desktop entry
 desktop := appid + '.desktop'
 # Application's icon.
-icon-svg := appid + '.svg'
+icon-png := appid + '.png'
 
 # Install destinations
 base-dir := absolute_path(clean(rootdir / prefix))
@@ -23,7 +23,8 @@ appdata-dst := base-dir / 'share' / 'appdata' / appdata
 bin-dst := base-dir / 'bin' / name
 desktop-dst := base-dir / 'share' / 'applications' / desktop
 icons-dst := base-dir / 'share' / 'icons' / 'hicolor'
-icon-svg-dst := icons-dst / 'scalable' / 'apps'
+icon-png-src := 'resources' / 'icons' / 'hicolor' / '512x512' / 'apps' / icon-png
+icon-png-dst := icons-dst / '512x512' / 'apps' / icon-png
 
 # Default recipe which runs `just build-release`
 default: build-release
@@ -65,11 +66,11 @@ install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
     install -Dm0644 {{ 'target' / 'xdgen' / 'app.desktop' }} {{desktop-dst}}
     install -Dm0644 {{ 'target' / 'xdgen' / 'app.metainfo.xml' }} {{appdata-dst}}
-    install -Dm0644 {{ 'resources' / 'icons' / 'hicolor' / 'scalable' / 'apps' / 'icon.svg' }} {{icon-svg-dst}}
+    install -Dm0644 {{icon-png-src}} {{icon-png-dst}}
 
 # Uninstalls installed files
 uninstall:
-    rm {{bin-dst}} {{desktop-dst}} {{icon-svg-dst}}
+    rm {{bin-dst}} {{desktop-dst}} {{icon-png-dst}}
 
 # Vendor dependencies locally
 vendor:

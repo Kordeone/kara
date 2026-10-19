@@ -16,7 +16,7 @@ use cosmic::{
 use jiff::civil::{Date, Weekday};
 use std::time::Duration;
 
-const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+const APP_ICON: &[u8] = include_bytes!("../resources/branding/kara-logo.png");
 const TABLER_ICONS_URL: &str = "https://github.com/tabler/tabler-icons";
 const EXTERNAL_LINK_ICON: &[u8] = include_bytes!("../assets/tabler/external-link.svg");
 const EDIT_ICON: &[u8] = include_bytes!("../assets/tabler/pencil.svg");
@@ -409,7 +409,7 @@ impl cosmic::Application for AppModel {
         let nav = build_nav(&[], &page, Module::Tasks, true, true);
         let about = About::default()
             .name("Kara")
-            .icon(icon::from_svg_bytes(APP_ICON))
+            .icon(icon::from_raster_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
             .license(env!("CARGO_PKG_LICENSE"))
             .links([("Repository", env!("CARGO_PKG_REPOSITORY"))]);
@@ -571,6 +571,10 @@ impl cosmic::Application for AppModel {
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
             widget::button::icon(icon::from_svg_bytes(INFO_ICON).symbolic(true))
+                .icon_size(16)
+                .padding(8)
+                .class(cosmic::theme::Button::HeaderBar)
+                .name("About Kara")
                 .tooltip("About Kara")
                 .on_press(Message::About)
                 .into(),
@@ -2583,6 +2587,19 @@ mod tests {
         let handle = edit_task_icon();
         assert!(handle.symbolic);
         assert!(matches!(&handle.data, icon::Data::Svg(_)));
+    }
+
+    #[test]
+    fn official_application_logo_resolves_to_a_raster_icon() {
+        assert!(APP_ICON.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let dimensions = (
+            u32::from_be_bytes(APP_ICON[16..20].try_into().unwrap()),
+            u32::from_be_bytes(APP_ICON[20..24].try_into().unwrap()),
+        );
+        assert_eq!(dimensions, (1254, 1254));
+        let handle = icon::from_raster_bytes(APP_ICON);
+        assert!(!handle.symbolic);
+        assert!(matches!(handle.data, icon::Data::Image(_)));
     }
 
     #[test]

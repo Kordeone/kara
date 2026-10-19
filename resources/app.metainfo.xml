@@ -5,8 +5,8 @@
   <project_license>MPL-2.0</project_license>
   <name>Kara</name>
   <summary>A native task and productivity manager for the COSMIC™ desktop</summary>
-  <icon type="remote" width="64" height="64" scale="1">
-    https://github.com/Kordeone/kara/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
+  <icon type="remote" width="512" height="512" scale="1">
+    https://github.com/Kordeone/kara/raw/main/resources/icons/hicolor/512x512/apps/io.github.kordeone.Kara.png
   </icon>
   <url type="vcs-browser">https://github.com/Kordeone/kara</url>
   <launchable type="desktop-id">io.github.kordeone.Kara.desktop</launchable>
