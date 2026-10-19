@@ -236,3 +236,24 @@ CachyOS COSMIC graphical acceptance checklist
 7. Repeat the visual check at display scaling and a narrow window; confirm no
    clipped or overlapping sidebar controls. Restart Kara and verify existing
    tasks, lists, pinning and sort preferences are preserved.
+
+About Kara — Tabler open-source credit follow-up
+- Appended a native COSMIC settings section titled “Open Source Credits” to
+  the existing About context drawer. Its clickable Tabler Icons row identifies
+  the contribution as “Interface icons · License: MIT” and opens the official
+  Tabler GitHub repository through Kara's existing URL-launch handler.
+- The existing Kara name, logo, version, project links and MPL-2.0 application
+  license remain intact. The custom KARA 5100 logo is separate artwork and is
+  not attributed to Tabler. assets/tabler/LICENSE.txt remains bundled.
+- Added a regression assertion for the official credit URL and extended the
+  existing icon-resource test to resolve the external-link SVG.
+- Validation: cargo fmt --check, cargo check --locked, strict all-target
+  Clippy, cargo test --locked (99 passed, 0 failed, 1 ignored), and
+  cargo build --locked all passed. No graphical testing was performed.
+
+CachyOS About acceptance addition
+- Open About Kara and confirm “Open Source Credits” appears in native COSMIC
+  styling after the existing application information. Verify the row reads
+  “Tabler Icons” and “Interface icons · License: MIT”, and clicking it opens
+  https://github.com/tabler/tabler-icons. Confirm the Kara logo and the
+  application’s MPL-2.0 license remain represented as Kara's own information.

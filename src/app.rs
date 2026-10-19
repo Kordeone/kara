@@ -17,6 +17,8 @@ use jiff::civil::{Date, Weekday};
 use std::time::Duration;
 
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+const TABLER_ICONS_URL: &str = "https://github.com/tabler/tabler-icons";
+const EXTERNAL_LINK_ICON: &[u8] = include_bytes!("../assets/tabler/external-link.svg");
 const EDIT_ICON: &[u8] = include_bytes!("../assets/tabler/pencil.svg");
 const DELETE_ICON: &[u8] = include_bytes!("../assets/tabler/trash.svg");
 const INFO_ICON: &[u8] = include_bytes!("../assets/tabler/info-circle.svg");
@@ -576,11 +578,38 @@ impl cosmic::Application for AppModel {
     }
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
         self.core.window.show_context.then(|| {
-            context_drawer::about(
+            let mut drawer = context_drawer::about(
                 &self.about,
                 |url| Message::LaunchUrl(url.to_string()),
                 Message::About,
+            );
+            let credit = widget::list::button(
+                widget::row::with_capacity(2)
+                    .push(
+                        widget::column::with_capacity(2)
+                            .push(widget::text::body("Tabler Icons"))
+                            .push(widget::text::caption("Interface icons · License: MIT"))
+                            .width(Length::Fill),
+                    )
+                    .push(
+                        widget::icon(icon::from_svg_bytes(EXTERNAL_LINK_ICON).symbolic(true))
+                            .size(16),
+                    )
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
             )
+            .on_press(Message::LaunchUrl(TABLER_ICONS_URL.into()));
+            let credits = widget::settings::section()
+                .title("Open Source Credits")
+                .add(credit);
+            drawer.content = widget::column::with_capacity(2)
+                .push(drawer.content)
+                .push(credits)
+                .spacing(cosmic::theme::spacing().space_m)
+                .width(Length::Fill)
+                .align_x(Alignment::Center)
+                .into();
+            drawer
         })
     }
     fn view(&self) -> Element<'_, Message> {
@@ -2557,8 +2586,17 @@ mod tests {
     }
 
     #[test]
+    fn tabler_credit_targets_the_official_collection() {
+        assert_eq!(TABLER_ICONS_URL, "https://github.com/tabler/tabler-icons");
+    }
+
+    #[test]
     fn task_navigation_assets_are_bundled_symbolic_svgs() {
         for (asset, handle) in [
+            (
+                EXTERNAL_LINK_ICON,
+                icon::from_svg_bytes(EXTERNAL_LINK_ICON).symbolic(true),
+            ),
             (EDIT_ICON, edit_task_icon()),
             (
                 DELETE_ICON,
