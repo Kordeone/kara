@@ -368,11 +368,11 @@ impl cosmic::Application for AppModel {
         ];
         let mut module_row = widget::row::with_capacity(4)
             .spacing(spacing.space_xxs)
-            .width(Length::Fill);
+            .width(Length::Shrink);
         for (module, label) in selectors {
             module_row = module_row.push(
                 widget::button::icon(module_icon(module))
-                    .width(Length::FillPortion(1))
+                    .width(Length::Fixed(40.0))
                     .height(Length::Fixed(36.0))
                     .selected(self.navigation.active == module)
                     .name(label)
@@ -382,14 +382,14 @@ impl cosmic::Application for AppModel {
         }
         let module_row = widget::container(module_row)
             .padding(spacing.space_xxs)
-            .width(Length::Fill);
+            .width(Length::Shrink);
         let nav = cosmic::widget::nav_bar(&self.nav, |id| {
             cosmic::Action::Cosmic(cosmic::app::Action::NavBar(id))
         })
         .on_context(|id| cosmic::Action::Cosmic(cosmic::app::Action::NavBarContext(id)))
         .context_menu(self.nav_context_menu())
         .into_container()
-        .width(Length::Fill)
+        .width(Length::Shrink)
         .height(Length::Fill);
         let panel = widget::container(
             widget::column::with_capacity(2)
@@ -2081,6 +2081,68 @@ fn matrix_scope_after_page(page: &Page, current: Option<String>) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shrink_sidebar_retains_width_under_native_flex_compression() {
+        use cosmic::iced::{
+            Element, Size,
+            advanced::{layout::Limits, widget::Tree},
+            widget::{Button, Column, Container, Row, Space},
+        };
+        // Exercise the locked layout engine without GPU/font/display setup.
+        // Fixed-size spaces stand in for icon/text contents; the four sizing
+        // constraints and enclosing shrink/fill panel mirror nav_bar().
+        fn width(available: f32, corrected: bool) -> f32 {
+            let child_width = if corrected {
+                Length::Shrink
+            } else {
+                Length::Fill
+            };
+            let button_width = if corrected {
+                Length::Fixed(40.)
+            } else {
+                Length::FillPortion(1)
+            };
+            let mut modules: Row<'_, (), cosmic::Theme, ()> =
+                Row::new().spacing(4).width(child_width);
+            for _ in 0..4 {
+                modules = modules.push(
+                    Button::new(Space::new().width(16).height(16))
+                        .width(button_width)
+                        .height(36),
+                );
+            }
+            let selectors = Container::new(modules).padding(4).width(child_width);
+            let navigation = Container::new(Space::new().width(176).height(Length::Fill))
+                .width(child_width)
+                .height(Length::Fill);
+            let column = Column::new()
+                .push(selectors)
+                .push(navigation)
+                .width(Length::Shrink)
+                .height(Length::Fill);
+            let mut panel: Element<'_, (), cosmic::Theme, ()> = Container::new(column)
+                .max_width(280)
+                .height(Length::Fill)
+                .into();
+            let mut tree = Tree::new(&panel);
+            panel
+                .as_widget_mut()
+                .layout(
+                    &mut tree,
+                    &(),
+                    &Limits::new(Size::ZERO, Size::new(available, 560.)),
+                )
+                .size()
+                .width
+        }
+        for available in [240., 280., 640., 1024.] {
+            // The old all-fluid children supplied no intrinsic sidebar width.
+            assert_eq!(width(available, false), 0.);
+            let visible = width(available, true);
+            assert!(visible >= 176. && visible <= available.min(280.));
+        }
+    }
 
     #[test]
     fn packaged_edit_action_icon_resolves_to_themable_symbolic_svg() {
