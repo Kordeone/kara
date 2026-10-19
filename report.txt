@@ -84,3 +84,53 @@ Known limitations
 - Graphical appearance, focus traversal, accessibility announcements, and
   popover placement require the owner's CachyOS COSMIC review.
 - Calendar remains its existing placeholder and has no task sorting toolbar.
+
+Kara icon clarity correction
+
+Implementation
+- Replaced the crowded task-list-plus-pin glyph with a compact bookmark
+  silhouette. It remains shown only for pinned lists through the existing
+  sidebar logic; pinning, collapse, and selection behavior are unchanged.
+- Replaced the sort-direction symbols with distinct shapes: ascending uses
+  short-to-long horizontal bars and an upward arrow; descending uses tall-to-
+  short vertical bars and a downward arrow. The existing separate direction
+  control, sorting semantics, persistence, tooltip text, and accessible names
+  are unchanged.
+- All three resources are bundled SVGs loaded as symbolic handles, so their
+  foreground is tintable by the COSMIC theme and does not depend on theme icon
+  lookup. The existing icon-resource regression test verifies the handles.
+
+Files changed
+- resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-ascending-symbolic.svg
+- resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg
+- report.txt
+
+Validation on headless Debian
+- cargo fmt --check: PASSED.
+- cargo check --locked: PASSED.
+- cargo clippy --locked --all-targets -- -D warnings: PASSED.
+- cargo test --locked: PASSED (72 passed, 0 failed, 1 ignored because it
+  requires an isolated session bus).
+- Isolated tray D-Bus regression: PASSED (1 passed).
+- cargo build --locked: PASSED.
+- All three changed SVG resources parsed as XML and contain a drawable path.
+- No COSMIC graphical testing was performed.
+
+CachyOS COSMIC graphical acceptance checklist
+1. In a light theme and a dark theme, pin and unpin a named list. Confirm the
+   compact bookmark indicator appears only while pinned, remains legible, and
+   aligns with the list label without affecting selection or disclosure.
+2. Collapse and expand Lists; confirm pinned lists remain visible while
+   collapsed and unpinned lists return when expanded.
+3. Inspect the sort-direction button in both states at normal and narrow
+   window sizes. Confirm ascending reads as rising/short-to-long and descending
+   as falling/tall-to-short, with clear active feedback and unchanged tooltip
+   and accessible-name behavior.
+4. Exercise both directions for each sort mode and restart Kara; confirm task
+   order and the saved direction remain unchanged from before this icon-only
+   correction.
+
+Remaining limitation
+- Actual icon legibility, theme tinting, alignment, hover/focus states, and
+  narrow-window appearance require CachyOS COSMIC graphical verification.
