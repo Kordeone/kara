@@ -150,7 +150,12 @@ fn task_content<'a>(
         .spacing(spacing.space_s)
         .width(Length::Fill);
     let tasks = matrix::ordered(store.tasks(), list, quadrant);
-    if tasks.is_empty() {
+    let empty = tasks.is_empty();
+    if empty {
+        // The first task will replace the empty state at the top, not below it.
+        content = content.push(drop_line(
+            drag.hover.as_ref() == Some(&placement(list, quadrant, None)),
+        ));
         content = content.push(widget::text::body("No tasks in this quadrant."));
     }
     let mut completed = false;
@@ -170,10 +175,12 @@ fn task_content<'a>(
         content = content.push(drop_zone(row.into(), target, can_write, drag));
     }
     let end = placement(list, quadrant, None);
-    content = content.push(drop_line(
-        drag.hover.as_ref() == Some(&end)
-            && (drag.source().is_some_and(|t| t.completed) || !completed),
-    ));
+    if !empty {
+        content = content.push(drop_line(
+            drag.hover.as_ref() == Some(&end)
+                && (drag.source().is_some_and(|t| t.completed) || !completed),
+        ));
+    }
     widget::container(content)
         .padding(spacing.space_s)
         .width(Length::Fill)
@@ -225,9 +232,16 @@ fn quadrant<'a>(
         ))
         .height(Length::Fill);
     let end = placement(list, quadrant, None);
-    let highlighted = drag.hover.as_ref() == Some(&end);
+    let highlighted = hovered_quadrant(drag, list, quadrant);
     let panel: Element<'a, Message> = widget::container(content)
-        .class(highlight_style(highlighted, true))
+        .class(feedback_style(
+            if highlighted {
+                Feedback::Destination
+            } else {
+                Feedback::None
+            },
+            true,
+        ))
         .height(Length::Fill)
         .width(Length::Fill)
         .into();
@@ -331,8 +345,12 @@ fn task_row<'a>(
     }
     widget::container(content)
         .padding(spacing.space_xxs)
-        .class(highlight_style(
-            drag.source().is_some_and(|source| source.id == task.id),
+        .class(feedback_style(
+            if drag.source().is_some_and(|source| source.id == task.id) {
+                Feedback::Source
+            } else {
+                Feedback::None
+            },
             false,
         ))
         .width(Length::Fill)
@@ -389,41 +407,112 @@ fn drag_handle(task: &Task, enabled: bool, drag: &matrix_drag::State) -> Element
     }
     let payload = Payload::new(&task.id);
     let start = Message::Matrix(Action::DragStart(payload.clone(), task.clone()));
+    let priority = task.priority;
     widget::DndSource::with_id(handle, drag.widget_id(format!("matrix-handle:{}", task.id)))
         .action(cosmic::iced::clipboard::dnd::DndAction::Move)
         .drag_content(move || payload.clone())
+        .drag_icon(move |offset| {
+            // The locked source constrains its icon to the grip's 24px bounds.
+            // A native flag badge fits; a title/card preview would be clipped.
+            let preview = drag_preview(priority);
+            let state = preview.as_widget().state();
+            (preview, state, offset)
+        })
         .on_start(Some(start))
         .on_cancel(Some(Message::Matrix(Action::DragCancel)))
         .on_finish(Some(Message::Matrix(Action::DragEnd)))
         .into()
 }
 
+// Keep the same slot even while idle: hover must not move drop hit boxes.
+const INSERTION_HEIGHT: f32 = 8.0;
 fn drop_line(active: bool) -> Element<'static, Message> {
-    widget::container(widget::space::horizontal())
-        .height(2)
+    let cap = || {
+        widget::container(widget::space::horizontal())
+            .width(INSERTION_HEIGHT)
+            .height(INSERTION_HEIGHT)
+            .class(insertion_style(active))
+    };
+    widget::row::with_capacity(3)
+        .align_y(Alignment::Center)
+        .push(cap())
+        .push(
+            widget::container(widget::space::horizontal())
+                .height(4)
+                .width(Length::Fill)
+                .class(insertion_style(active)),
+        )
+        .push(cap())
+        .height(INSERTION_HEIGHT)
         .width(Length::Fill)
-        .class(cosmic::theme::Container::custom(move |theme| {
-            cosmic::widget::container::Style {
-                background: active.then(|| theme.cosmic().accent_color().into()),
-                ..Default::default()
-            }
-        }))
         .into()
 }
-fn highlight_style(active: bool, card: bool) -> cosmic::theme::Container<'static> {
-    cosmic::theme::Container::custom(move |theme| {
-        use cosmic::widget::container::Catalog;
-        let mut style = theme.style(&if card {
-            cosmic::theme::Container::Card
-        } else {
-            cosmic::theme::Container::Transparent
-        });
-        if active {
-            style.border.width = 1.;
-            style.border.color = theme.cosmic().accent_color().into();
-        }
-        style
+fn insertion_style(active: bool) -> cosmic::theme::Container<'static> {
+    cosmic::theme::Container::custom(move |theme| cosmic::widget::container::Style {
+        background: active.then(|| theme.cosmic().accent_color().into()),
+        ..Default::default()
     })
+}
+
+fn hovered_quadrant(drag: &matrix_drag::State, list: Option<&str>, quadrant: Quadrant) -> bool {
+    // A before-row target belongs to the panel just as its append target does.
+    drag.source().is_some()
+        && drag
+            .hover
+            .as_ref()
+            .is_some_and(|target| target.list_id.as_deref() == list && target.quadrant == quadrant)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Feedback {
+    None,
+    Source,
+    Destination,
+}
+fn feedback_style(feedback: Feedback, card: bool) -> cosmic::theme::Container<'static> {
+    cosmic::theme::Container::custom(move |theme| feedback_appearance(theme, feedback, card))
+}
+fn feedback_appearance(
+    theme: &cosmic::Theme,
+    feedback: Feedback,
+    card: bool,
+) -> cosmic::widget::container::Style {
+    use cosmic::widget::container::Catalog;
+    let mut style = theme.style(&if card {
+        cosmic::theme::Container::Card
+    } else {
+        cosmic::theme::Container::Transparent
+    });
+    if feedback != Feedback::None {
+        let accent: cosmic::iced::Color = theme.cosmic().accent_color().into();
+        let base: cosmic::iced::Color = theme.cosmic().primary_container_color().into();
+        let amount = if feedback == Feedback::Source {
+            0.18
+        } else {
+            0.07
+        };
+        // An opaque blend keeps text readable; never fade the completed title
+        // or tint an entire quadrant with the task's semantic priority color.
+        style.background = Some(
+            cosmic::iced::Color::from_rgb(
+                base.r + (accent.r - base.r) * amount,
+                base.g + (accent.g - base.g) * amount,
+                base.b + (accent.b - base.b) * amount,
+            )
+            .into(),
+        );
+        style.border.width = 2.;
+        style.border.color = accent;
+    }
+    style
+}
+
+fn drag_preview(priority: Priority) -> Element<'static, ()> {
+    // No second task record or interactive content in the compositor drag icon.
+    widget::container(crate::priority_style::flag(priority))
+        .padding(4)
+        .class(feedback_style(Feedback::Source, true))
+        .into()
 }
 
 /// The same native selected flag buttons as the task editor; labels only in
@@ -459,6 +548,84 @@ fn metadata(task: &Task) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn destination_feedback_covers_row_and_append_targets_and_clears_on_cancel() {
+        let task = Task::new("Original source").unwrap();
+        let original = task.clone();
+        let mut drag = matrix_drag::State::default();
+        drag.start(Payload::new(&task.id), task);
+        for before in [None, Some("destination-row")] {
+            drag.hover = Some(placement(None, Quadrant::ImportantUrgent, before));
+            assert!(hovered_quadrant(&drag, None, Quadrant::ImportantUrgent));
+            assert!(!hovered_quadrant(&drag, None, Quadrant::NotImportantUrgent));
+            assert!(!hovered_quadrant(
+                &drag,
+                Some("work"),
+                Quadrant::ImportantUrgent
+            ));
+        }
+        assert_eq!(drag.source(), Some(&original));
+        drag.cancel();
+        assert!(drag.source().is_none());
+        assert!(drag.hover.is_none());
+        assert!(!hovered_quadrant(&drag, None, Quadrant::ImportantUrgent));
+        // A stale visual target alone must never highlight a destination.
+        drag.hover = Some(placement(None, Quadrant::ImportantUrgent, None));
+        assert!(!hovered_quadrant(&drag, None, Quadrant::ImportantUrgent));
+    }
+
+    #[test]
+    fn feedback_uses_theme_surfaces_and_restores_native_style() {
+        use cosmic::widget::container::Catalog;
+        for theme in [
+            cosmic::Theme::light(),
+            cosmic::Theme::dark(),
+            cosmic::Theme::light_hc(),
+            cosmic::Theme::dark_hc(),
+        ] {
+            let normal = feedback_appearance(&theme, Feedback::None, true);
+            let native = theme.style(&cosmic::theme::Container::Card);
+            assert_eq!(normal.background, native.background);
+            assert_eq!(normal.border, native.border);
+            let source = feedback_appearance(&theme, Feedback::Source, false);
+            let destination = feedback_appearance(&theme, Feedback::Destination, true);
+            assert_ne!(source.background, destination.background);
+            assert_ne!(destination.background, normal.background);
+            assert_eq!(source.border.width, 2.);
+            assert_eq!(destination.border.width, 2.);
+            let accent: cosmic::iced::Color = theme.cosmic().accent_color().into();
+            assert_eq!(source.border.color, accent);
+            assert_eq!(destination.border.color, accent);
+        }
+    }
+
+    #[test]
+    fn insertion_slot_does_not_resize_when_hover_changes() {
+        let idle = drop_line(false);
+        let active = drop_line(true);
+        assert_eq!(idle.as_widget().size(), active.as_widget().size());
+        assert_eq!(
+            active.as_widget().size().height,
+            Length::Fixed(INSERTION_HEIGHT)
+        );
+        assert_eq!(active.as_widget().size().width, Length::Fill);
+    }
+
+    #[test]
+    fn native_preview_state_survives_the_locked_source_container_wrapper() {
+        use cosmic::iced::advanced::widget::Tree;
+        for priority in Priority::ALL {
+            let preview = drag_preview(priority);
+            let mut state = Tree::new(&preview);
+            // DndSource wraps the returned icon in a grip-sized container.
+            // Container forwards state/tag/children to its content in this lock.
+            let mut wrapped: Element<'static, ()> =
+                widget::container(preview).width(24).height(24).into();
+            assert_eq!(state.tag, wrapped.as_widget().tag());
+            wrapped.as_widget_mut().diff(&mut state);
+        }
+    }
+
     #[test]
     fn compact_flag_choices_update_the_same_task_in_each_quadrant() {
         let mut task = Task::new("Keep title").unwrap();

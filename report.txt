@@ -1,153 +1,115 @@
-Kara — Eisenhower Matrix Drag-and-Drop
+Kara — Matrix drag-and-drop visual feedback refinement
 
-Delivery status: implemented/validated; shared-tree integration blocked
-- Baseline: main at b744b6b (contextual module navigation, not visually accepted).
-- During final audit, unrelated sidebar-repair edits were found in src/app.rs
-  and an appended 'Kara contextual sidebar repair' section in report.txt.
-  These remove MatrixLists, alter build_nav/list hierarchy and change module
-  selector sizing. They are outside this milestone and were not made by this
-  task. HEAD remains b744b6b; no integration commit or push has been performed.
-- Shared files were left untouched after detection. The preserved working-files
-  directory contains the complete combined state. matrix-only-review contains
-  HEAD plus only the reviewed DnD changes and this consolidated report; its
-  navigation is byte-for-byte the committed baseline. Coordinate the editor
-  before integrating; do not blindly apply the patch to the combined tree.
+Scope and isolation
+- Worktree: /tmp/kara-matrix-feedback
+- Branch: feat/matrix-dnd-feedback, based on b744b6b.
+- The prior isolated Matrix review was a source snapshot, not a Git worktree.
+  The reviewed patch was applied only to this new worktree and recorded as
+  fe41fe9 (feat: add Kara Matrix drag and drop) before the visual refinement.
+- The refinement changes only src/matrix_view.rs and report.txt. Shared main,
+  Luna's uncommitted navigation repair and other shared source are untouched.
+  No merge, push, installation or system configuration changes were performed.
+- This branch contains the committed navigation baseline. It deliberately does
+  not include Luna's shared-tree sidebar repair; coordinate later integration.
 
-Technical approach
-- Uses the locked libcosmic DndSource and DndDestination widgets and iced MIME /
-  Move-action negotiation. No custom D-Bus, backend fork or new DnD library.
-- A small grip handle starts a native drag after the widget's 8px threshold.
-  Checkbox, flag selector and edit/order buttons retain their own normal input.
-- Dropping onto a task inserts before that task, shown by a 2px system-accent
-  line. Dropping on a quadrant header/background appends within the moving
-  task's active/completed block; the quadrant outline highlights that target.
-  The source row is outlined and native grab/move cursor feedback is retained.
-- Active tasks stay ahead of completed tasks. Before-task drops across that
-  completion boundary are invalid. Use quadrant header/background to append a
-  completed task after other completed tasks or an active task before them.
-- Existing four-quadrant layout, task details, completion styling and accessible
-  priority chooser/Up/Down controls remain. Edit/Up/Down are now a compact group
-  at the far right of the full-width row; the old 640px row cap is removed.
+Visual changes
+- The dragged source row receives a restrained system-accent surface tint and
+  a 2px accent border, retaining its title, controls and completion treatment.
+- A valid hovered quadrant receives a lighter accent tint and border for both
+  before-row and header/background targets. Feedback is scoped to the current
+  list and active drag session.
+- The insertion marker is now a 4px accent bar with 8px end caps. Its fixed 8px
+  slot exists while idle too: hover does not shift rows or drop hit boxes.
+- The marker appears before the hovered row. Header/background drops append
+  within the source task's active/completed group, with the marker at that
+  group's end. Empty quadrant markers appear above the empty-state text, where
+  the first task will be placed.
+- The locked libcosmic DndSource::drag_icon API supplies a native compositor
+  preview. Its dimensions are constrained to the drag handle's 24px bounds, so
+  the preview is a small themed badge using the existing task priority flag.
+  A readable title-card preview would be clipped by this API. The source row
+  remains highlighted and readable throughout the gesture. No backend patch,
+  dependency change, alternative input path or custom preview window was added.
+- Source/destination fills blend existing COSMIC surface and accent colors;
+  regular widget styles and completed muted/struck-through titles remain.
+- Cancellation and finish use the existing lifecycle. Clearing the session
+  removes source/destination feedback; the native backend owns preview cleanup.
 
-Reliability and data safety
-- Private MIME payload contains only task ID and per-drag token, not task notes
-  or a task copy. Only an in-process drag session with an unchanged source
-  snapshot and matching current list can authorize a move.
-- Source start, hover, finish and cancellation never mutate records. A physical
-  drop must be observed, followed by valid Move data for the same placement and
-  token. Data is consumed once. Wrong MIME/actions, malformed/oversized data,
-  stale sessions/tasks, changed list scope, invalid anchors, canceled gestures,
-  duplicate deliveries and self/no-op drops cannot create or delete records.
-- Native source Finished can precede destination data; an already-observed
-  physical drop remains pending for that delivery. Finished without a drop
-  clears the session. Cancellation always invalidates the session.
-- Locked DndDestination routes by numeric widget IDs even for named widgets.
-  The implementation retains actual source/target IDs across view rebuilds so
-  indicator redraws do not invalidate the current offer. Tests verify this.
-- The locked scrollable translates child drop rectangles but does not clip
-  them. A Matrix-only wrapper intersects them with each visible scroll viewport,
-  including the outer narrow/short grid scroller. Off-screen rows cannot steal
-  drops. The wrapper forwards keyboard operations, overlays, events and a11y.
-- The wrapper names iced_accessibility directly to preserve the native a11y
-  return type. That package already existed in Cargo.lock through libcosmic;
-  the lock change adds only Kara's dependency edge, with no changed packages,
-  versions, sources or checksums. No dependency download/upgrade was required.
-- The movement helper validates the position before mutation, changes priority
-  plus source/destination ranks together and never rearranges the task vector.
-  IDs, titles, completion, dates, notes, creation time and list IDs are preserved.
-- Store moves work on a clone and use the existing validated/synced atomic JSON
-  replacement. Write errors remain visible and retain prior live/disk state.
-  No-op drops avoid a save. Only affected groups' rank values change; existing
-  persistence normalization remains idempotent for other canonical groups.
-- Existing schema v6, migrations/backups, Tasks sort/direction/Show Completed
-  preferences and list behavior remain. Tests use disposable temporary files;
-  no personal task data was opened or changed.
+Preserved implementation and safety
+- Native DndSource/DndDestination, grip threshold, stable numeric routing IDs,
+  clipped scrolling drop targets and private MIME/Move negotiation remain.
+- No changes to Matrix placement validation, completion boundaries, priority
+  transitions, ranks, persistence, task IDs/fields, list scope or Tasks sorting.
+- Only an observed physical drop plus matching valid session data can move a
+  task. Hover, canceled/invalid/stale/replayed drops never mutate records.
+- Existing atomic saves and visible errors remain; existing keyboard flag and
+  Up/Down controls and far-right action grouping remain.
+- Prior Matrix implementation files are retained in fe41fe9: src/matrix.rs,
+  src/matrix_drag.rs, src/matrix_clip.rs, src/storage.rs, minimal app/main wiring,
+  matrix_view.rs, report.txt and the existing locked a11y dependency edge.
+- No user task data was opened or modified. Regression data uses temp files.
 
-Intended changed files
-- src/matrix.rs: validated stable-ID placement and affected-group ordering/tests.
-- src/matrix_drag.rs: native MIME payload, session/offer lifecycle, stable IDs,
-  cancellation/replay/staleness checks and protocol tests.
-- src/matrix_clip.rs: visible-target clipping and native widget/a11y forwarding.
-- src/matrix_view.rs: grip sources, row/background destinations, indicators,
-  themed feedback and right-aligned actions; keyboard fallback preserved.
-- src/storage.rs: one atomic drop operation and persistence/error tests.
-- src/app.rs: Matrix session state, events and source lifecycle subscription;
-  intended patch does not alter sidebar, dialog, sorting or date-picker logic.
-- src/main.rs: register the two Matrix-only modules.
-- Cargo.toml/Cargo.lock: direct reference to already locked a11y package.
-- report.txt: this report. No packaging, installation or autostart changes.
+Validation — headless Debian
+All commands ran from the isolated worktree. CARGO_TARGET_DIR reused the
+existing /home/rapper/projects/kara/target build cache; generated binaries in
+that directory are therefore builds of this isolated branch.
+- cargo fmt --check: PASSED
+- cargo check --locked: PASSED
+- cargo clippy --locked --all-targets -- -D warnings: PASSED
+- cargo test --locked: PASSED, 91 passed, 0 failed, 1 ignored private-bus test
+- cargo build --locked: PASSED
+- Isolated D-Bus regression: PASSED, 1 test; all 92 tests exercised
+  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
+- Four new tests cover row/append quadrant feedback and cancellation, restoring
+  native appearance in light/dark/high-contrast themes, fixed indicator geometry,
+  and preview state compatibility with the locked source container wrapper.
+- Existing tests cover same/cross-quadrant movement, priority/order synchronization,
+  identity/field preservation, completed tasks, lists, invalid/canceled/stale
+  sessions, duplicate delivery, native finish ordering, clipping, restart saves,
+  denied writes, corruption/migration protection, task CRUD and tray lifecycle.
+- No graphical Wayland/COSMIC validation was performed on Debian.
 
-Validation on headless Debian
-- Current combined working tree: fmt/check/strict Clippy/tests/build PASSED
-  before the final scope audit identified unrelated navigation changes.
-- Isolated Matrix-only review, preserving committed navigation:
-    cargo fmt --check: PASSED
-    cargo check --locked: PASSED
-    cargo clippy --locked --all-targets -- -D warnings: PASSED
-    cargo test --locked: PASSED, 87 passed, 0 failed, 1 ignored private-bus test
-    cargo build --locked: PASSED
-- Isolated D-Bus regression: PASSED separately, 1 test. All 88 tests exercised:
-    KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-- Review builds reused CARGO_TARGET_DIR=/home/rapper/projects/kara/target.
-- 13 new tests cover cross/same-quadrant positions, priority synchronization,
-  unchanged IDs/fields/document order, unaffected groups, completed movement,
-  invalid positions, cancel/no-drop/replay, stale sessions, native finish timing,
-  stable routing IDs, clipped viewports, restart persistence/preferences and
-  denied/external/no-op writes. Retained tests cover task/list/migration/tray.
-- No Wayland/COSMIC graphical testing was performed or claimed on Debian.
+CachyOS visual and functional acceptance
+1. Quit the running Kara through its tray before launching another build.
+   Transfer this isolated branch's source/Cargo.lock to a separate source folder
+   using the existing Samba workflow; do not overwrite Luna's working sources.
+   From that folder run:
+     cargo build --locked
+     KARA_FEEDBACK_DATA=$(mktemp -d)
+     XDG_DATA_HOME="$KARA_FEEDBACK_DATA" ./target/debug/kara
+   Retain KARA_FEEDBACK_DATA for restart checks. Use disposable or copied data.
+2. Open Matrix; create active and completed tasks in Inbox and a named list,
+   with enough tasks to scroll. Confirm editing, flags and keyboard arrows work.
+   If baseline contextual navigation blocks Matrix/list selection, record the
+   exact control and screenshot; sidebar repair remains outside this branch.
+3. In light and dark themes (also high contrast and 100%/200% scaling), drag a
+   grip. Verify the source row is clearly identified, text remains readable,
+   and the small native flag badge follows the pointer without clipping/crash.
+   The badge depicts the source priority until the drop; target priority is
+   communicated by the highlighted quadrant and its existing heading.
+4. Hover each quadrant header, empty body and task row. Exactly the valid
+   destination quadrant should have subtle tinted feedback, including row
+   targets. Confirm no indicator/row jump or flicker after repeated crossings.
+5. Drop before first/middle rows, reorder upward/downward and append via header
+   or background. The capped bar must predict the resulting position. Repeat
+   with empty quadrants and completed tasks; active tasks remain before completed
+   tasks, and cross-completion before-row targets remain invalid.
+6. Cancel with Escape, release outside the window or drop on a non-target.
+   Source, panel and marker must return to their idle appearance and the native
+   badge must disappear. Verify task priority/order and all fields are unchanged.
+   Then drag again immediately; no stale highlight, lost task or duplicate move.
+7. Repeat in wide, narrow and short windows, with long titles, scrolled quadrant
+   content and the outer grid scroller. Only visible rows should receive drops;
+   actions remain at the right and keyboard movement remains available.
+8. Quit/relaunch with the same XDG_DATA_HOME. Verify priorities/ranks, completion,
+   list assignment, notes and dates persist, with no missing/duplicate IDs.
+   Smoke-test task editing, list switching, tray Open/Quit and second launch.
 
-CachyOS acceptance steps (after coordinated integration)
-1. Quit Kara through the tray. Transfer the coordinated source and Cargo.lock
-   through Samba. Build/launch without installation using disposable data:
-       cargo build --locked
-       KARA_DND_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_DND_DATA" ./target/debug/kara
-   Keep KARA_DND_DATA for restart tests; quit existing instances before launching
-   a different binary because single-instance activation otherwise restores it.
-2. Open Matrix through the existing navigation and select Inbox/Work scopes.
-   If the reported contextual sidebar prevents reaching Matrix/selecting lists,
-   record the inaccessible control and screenshot. This milestone intentionally
-   does not fix it; the owner must coordinate that separate navigation repair.
-3. Create several active tasks per quadrant and some completed tasks in Work
-   and Inbox, using existing editors. Confirm Edit/Up/Down are at the far right
-   at wide/narrow widths and existing flag/arrow keyboard movement still works.
-4. Drag only from a grip. Verify threshold, grab/move cursor, source outline,
-   subtle insertion line and quadrant highlight using current theme colors.
-   Drop before the first/middle task and on header/background to append. Repeat
-   upward/downward within a quadrant and across all priorities. Confirm exact
-   indicator position, correct priority/flag and no duplicate/lost records.
-5. Drag completed tasks before other completed tasks and between quadrants.
-   They must remain completed and follow active tasks. Drop across an active/
-   completed before-row boundary: no data change. Reactivate afterwards and
-   confirm original context and normal completed/active grouping are preserved.
-6. Press Escape during a drag, release outside the window, drop on sidebar or
-   outside any target, click a grip without dragging, and attempt an invalid
-   destination. Verify all task fields/order remain unchanged. Try repeated
-   moves and rapid successive drags; no stale indication or duplicate move.
-7. Populate quadrants enough to scroll. Pre-scroll to middle/bottom and verify
-   drops hit visible rows, not clipped rows above/below. Repeat with the outer
-   grid scroller in narrow/short windows, long titles and display scaling. Check
-   native priority popovers/checkbox/edit still operate without starting drags.
-8. Test in light/dark themes with mouse and trackpad. Verify independent task
-   scrolling, accessible flag/arrows and focus visibility. There is no new edge
-   auto-scroll feature; pre-scroll a target or use the keyboard fallback for
-   positions that are off-screen during the native drag.
-9. Quit/relaunch with the same XDG_DATA_HOME. Verify priority, rank, completion,
-   IDs, list assignments, notes/dates/creation times persist. Tasks sort/filter
-   preferences and original document order must remain unchanged by Matrix
-   reordering. Smoke-test task/list CRUD, tray Open/Quit and repeated launch.
-10. On disposable copied data only, induce a save failure (unwritable directory
-    or an external file change) and drop a task. Expect the visible storage
-    error and unchanged task records; resolve the error and retry normally.
-
-Known limitations / integration gate
-- Actual native Wayland drag negotiation, pointer cancellation, visual hit areas,
-  viewport scrolling, theme/scaling and a11y need CachyOS acceptance. Unit tests
-  verify app/native state transitions and geometry, not a graphical session.
-- Insertion is explicitly before the hovered task; header/background appends.
-  Active/completed groups stay separate. No touch-drag or edge auto-scroll is
-  added; existing accessible controls remain the fallback.
-- The contextual sidebar at baseline is reported broken/unaccepted. A separate
-  uncommitted repair also appeared during this task. The Matrix-only snapshot
-  excludes that repair. Shared-tree edits and commit are paused for ownership
-  coordination; no reset, clean, checkout, merge, push or sidebar overwrite.
+Limitations / acceptance gate
+- The owner confirmed the prior drag behavior graphically. This visual refinement
+  still requires CachyOS acceptance: native preview rendering/cleanup, pointer
+  hit areas, actual contrast, scaling and scrolling cannot be proven headlessly.
+- Preview is a compact priority badge, not a title card, due to the locked native
+  source-size constraint. No drag animations, edge auto-scroll or Matrix redesign.
+- Shared main and Luna's sidebar work are preserved for later integration. This
+  feature branch is committed separately and is not merged or pushed.
