@@ -17,6 +17,8 @@ use jiff::civil::{Date, Weekday};
 use std::time::Duration;
 
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+const EDIT_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/edit-symbolic.svg");
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -370,15 +372,21 @@ impl cosmic::Application for AppModel {
                         .spacing(spacing.space_xxs)
                         .align_y(Alignment::Center)
                         .push(
-                            widget::button::icon(icon::from_name("document-edit-symbolic"))
+                            widget::button::icon(edit_task_icon())
+                                .width(Length::Fixed(36.0))
+                                .height(Length::Fixed(36.0))
                                 .tooltip("Edit task")
+                                .name("Edit task")
                                 .on_press_maybe(
                                     self.can_write().then(|| Message::Edit(task.id.clone())),
                                 ),
                         )
                         .push(
                             widget::button::icon(icon::from_name("user-trash-symbolic"))
+                                .width(Length::Fixed(36.0))
+                                .height(Length::Fixed(36.0))
                                 .tooltip("Delete task")
+                                .name("Delete task")
                                 .on_press_maybe(
                                     self.can_write().then(|| Message::Delete(task.id.clone())),
                                 ),
@@ -1336,14 +1344,14 @@ fn priority_button(
     label: &'static str,
 ) -> cosmic::Element<'static, Message> {
     let button = widget::button::custom(
-        widget::container(widget::icon(icon::from_name(icon_name).into()).size(24))
-            .width(Length::Fixed(48.0))
-            .height(Length::Fixed(48.0))
+        widget::container(widget::icon(icon::from_name(icon_name).into()).size(17))
+            .width(Length::Fixed(36.0))
+            .height(Length::Fixed(36.0))
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
     )
-    .width(Length::Fixed(48.0))
-    .height(Length::Fixed(48.0))
+    .width(Length::Fixed(36.0))
+    .height(Length::Fixed(36.0))
     .class(cosmic::theme::Button::IconVertical)
     .selected(priority_selected(selected, priority))
     .name(label)
@@ -1354,6 +1362,10 @@ fn priority_button(
         widget::tooltip::Position::Top,
     )
     .into()
+}
+
+fn edit_task_icon() -> icon::Handle {
+    icon::from_svg_bytes(EDIT_ICON).symbolic(true)
 }
 
 fn priority_selected(selected: Priority, option: Priority) -> bool {
@@ -1477,6 +1489,16 @@ fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_edit_action_icon_resolves_to_themable_symbolic_svg() {
+        assert!(std::str::from_utf8(EDIT_ICON).unwrap().contains("<path"));
+
+        let handle = edit_task_icon();
+        assert!(handle.symbolic);
+        assert!(matches!(&handle.data, icon::Data::Svg(_)));
+    }
+
     #[test]
     fn task_creation_uses_the_selected_list_and_otherwise_inbox() {
         let task = Page::List("selected-list".into()).draft_task().unwrap();

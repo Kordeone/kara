@@ -1,81 +1,30 @@
-Kara Task Dialog Final Corrections
-Base: f390e8f
+Kara Tasks action icon corrections
 
 Implemented
-- Rearranged the shared Add/Edit form to Title, Due date, date shortcuts,
-  Priority/List, Notes, and the standard bottom-right Cancel/Save actions.
-- Added Today, Tomorrow, and Next week shortcuts using local calendar dates.
-  Each updates the editor's shared due value and clears its validation error.
-- Anchored the native calendar popover to its calendar button. Source inspection
-  of the pinned libcosmic implementation showed that popup position clamps to
-  the available overlay bounds and that the popover's outside-click handler
-  tracks its wrapped content. The trigger now wraps only the calendar button.
-  The calendar sits in a COSMIC Card container for an opaque, theme-derived
-  surface; Escape closes it, and native outside-click and date-selection events
-  remain connected.
-- Replaced the small icon buttons with 48x48 COSMIC icon buttons containing
-  centered 24px symbolic icons. The IconVertical theme class supplies the
-  selected-state surface, while normal hover/focus styling, tooltips, and
-  accessible names are retained.
-- Added title-specific whitespace validation, inline error text, and the same
-  theme-derived error border used by the due-date field. Valid title input clears
-  the title error; invalid submission leaves the dialog open.
-- Kept the existing manual date parser, storage format, shared Add/Edit path,
-  Matrix task classification, list assignment, sidebar, titlebar, and tray
-  behavior intact.
+- Reduced Low, Normal, and High priority symbols from 24px to 17px and their COSMIC buttons from 48x48px to 36x36px. Existing selected styling, keyboard behavior, labels, tooltips, and priority mapping are unchanged.
+- Replaced the missing theme-resolved task Edit icon with a packaged 16px COSMIC edit-symbolic SVG. The icon is embedded at compile time and loaded as a theme-tinted symbolic SVG, so it does not depend on an installed icon-theme alias. The resource is present in the pinned libcosmic icon source and is also checked by a regression test.
+- Kept task action controls icon-only; Edit and Delete now use matching 36x36px targets, tooltips, accessible names, and their existing task operations.
 
 Files changed
-- src/app.rs — dialog field order, date shortcut actions, calendar surface and
-  anchoring, Escape dismissal, priority controls, and title validation.
-- src/date_entry.rs — calendar-day offset helper and month/year/leap-day tests.
-- report.txt — results and CachyOS visual acceptance checklist.
+- src/app.rs
+- resources/icons/hicolor/scalable/actions/edit-symbolic.svg
+- report.txt
 
-Automated validation on Debian (headless)
-- cargo fmt --check: PASS
-- cargo check --locked: PASS
-- cargo clippy --locked --all-targets -- -D warnings: PASS
-- cargo test --locked: PASS (49 passed, 0 failed, 1 ignored because it requires
-  an isolated session bus)
-- cargo build --locked: PASS
-- Isolated D-Bus regression: PASS (1 passed):
-  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked
-  tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport
-  -- --ignored --exact --nocapture
-- No COSMIC graphical runtime validation was performed.
+Validation
+- cargo fmt --check: passed
+- cargo check --locked: passed
+- cargo clippy --locked --all-targets -- -D warnings: passed
+- cargo test --locked: passed (50 passed, 0 failed, 1 ignored because it requires an isolated session bus)
+- KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture: passed (1 passed)
+- cargo build --locked: passed
+- git diff --check: passed
 
-Known limitation
-- Popup sizing and dismissal are based on libcosmic's pinned overlay behavior;
-  the calendar is clamped to the available overlay bounds, but final placement,
-  usable space, and pointer dismissal need CachyOS graphical acceptance at the
-  supported window sizes.
+COSMIC graphical acceptance (not run; development environment is headless Debian)
+- Confirm all three priority symbols render at a compact, consistent 16–18px visual size inside approximately 36px controls.
+- Confirm selected priority remains clearly highlighted and keyboard focus/hover states are visible in both light and dark themes.
+- Confirm Edit displays a recognizable pencil icon, with Edit and Delete aligned and icon-only; verify tooltips and keyboard accessibility.
+- Activate Edit and Delete on separate tasks and confirm each performs its existing operation.
+- Check the controls at normal and narrow window sizes for clipping or row overflow.
 
-CachyOS COSMIC graphical acceptance checklist
-1. At about 1280x800, inspect Add Task and Edit Task. Confirm full-width Title,
-   dedicated Due date row, Today/Tomorrow/Next week directly beneath it,
-   Priority and List together on one row, full-width Notes, and bottom-right
-   Cancel/Save. Confirm no internal scrollbar appears.
-2. Repeat at about 800x600 and the minimum supported 640x560 size. Confirm the
-   form remains readable, fields and footer are reachable, and opening the
-   calendar does not clip it or extend it beyond the display.
-3. Check each date shortcut in Add, Edit, and Matrix-created tasks. Confirm
-   Today uses the local date, Tomorrow advances one calendar day, Next week
-   advances seven days, and values format as YYYY-MM-DD. Check Dec/Jan and
-   February/leap-year boundaries; confirm a previous due-date error clears.
-4. Open the calendar from its icon. Confirm it is anchored to that button, has
-   an opaque surface matching the active COSMIC theme, appears above dialog
-   content, and stays within the available display. Navigate both directions
-   without closing it, choose a day and confirm the shared field updates; then
-   verify Escape, outside click, and selection dismiss it as expected. Test
-   keyboard focus and date selection.
-5. Confirm Low, Normal, and High show centered down-arrow, minus, and up-arrow
-   icons in consistent 48x48 targets. Test mouse and keyboard hover/focus and
-   clear selected-state contrast in light and dark themes. Verify tooltips and
-   screen-reader names, Normal for new tasks, and the existing value on Edit.
-6. Submit empty and whitespace-only titles. Confirm the title border and local
-   message are visible, focus remains usable, Save does not close the dialog,
-   and entering a non-whitespace title clears the error. Confirm due-date error
-   border and correction behavior remain intact.
-7. Create and edit Inbox, named-list, and Matrix tasks. Confirm their assignment,
-   priority, due date, and Matrix quadrant/order are preserved. Verify the
-   application titlebar remains KARA and page headings/sidebar are unchanged.
-8. Smoke-test tray close/reopen and second-instance activation after dialog use.
+Remaining limitation
+- Final appearance and interaction acceptance requires the owner's COSMIC graphical review.
