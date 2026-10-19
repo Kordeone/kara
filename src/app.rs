@@ -29,6 +29,7 @@ pub struct AppModel {
     page: Page,
     lists_expanded: bool,
     matrix_list: Option<String>,
+    matrix_priority_task: Option<String>,
     store: Option<Store>,
     storage_error: Option<String>,
     editor: Option<Editor>,
@@ -185,6 +186,7 @@ impl cosmic::Application for AppModel {
             page: Page::Inbox,
             lists_expanded: true,
             matrix_list: None,
+            matrix_priority_task: None,
             store: None,
             storage_error: None,
             editor: None,
@@ -438,6 +440,7 @@ impl cosmic::Application for AppModel {
                 self.store.as_ref(),
                 self.matrix_list.as_deref(),
                 self.can_write(),
+                self.matrix_priority_task.as_deref(),
             ));
         } else if page == Page::Lists {
             let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
@@ -617,8 +620,11 @@ impl cosmic::Application for AppModel {
 
             let mut priority_buttons = widget::row::with_capacity(4).spacing(spacing.space_xxs);
             for (index, priority) in Priority::ALL.into_iter().enumerate() {
-                priority_buttons =
-                    priority_buttons.push(priority_button(editor.task.priority, priority, index));
+                priority_buttons = priority_buttons.push(priority_button(
+                    editor.task.priority,
+                    priority,
+                    Message::Priority(index),
+                ));
             }
             let mut options = vec!["Inbox".to_string()];
             let mut selected = Some(0);
@@ -737,6 +743,21 @@ impl cosmic::Application for AppModel {
         if let Some(conn) = &self.tray_connection {
             subscriptions.push(tray::subscription(conn.clone()).map(Message::Tray));
         }
+        if self.page == Page::Matrix && self.matrix_priority_task.is_some() && self.editor.is_none()
+        {
+            subscriptions.push(cosmic::iced::event::listen_with(
+                |event, _, _| match event {
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                        key:
+                            cosmic::iced::keyboard::Key::Named(
+                                cosmic::iced::keyboard::key::Named::Escape,
+                            ),
+                        ..
+                    }) => Some(Message::Matrix(matrix_view::Action::ClosePriority)),
+                    _ => None,
+                },
+            ));
+        }
         if self
             .editor
             .as_ref()
@@ -801,7 +822,14 @@ impl cosmic::Application for AppModel {
                     return self.update(Message::ToggleListPin(id));
                 }
             }
+            Message::Matrix(matrix_view::Action::OpenPriority(id)) if self.can_write() => {
+                self.matrix_priority_task = Some(id);
+            }
+            Message::Matrix(matrix_view::Action::ClosePriority) => {
+                self.matrix_priority_task = None;
+            }
             Message::Matrix(matrix_view::Action::SelectList(index)) => {
+                self.matrix_priority_task = None;
                 if index == 0 {
                     self.matrix_list = None;
                 } else if let Some(list) = self
@@ -813,6 +841,7 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::Matrix(matrix_view::Action::Add(quadrant)) if self.can_write() => {
+                self.matrix_priority_task = None;
                 match matrix::draft(self.matrix_list.as_deref(), quadrant) {
                     Ok(task) => {
                         self.open_editor(task, true);
@@ -822,6 +851,7 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::Matrix(matrix_view::Action::Classify(id, quadrant)) if self.can_write() => {
+                self.matrix_priority_task = None;
                 if let Some(store) = &mut self.store {
                     self.storage_error = store.classify(&id, quadrant).err();
                 }
@@ -1039,6 +1069,7 @@ impl cosmic::Application for AppModel {
                 Err(error) => self.storage_error = Some(error),
             },
             Message::Edit(id) if self.can_write() => {
+                self.matrix_priority_task = None;
                 if let Some(task) = self
                     .store
                     .as_ref()
@@ -1325,14 +1356,14 @@ impl AppModel {
     }
 }
 
-fn priority_button(
+pub(crate) fn priority_button<M: Clone + 'static>(
     selected: Priority,
     priority: Priority,
-    index: usize,
-) -> cosmic::Element<'static, Message> {
-    let label = format!("{} — {}", priority.short_label(), priority.label());
+    on_press: M,
+) -> cosmic::Element<'static, M> {
+    let label = priority_accessible_name(selected, priority);
     let button = widget::button::custom(
-        widget::container(crate::priority_style::marker(priority))
+        widget::container(crate::priority_style::flag(priority))
             .width(Length::Fixed(36.0))
             .height(Length::Fixed(36.0))
             .align_x(Alignment::Center)
@@ -1343,10 +1374,10 @@ fn priority_button(
     .class(cosmic::theme::Button::IconVertical)
     .selected(priority_selected(selected, priority))
     .name(label.clone())
-    .on_press(Message::Priority(index));
+    .on_press(on_press);
     widget::tooltip(
         button,
-        widget::text::body(label),
+        widget::text::body(priority.label()),
         widget::tooltip::Position::Top,
     )
     .into()
@@ -1354,6 +1385,19 @@ fn priority_button(
 
 pub(crate) fn edit_task_icon() -> icon::Handle {
     icon::from_svg_bytes(EDIT_ICON).symbolic(true)
+}
+
+fn priority_accessible_name(selected: Priority, priority: Priority) -> String {
+    format!(
+        "{} — {}{}",
+        priority.short_label(),
+        priority.label(),
+        if priority_selected(selected, priority) {
+            " (selected)"
+        } else {
+            ""
+        }
+    )
 }
 
 fn priority_selected(selected: Priority, option: Priority) -> bool {
@@ -1544,6 +1588,24 @@ mod tests {
         assert!(!collapsed_pages.contains(&Page::List(unpinned.id)));
         assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
         assert!(collapsed_pages.contains(&Page::Matrix));
+    }
+
+    #[test]
+    fn priority_accessible_names_include_meaning_and_exactly_one_selected_choice() {
+        for selected in Priority::ALL {
+            let names = Priority::ALL.map(|p| priority_accessible_name(selected, p));
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| name.contains("(selected)"))
+                    .count(),
+                1
+            );
+            for (priority, name) in Priority::ALL.into_iter().zip(names) {
+                assert!(name.contains(priority.label()));
+                assert_eq!(name.contains("(selected)"), priority == selected);
+            }
+        }
     }
 
     #[test]

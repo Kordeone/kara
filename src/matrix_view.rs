@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Matrix-specific widgets; Tasks navigation and dialogs stay in the existing app.
 use crate::{
-    app::{Message, edit_task_icon},
+    app::{Message, edit_task_icon, priority_button},
     matrix::{self, Direction},
     storage::Store,
-    tasks::{Quadrant, Task},
+    tasks::{Priority, Quadrant, Task},
 };
 use cosmic::{
     Element,
@@ -15,6 +15,8 @@ use cosmic::{
 #[derive(Debug, Clone)]
 pub enum Action {
     SelectList(usize),
+    OpenPriority(String),
+    ClosePriority,
     Add(Quadrant),
     Classify(String, Quadrant),
     Reorder(String, Direction),
@@ -44,6 +46,7 @@ pub fn view<'a>(
     store: Option<&'a Store>,
     list: Option<&'a str>,
     can_write: bool,
+    priority_task: Option<&'a str>,
 ) -> Element<'a, Message> {
     let Some(store) = store else {
         return widget::column::with_capacity(2)
@@ -111,14 +114,14 @@ pub fn view<'a>(
                             .spacing(spacing.space_m)
                             .height(panel_height)
                             .width(Length::Fill)
-                            .push(quadrant(store, list, pair[0], can_write))
-                            .push(quadrant(store, list, pair[1], can_write)),
+                            .push(quadrant(store, list, pair[0], can_write, priority_task))
+                            .push(quadrant(store, list, pair[1], can_write, priority_task)),
                     );
                 }
             } else {
                 for value in Quadrant::ALL {
                     grid = grid.push(
-                        widget::container(quadrant(store, list, value, can_write))
+                        widget::container(quadrant(store, list, value, can_write, priority_task))
                             .height(panel_height),
                     );
                 }
@@ -147,6 +150,7 @@ fn task_content<'a>(
     list: Option<&str>,
     quadrant: Quadrant,
     can_write: bool,
+    priority_task: Option<&'a str>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let mut content = widget::column::with_capacity(6)
@@ -162,7 +166,7 @@ fn task_content<'a>(
             content = content.push(widget::text::caption("Completed"));
             completed = true;
         }
-        content = content.push(task_row(store, task, can_write));
+        content = content.push(task_row(store, task, can_write, priority_task));
     }
     widget::container(content)
         .padding(spacing.space_s)
@@ -185,6 +189,7 @@ fn quadrant<'a>(
     list: Option<&str>,
     quadrant: Quadrant,
     can_write: bool,
+    priority_task: Option<&'a str>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let header = widget::row::with_capacity(3)
@@ -200,9 +205,15 @@ fn quadrant<'a>(
     let content = widget::column::with_capacity(2)
         .push(header)
         .push(
-            widget::scrollable(task_content(store, list, quadrant, can_write))
-                .height(Length::Fill)
-                .width(Length::Fill),
+            widget::scrollable(task_content(
+                store,
+                list,
+                quadrant,
+                can_write,
+                priority_task,
+            ))
+            .height(Length::Fill)
+            .width(Length::Fill),
         )
         .height(Length::Fill);
     widget::container(content)
@@ -212,7 +223,12 @@ fn quadrant<'a>(
         .into()
 }
 
-fn task_row<'a>(store: &'a Store, task: &'a Task, can_write: bool) -> Element<'a, Message> {
+fn task_row<'a>(
+    store: &'a Store,
+    task: &'a Task,
+    can_write: bool,
+    priority_task: Option<&str>,
+) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let id = task.id.clone();
     let check = widget::checkbox(task.completed)
@@ -240,10 +256,30 @@ fn task_row<'a>(store: &'a Store, task: &'a Task, can_write: bool) -> Element<'a
     .size(14)
     .font(cosmic::font::default())
     .width(Length::Fill);
-    let mut header = widget::row::with_capacity(5)
+    let priority_button = widget::button::custom(crate::priority_style::flag(task.priority))
+        .width(Length::Fixed(32.0))
+        .height(Length::Fixed(32.0))
+        .class(cosmic::theme::Button::Icon)
+        .name(format!("Change priority: {}", task.priority.label()))
+        .on_press_maybe(can_write.then(|| Message::Matrix(Action::OpenPriority(task.id.clone()))));
+    let priority_button = widget::tooltip(
+        priority_button,
+        widget::text::body(format!("Change priority: {}", task.priority.label())),
+        widget::tooltip::Position::Top,
+    );
+    let popover = widget::popover(priority_button)
+        .position(widget::popover::Position::Bottom)
+        .on_close(Message::Matrix(Action::ClosePriority));
+    let priority_control = if can_write && priority_task == Some(task.id.as_str()) {
+        popover.popup(priority_choices(task))
+    } else {
+        popover
+    };
+    let mut header = widget::row::with_capacity(6)
         .spacing(spacing.space_s)
         .align_y(Alignment::Center)
         .push(check)
+        .push(priority_control)
         .push(title)
         .push(
             widget::button::icon(edit_task_icon())
@@ -254,26 +290,6 @@ fn task_row<'a>(store: &'a Store, task: &'a Task, can_write: bool) -> Element<'a
                 .on_press_maybe(can_write.then(|| Message::Edit(task.id.clone()))),
         );
 
-    let mut controls = widget::row::with_capacity(3)
-        .spacing(spacing.space_xxs)
-        .align_y(Alignment::Center);
-    if can_write {
-        let id = task.id.clone();
-        let options: Vec<_> = Quadrant::ALL
-            .map(|q| format!("{} — {}", q.priority().short_label(), q.label()))
-            .into();
-        let selected = Quadrant::ALL
-            .iter()
-            .position(|q| *q == task.priority.quadrant());
-        controls = controls.push(
-            widget::dropdown(options, selected, move |index| {
-                Message::Matrix(Action::Classify(id.clone(), Quadrant::ALL[index]))
-            })
-            .width(Length::Fill),
-        );
-    } else {
-        controls = controls.push(widget::text::caption(task.priority.label()).width(Length::Fill));
-    }
     for (direction, icon_name, label) in [
         (Direction::Up, "go-up-symbolic", "Move task up"),
         (Direction::Down, "go-down-symbolic", "Move task down"),
@@ -290,22 +306,39 @@ fn task_row<'a>(store: &'a Store, task: &'a Task, can_write: bool) -> Element<'a
                 ),
         );
     }
-    let mut detail = widget::row::with_capacity(2)
-        .spacing(spacing.space_xs)
-        .push(crate::priority_style::marker(task.priority));
-    if let Some(metadata) = metadata(task) {
-        detail = detail.push(widget::text::caption(metadata));
-    }
-    let content = widget::column::with_capacity(3)
+    let mut content = widget::column::with_capacity(2)
         .spacing(spacing.space_xxs)
-        .push(header)
-        .push(detail)
-        .push(controls);
+        .push(header);
+    if let Some(metadata) = metadata(task) {
+        content = content.push(widget::text::caption(metadata));
+    }
     widget::container(content)
         .padding(spacing.space_xxs)
         .max_width(640)
         .width(Length::Fill)
         .into()
+}
+
+/// The same native selected flag buttons as the task editor; labels only in
+/// tooltips/accessibility names, never repeated beneath the Matrix task title.
+fn priority_choices(task: &Task) -> Element<'_, Message> {
+    let spacing = cosmic::theme::spacing();
+    let mut choices = widget::row::with_capacity(4).spacing(spacing.space_xxs);
+    for priority in Priority::ALL {
+        choices = choices.push(priority_button(
+            task.priority,
+            priority,
+            classification_action(&task.id, priority),
+        ));
+    }
+    widget::container(choices)
+        .padding(spacing.space_xxs)
+        .class(cosmic::theme::Container::Card)
+        .into()
+}
+
+fn classification_action(id: &str, priority: Priority) -> Message {
+    Message::Matrix(Action::Classify(id.to_string(), priority.quadrant()))
 }
 
 fn metadata(task: &Task) -> Option<String> {
@@ -319,6 +352,29 @@ fn metadata(task: &Task) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_flag_choices_update_the_same_task_in_each_quadrant() {
+        let mut task = Task::new("Keep title").unwrap();
+        task.list_id = Some("work".into());
+        task.completed = true;
+        task.due_date = Some("2026-10-18".into());
+        let original = task.clone();
+        let mut tasks = vec![task];
+        for priority in Priority::ALL {
+            let Message::Matrix(Action::Classify(id, quadrant)) =
+                classification_action(&original.id, priority)
+            else {
+                panic!("Flag choices must keep the existing classification action");
+            };
+            matrix::classify(&mut tasks, &id, quadrant).unwrap();
+            assert_eq!(tasks[0].priority, priority);
+            assert_eq!(tasks[0].id, original.id);
+            assert_eq!(tasks[0].list_id, original.list_id);
+            assert_eq!(tasks[0].due_date, original.due_date);
+            assert_eq!(tasks[0].completed, original.completed);
+            assert_eq!(matrix::ordered(&tasks, Some("work"), quadrant).len(), 1);
+        }
+    }
     #[test]
     fn desktop_grid_fills_viewport_and_short_or_narrow_views_scroll() {
         let wide = Layout::for_viewport(1100., 800., 16.);
