@@ -3,21 +3,55 @@ use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The sole persisted classification. Numeric values are part of schema v4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
 pub enum Priority {
-    Low,
     #[default]
-    Normal,
-    High,
+    P0,
+    P1,
+    P2,
+    P3,
 }
 impl Priority {
-    pub const ALL: [Self; 3] = [Self::Low, Self::Normal, Self::High];
+    pub const ALL: [Self; 4] = [Self::P0, Self::P1, Self::P2, Self::P3];
     pub fn label(self) -> &'static str {
+        self.quadrant().label()
+    }
+    pub fn short_label(self) -> &'static str {
         match self {
-            Self::Low => "Low",
-            Self::Normal => "Normal",
-            Self::High => "High",
+            Self::P0 => "P0",
+            Self::P1 => "P1",
+            Self::P2 => "P2",
+            Self::P3 => "P3",
         }
+    }
+    pub fn quadrant(self) -> Quadrant {
+        match self {
+            Self::P0 => Quadrant::NotImportantNotUrgent,
+            Self::P1 => Quadrant::NotImportantUrgent,
+            Self::P2 => Quadrant::ImportantNotUrgent,
+            Self::P3 => Quadrant::ImportantUrgent,
+        }
+    }
+}
+impl From<Priority> for u8 {
+    fn from(value: Priority) -> Self {
+        match value {
+            Priority::P0 => 0,
+            Priority::P1 => 1,
+            Priority::P2 => 2,
+            Priority::P3 => 3,
+        }
+    }
+}
+impl TryFrom<u8> for Priority {
+    type Error = &'static str;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::ALL
+            .get(usize::from(value))
+            .copied()
+            .ok_or("Priority must be an integer from 0 to 3.")
     }
 }
 
@@ -31,6 +65,14 @@ pub enum Quadrant {
     NotImportantNotUrgent,
 }
 impl Quadrant {
+    pub fn priority(self) -> Priority {
+        match self {
+            Self::NotImportantNotUrgent => Priority::P0,
+            Self::NotImportantUrgent => Priority::P1,
+            Self::ImportantNotUrgent => Priority::P2,
+            Self::ImportantUrgent => Priority::P3,
+        }
+    }
     pub const ALL: [Self; 4] = [
         Self::ImportantUrgent,
         Self::ImportantNotUrgent,
@@ -58,8 +100,6 @@ pub struct Task {
     pub notes: Option<String>,
     pub list_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub matrix_quadrant: Option<Quadrant>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matrix_order: Option<u64>,
 }
 
@@ -77,10 +117,9 @@ impl Task {
             title: title.trim().into(),
             completed: false,
             due_date: None,
-            priority: Priority::Normal,
+            priority: Priority::P0,
             notes: None,
             list_id: None,
-            matrix_quadrant: None,
             matrix_order: None,
         };
         validate(std::slice::from_ref(&task))?;
@@ -191,9 +230,6 @@ pub fn validate(tasks: &[Task]) -> Result<(), String> {
         if task.id.is_empty() || !ids.insert(&task.id) {
             return Err("Missing or duplicate task ID.".into());
         }
-        if task.matrix_quadrant.is_none() && task.matrix_order.is_some() {
-            return Err("A Matrix order requires a quadrant.".into());
-        }
         if task.title.trim().is_empty() {
             return Err("A task title is required.".into());
         }
@@ -210,6 +246,38 @@ pub fn validate(tasks: &[Task]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unified_priority_defaults_range_and_quadrant_mapping() {
+        assert_eq!(Task::new("New").unwrap().priority, Priority::P0);
+        for (value, quadrant) in [
+            (0, Quadrant::NotImportantNotUrgent),
+            (1, Quadrant::NotImportantUrgent),
+            (2, Quadrant::ImportantNotUrgent),
+            (3, Quadrant::ImportantUrgent),
+        ] {
+            let priority = Priority::try_from(value).unwrap();
+            assert_eq!(priority.quadrant(), quadrant);
+            assert_eq!(quadrant.priority(), priority);
+            assert_eq!(
+                serde_json::to_value(priority).unwrap(),
+                serde_json::json!(value)
+            );
+            assert_eq!(
+                serde_json::from_value::<Priority>(serde_json::json!(value)).unwrap(),
+                priority
+            );
+        }
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(4),
+            serde_json::json!(256),
+            serde_json::json!(1.5),
+            serde_json::json!("High"),
+            serde_json::Value::Null,
+        ] {
+            assert!(serde_json::from_value::<Priority>(value).is_err());
+        }
+    }
     #[test]
     fn task_contexts_keep_completed_tasks_and_today_excludes_future_tasks() {
         let today = parse_date("2026-10-17").unwrap();

@@ -6,6 +6,7 @@ mod i18n;
 mod lifecycle;
 mod matrix;
 mod matrix_view;
+mod priority_style;
 mod storage;
 mod tasks;
 mod tray;

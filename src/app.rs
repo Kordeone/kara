@@ -29,7 +29,6 @@ pub struct AppModel {
     page: Page,
     lists_expanded: bool,
     matrix_list: Option<String>,
-    matrix_unassigned_expanded: bool,
     store: Option<Store>,
     storage_error: Option<String>,
     editor: Option<Editor>,
@@ -186,7 +185,6 @@ impl cosmic::Application for AppModel {
             page: Page::Inbox,
             lists_expanded: true,
             matrix_list: None,
-            matrix_unassigned_expanded: false,
             store: None,
             storage_error: None,
             editor: None,
@@ -363,14 +361,19 @@ impl cosmic::Application for AppModel {
                     .size(14)
                     .font(cosmic::font::default())
                     .width(Length::Fill);
-                    let detail = match &task.due_date {
-                        Some(d) => format!("Due {d} · {} priority", task.priority.label()),
-                        None => format!("{} priority", task.priority.label()),
-                    };
+                    let detail = task
+                        .due_date
+                        .as_ref()
+                        .map_or(String::new(), |d| format!("Due {d}"));
                     let task_details = widget::column::with_capacity(2)
                         .spacing(spacing.space_xxs)
                         .push(title)
-                        .push(widget::text::caption(detail))
+                        .push(
+                            widget::row::with_capacity(2)
+                                .spacing(spacing.space_xs)
+                                .push(crate::priority_style::marker(task.priority))
+                                .push(widget::text::caption(detail)),
+                        )
                         .width(Length::Fill);
                     let actions = widget::row::with_capacity(2)
                         .spacing(spacing.space_xxs)
@@ -435,7 +438,6 @@ impl cosmic::Application for AppModel {
                 self.store.as_ref(),
                 self.matrix_list.as_deref(),
                 self.can_write(),
-                self.matrix_unassigned_expanded,
             ));
         } else if page == Page::Lists {
             let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
@@ -613,29 +615,11 @@ impl cosmic::Application for AppModel {
                 .push(due_input)
                 .push(calendar_button);
 
-            let priority_buttons = widget::row::with_capacity(3)
-                .spacing(spacing.space_xxs)
-                .push(priority_button(
-                    editor.task.priority,
-                    Priority::Low,
-                    0,
-                    "go-down-symbolic",
-                    "Low priority",
-                ))
-                .push(priority_button(
-                    editor.task.priority,
-                    Priority::Normal,
-                    1,
-                    "list-remove-symbolic",
-                    "Normal priority",
-                ))
-                .push(priority_button(
-                    editor.task.priority,
-                    Priority::High,
-                    2,
-                    "go-up-symbolic",
-                    "High priority",
-                ));
+            let mut priority_buttons = widget::row::with_capacity(4).spacing(spacing.space_xxs);
+            for (index, priority) in Priority::ALL.into_iter().enumerate() {
+                priority_buttons =
+                    priority_buttons.push(priority_button(editor.task.priority, priority, index));
+            }
             let mut options = vec!["Inbox".to_string()];
             let mut selected = Some(0);
             if let Some(store) = &self.store {
@@ -816,9 +800,6 @@ impl cosmic::Application for AppModel {
                 if let Some(Page::List(id)) = self.nav.data::<Page>(id).cloned() {
                     return self.update(Message::ToggleListPin(id));
                 }
-            }
-            Message::Matrix(matrix_view::Action::ToggleUnassigned) => {
-                self.matrix_unassigned_expanded = !self.matrix_unassigned_expanded;
             }
             Message::Matrix(matrix_view::Action::SelectList(index)) => {
                 if index == 0 {
@@ -1348,11 +1329,10 @@ fn priority_button(
     selected: Priority,
     priority: Priority,
     index: usize,
-    icon_name: &'static str,
-    label: &'static str,
 ) -> cosmic::Element<'static, Message> {
+    let label = format!("{} — {}", priority.short_label(), priority.label());
     let button = widget::button::custom(
-        widget::container(widget::icon(icon::from_name(icon_name).into()).size(17))
+        widget::container(crate::priority_style::marker(priority))
             .width(Length::Fixed(36.0))
             .height(Length::Fixed(36.0))
             .align_x(Alignment::Center)
@@ -1362,7 +1342,7 @@ fn priority_button(
     .height(Length::Fixed(36.0))
     .class(cosmic::theme::Button::IconVertical)
     .selected(priority_selected(selected, priority))
-    .name(label)
+    .name(label.clone())
     .on_press(Message::Priority(index));
     widget::tooltip(
         button,
@@ -1513,7 +1493,7 @@ mod tests {
         assert_eq!(task.list_id.as_deref(), Some("selected-list"));
         assert!(!task.completed);
         assert!(task.due_date.is_none());
-        assert_eq!(task.priority, Priority::Normal);
+        assert_eq!(task.priority, Priority::P0);
         for page in [
             Page::Tasks,
             Page::Inbox,
@@ -1568,11 +1548,12 @@ mod tests {
 
     #[test]
     fn priority_selector_indices_cover_all_existing_priorities() {
-        assert_eq!(Priority::default(), Priority::Normal);
-        assert_eq!(priority_at(0), Some(Priority::Low));
-        assert_eq!(priority_at(1), Some(Priority::Normal));
-        assert_eq!(priority_at(2), Some(Priority::High));
-        assert_eq!(priority_at(3), None);
+        assert_eq!(Priority::default(), Priority::P0);
+        assert_eq!(priority_at(0), Some(Priority::P0));
+        assert_eq!(priority_at(1), Some(Priority::P1));
+        assert_eq!(priority_at(2), Some(Priority::P2));
+        assert_eq!(priority_at(3), Some(Priority::P3));
+        assert_eq!(priority_at(4), None);
         for selected in Priority::ALL {
             assert!(priority_selected(selected, selected));
             assert_eq!(
@@ -1600,10 +1581,9 @@ mod tests {
 
     #[test]
     fn shared_editor_fields_preserve_matrix_and_task_assignment_data() {
-        let mut existing =
-            matrix::draft(Some("work"), Some(tasks::Quadrant::ImportantUrgent)).unwrap();
+        let mut existing = matrix::draft(Some("work"), tasks::Quadrant::ImportantUrgent).unwrap();
         existing.title = "Old title".into();
-        existing.priority = Priority::High;
+        existing.priority = Priority::P3;
         existing.matrix_order = Some(4);
         let edited = apply_editor_fields(
             existing,
@@ -1615,18 +1595,15 @@ mod tests {
         assert_eq!(edited.due_date.as_deref(), Some("2026-02-03"));
         assert_eq!(edited.notes.as_deref(), Some(" notes "));
         assert_eq!(edited.list_id.as_deref(), Some("work"));
-        assert_eq!(edited.priority, Priority::High);
-        assert_eq!(
-            edited.matrix_quadrant,
-            Some(tasks::Quadrant::ImportantUrgent)
-        );
+        assert_eq!(edited.priority, Priority::P3);
+        assert_eq!(edited.priority.quadrant(), tasks::Quadrant::ImportantUrgent);
         assert_eq!(edited.matrix_order, Some(4));
 
-        let draft = matrix::draft(None, Some(tasks::Quadrant::NotImportantUrgent)).unwrap();
+        let draft = matrix::draft(None, tasks::Quadrant::NotImportantUrgent).unwrap();
         let created = apply_editor_fields(draft, "Matrix task", None, String::new());
         assert_eq!(
-            created.matrix_quadrant,
-            Some(tasks::Quadrant::NotImportantUrgent)
+            created.priority.quadrant(),
+            tasks::Quadrant::NotImportantUrgent
         );
         assert!(created.matrix_order.is_none());
     }

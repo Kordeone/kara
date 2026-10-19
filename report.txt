@@ -1,124 +1,168 @@
-Kara — Eisenhower Matrix UI refinement
+Kara — Unified Priority and Eisenhower Classification
 
-Status
-- Based on clean main at 39587bb, including accepted Tasks/dialog/icon fixes.
-- Automated validation passed. COSMIC visual acceptance is pending the owner.
-- No graphical testing was performed on headless Debian. No push, installation,
-  packaging, theme customization or unrelated feature work was performed.
+Delivery
+- Implemented on main, based on 889ac99. No push, installation or new milestone.
+- All automated checks passed. No COSMIC graphical testing was performed on
+  headless Debian; the owner must accept the controls/colors on CachyOS.
 
-UI changes
-- Replaced content-sized quadrant cards with a viewport-filling 2x2 grid.
-  Two equal-width columns and equal-height flex rows share the measured space.
-  Task count does not determine quadrant dimensions.
-- Exact quadrant order: Important & Urgent / Important & Not Urgent above
-  Not Important & Urgent / Not Important & Not Urgent.
-- Each quadrant has a native Primary surface header, compact Add button and
-  Card surface content region. Only the task region scrolls inside each panel;
-  headers and Add controls remain outside those scrollers.
-- Matrix owns its heading/toolbar to avoid a duplicate heading. The Inbox/named
-  list selector sits beside the heading where space permits and stacks below
-  it on narrow views. The selector is capped at 280 logical pixels.
-- Layout measures actual available space after the toolbar and Unassigned have
-  been laid out. Two columns require 420 logical pixels each plus native gap.
-  Desktop rows use Fill rather than fixed heights. Below the space needed for
-  two readable 200-pixel panels and their gap, the grid itself scrolls. Narrow
-  views stack the four panels in row-major order in that same grid scroller.
-- Unassigned remains beneath the grid, visible even when the grid scrolls.
-  A count and disclosure control form a compact, initially collapsed section.
-  Expanded tasks scroll in at most 25% of the measured body viewport, capped
-  at 240 logical pixels. Empty expansion uses only the empty-state text height.
-  Expansion is session-only UI state, not persisted.
-- Task rows group Edit and Up/Down controls together, retain a full-width
-  classification selector within the row, and show optional due-date and
-  non-Normal priority captions. Row width is capped at 640 logical pixels,
-  including Unassigned, so controls do not span the whole application.
-- Matrix Edit reuses the accepted embedded, theme-tinted symbolic Tasks icon.
-  Action targets are compact 36px native icon buttons with tooltips/names.
-- Completed titles retain muted strikethrough; completed tasks stay below
-  active tasks with the same editing, reversal and ordering actions.
-- Add actions continue using the existing Matrix draft/list defaults and the
-  shared Tasks dialog. Classification and all mutations use existing messages.
+Authoritative model
+- Task.priority is the sole classification field, serialized as integer 0..3:
+    P0 = Not Important & Not Urgent (new-task default)
+    P1 = Not Important & Urgent
+    P2 = Important & Not Urgent
+    P3 = Important & Urgent
+- Task no longer has matrix_quadrant. Quadrant is only a computed view/migration
+  vocabulary with an explicit one-to-one mapping; it cannot diverge from priority.
+- Invalid, fractional, missing or nonnumeric v4 priorities are rejected. Due dates
+  never infer or change priority. Stable IDs and all unrelated properties remain.
+- Normal Inbox/list creation defaults to P0. Matrix Add supplies that quadrant's
+  priority and selected list, using the existing shared dialog and defaults.
+- The accepted editor keeps its structure/date picker/validation. Its priority
+  row now has four 36px native P0/P1/P2/P3 buttons, selected/focus states and
+  tooltips/accessibility names explaining importance and urgency.
 
-Modified files
-- src/matrix_view.rs: viewport layout, toolbar, panel scrollers, disclosure UI,
-  compact task presentation, metadata and four focused layout/metadata tests.
-- src/app.rs: Matrix disclosure state and toggle message handling, passing that
-  state into Matrix; skip only Matrix's old generic heading; expose the existing
-  edit-icon helper to the sibling Matrix module without changing its behavior.
-- report.txt: this milestone report and acceptance instructions.
+Matrix and presentation
+- Removed Unassigned, its disclosure state and the separate bottom panel.
+  All selected Inbox/list records appear exactly once among the four quadrants.
+- Existing responsive 2x2 sizing, independently scrolling task regions, fixed
+  headers/Add buttons and narrow/short viewport fallback remain in place.
+- Reclassification writes priority. Editor priority changes follow the same
+  append rule. Manual order stays scoped to (list, priority); ranks normalize
+  stably without rearranging the shared task vector or sorting the Tasks view.
+- List moves retain priority and append at the destination; deleting a list
+  moves tasks to Inbox in prior relative Matrix order. Completed tasks retain
+  priority/list, remain muted/struck through after active tasks, and are reversible.
+- Small semantic P markers use COSMIC palette red (P3), blue (P2), yellow/amber
+  (P1), and neutral gray (P0). The hues are subdued toward theme foreground and
+  adjusted for 4.5:1 contrast against standard native surfaces. Full backgrounds
+  keep their native theme styling. No custom theme or hardcoded color palette.
 
-Preservation checks
-- Sidebar builder, Tasks rendering and shared dialog implementation compared
-  byte-for-byte against the accepted baseline and remain unchanged.
-- src/tasks.rs, src/matrix.rs, src/storage.rs, src/tray.rs, src/lifecycle.rs,
-  src/date_entry.rs, Cargo.toml and Cargo.lock remain byte-for-byte unchanged.
-- Same shared task records/IDs, classifications, ordering, list assignment and
-  atomic JSON schema. No user storage was opened for automated validation.
-- Existing tests verify classification, stable ranks, list moves/deletion,
-  shared editor fields, completion/reversal, legacy compatibility, corruption
-  protection, atomic writes and failed-write preservation.
+Explicit persistence migration
+- Reads legacy schema versions 1, 2 and 3 through strict typed legacy records;
+  reads/writes unified schema version 4 through strict numeric-priority records.
+- Valid old Matrix classification takes precedence over old Low/Normal/High.
+  Every previously unclassified task becomes P0, INCLUDING formerly High and
+  Normal tasks. Old High does NOT imply urgency or importance. Those old values
+  remain recoverable in the complete original-file backup described below.
+- Every title, ID, due date, note, completion value, list ID, list name and pin is
+  preserved. Existing Stage 1 reserved-list recovery remains. Legacy classified
+  relative ordering is preserved and normalized; formerly unclassified records
+  append after existing P0 records within their active/completed group, using
+  original document order for ties. No records are duplicated or dropped.
+- Opening a legacy file only converts/normalizes in memory. It does not rewrite
+  tasks.json or create a backup. The first successful task/list mutation writes
+  schema 4 only after a recoverable original backup has been published, read back
+  byte-for-byte and synced along with its parent directory.
+- Normal storage paths:
+    ${XDG_DATA_HOME:-$HOME/.local/share}/io.github.kordeone.Kara/tasks.json
+    same directory/tasks.json.pre-priority-v4.bak
+  XDG_DATA_HOME must be absolute; existing fallback rules are unchanged.
+- Backup is a 0600 temporary file, synced and published without clobbering an
+  existing backup. A matching regular backup is verified/reused after a retry;
+  a different file, symlink, directory, read/write/sync failure blocks migration
+  visibly. No existing backup is overwritten. Resolve a conflict by preserving
+  both originals elsewhere and inspecting them before retrying; do not delete
+  an unknown backup to bypass the error.
+- Existing storage lock, external-change checks, synced temporary saves and
+  atomic replacement remain. The destination is rechecked after backup work.
+  Failed pre-replacement writes leave disk and live records unchanged. Existing
+  post-replacement durability warnings still distinguish already-written data.
+- Interruption before replacement leaves legacy data plus a reusable exact
+  backup; after replacement, restart reads whichever complete version the
+  filesystem retained. The verified original backup remains available. No migration journal or database is needed. Repeated v4 opens/saves
+  do not remigrate, change IDs or replace the original backup.
+- Malformed/unrecognized versions, old priorities/quadrants, invalid ranks,
+  duplicate IDs, invalid dates, unknown fields and dangling list references are
+  rejected without resetting or rewriting data. All migration tests use copies
+  in temporary directories; no personal task data was opened or changed.
 
-Validation on Debian
+Recovery / downgrade
+- Keep the backup indefinitely if old priority significance matters. Old Kara
+  binaries cannot read v4. The backup contains the entire pre-migration state,
+  including Low/Normal/High, but not edits made after migration.
+- To inspect/recover: quit Kara through the tray, preserve both current tasks.json
+  and the .bak file, then COPY the backup into a separate disposable XDG directory
+  as tasks.json. Use an older binary to inspect the original values, or this
+  binary to repeat migration. Never replace a newer personal file blindly with
+  the backup; that would discard later edits. No restore command was run here.
+
+Changed files
+- src/tasks.rs: validated numeric Priority, defaults and computed quadrant map.
+- src/matrix.rs: derived classification, shared-record ordering and updated tests.
+- src/storage.rs: typed v1-v3 migration, verified no-clobber backup, schema v4,
+  priority-aware updates and migration/persistence regression tests.
+- src/app.rs: four-level selector, semantic task markers, removed disclosure
+  state, updated editor tests; navigation/date picker/lifecycle remain unchanged.
+- src/matrix_view.rs: four populated-by-priority quadrants, no Unassigned/bottom
+  panel, reassignment to priority and small semantic markers.
+- src/priority_style.rs: theme-derived contrast-adjusted markers and theme tests.
+- src/main.rs: register priority_style module.
+- tests/fixtures/priority-v3.json: representative legacy file, all classifications,
+  unclassified Low/Normal/High, ranks, completed records and a pinned named list.
+- report.txt: this report. Cargo.toml/Cargo.lock and all dependencies unchanged.
+
+Validation
 - cargo fmt --check: PASSED.
 - cargo check --locked: PASSED.
 - cargo clippy --locked --all-targets -- -D warnings: PASSED.
-- cargo test --locked: PASSED, 53 passed, 0 failed, 1 ignored private-bus test.
-  Four focused presentation tests replace the former single breakpoint test.
-- Isolated D-Bus tray regression: PASSED separately, 1 test. All 54 tests were
-  exercised across the normal and private-bus runs. Command:
+- cargo test --locked: PASSED; 61 passed, 0 failed, 1 ignored private-bus test.
+- Isolated D-Bus tray regression: PASSED separately, 1 test; 62 total exercised.
     KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
 - cargo build --locked: PASSED; target/debug/kara produced.
 - git diff --check: PASSED.
+- Coverage includes defaults/range/all mappings, Matrix drafts, reclassification,
+  editor priority append, ordering/list movement/deletion, completion/reversal,
+  legacy v1/v2/v3 migration, exact backup/mode, interrupted migration retries,
+  idempotent v4 saves, conflicting/symlink/denied backups, external edits,
+  malformed records, old/new editor data retention and default light/dark/high
+  contrast surfaces. Existing date/tray/single-instance tests remain passing.
 
-CachyOS COSMIC acceptance checklist — REQUIRED before visual approval
-1. Quit all Kara instances via the tray (single-instance activation otherwise
-   opens the already running binary). Transfer current main source via Samba,
-   retaining Cargo.lock. Build and launch without installation:
+CachyOS COSMIC acceptance — required
+1. Quit all existing Kara instances via the tray. Transfer main source with
+   Cargo.lock via the existing Samba workflow, then:
        cargo build --locked
-       KARA_MATRIX_DATA=$(mktemp -d)
-       XDG_DATA_HOME="$KARA_MATRIX_DATA" ./target/debug/kara
-   Keep KARA_MATRIX_DATA for relaunch tests. This uses disposable task data.
-2. Open Matrix in a wide desktop window, for example 1440x1000, sidebar visible.
-   Verify exact quadrant positions, equal columns/heights, most body space used,
-   readable native surfaces/header separation and compact aligned toolbar.
-3. Start empty. Confirm all four empty states, visible header/Add controls and
-   compact collapsed Unassigned (0). Expand/collapse Unassigned with both the
-   disclosure and text button. Empty expansion must remain unobtrusive.
-4. Create Work/Home lists in Tasks. Select each and Inbox in Matrix. Add a task
-   from every quadrant; verify the accepted shared dialog, selected list and
-   quadrant defaults, normal priority and optional fields. Cancel one creation.
-5. Populate one quadrant heavily (15+ tasks), another with one task, and leave
-   another empty. Verify equal panel sizes regardless of population. Scroll the
-   populated quadrant: its header/Add remain visible and other panels do not
-   scroll. Check long titles, due dates, High/Low metadata and dropdown labels.
-6. Use classification dropdowns and Up/Down. Verify destination append, stable
-   order, disabled boundary arrows and no cross-list changes. Edit/move a task
-   to another list; its ID/classification persist and destination order appends.
-7. Complete several tasks. Verify muted/struck-through titles after active
-   tasks; edit, reorder completed tasks and reverse completion. Check Tasks
-   context matches Matrix without duplicated records.
-8. Create Unassigned tasks in the selected list. Confirm count, expand, scroll
-   that section and classify tasks. The section must stay reachable regardless
-   of grid size/population; switching lists must filter its tasks correctly.
-9. Reduce width gradually, including a 1024x768 window and minimum window size,
-   with sidebar visible/hidden. Verify one-column fallback as needed, exact
-   row-major order, grid scrolling to all panels and visible Unassigned below.
-   Reduce height at wide width: verify scrolling instead of compressed panels.
-   Expand Unassigned in each size and ensure all controls remain reachable.
-10. Test Tab/Shift-Tab, Space/Enter, dropdown navigation, tooltips, mouse wheel
-    and touchpad in nested scrollers. Check no overlap/clipped controls at normal
-    and increased display scaling, and in both light/dark COSMIC themes.
-11. Quit/relaunch with the same XDG_DATA_HOME. Verify classifications, ranks,
-    lists, edits and completion persist. Unassigned intentionally starts closed.
-    Smoke-test accepted Tasks dialog/date entry, Inbox/Today/lists, tray close,
-    Open/Quit and second-launch restoration. No personal task file needs editing.
+       KARA_PRIORITY_DATA=$(mktemp -d)
+       mkdir -p "$KARA_PRIORITY_DATA/io.github.kordeone.Kara"
+       cp tests/fixtures/priority-v3.json "$KARA_PRIORITY_DATA/io.github.kordeone.Kara/tasks.json"
+       XDG_DATA_HOME="$KARA_PRIORITY_DATA" ./target/debug/kara
+   Keep that variable for restarts. This is disposable legacy data, not personal
+   storage. A running instance would otherwise consume second-launch activation.
+2. Before any mutation, inspect Inbox and Work in Matrix: all old unclassified
+   tasks and classified P0 are in P0; P1/P2/P3 match their classifications. Work's
+   two P3 tasks are ordered "P3 rank two" then "P3 rank seven". P2 completed
+   task stays completed. There is no Unassigned or bottom task-list panel.
+3. Add normally from Inbox and a named list: P0 must be selected. Add from each
+   Matrix quadrant: its P level and selected list must be preselected. Confirm
+   the accepted dialog/date controls and fields, inline validation and Cancel.
+4. Edit priority through all four buttons, then via Matrix reassignment. Verify
+   each change in both sections and that the task appears in exactly one quadrant.
+   Check full descriptions/tooltips, clear selected/focus state, red/blue/amber/
+   gray markers, and light/dark themes at normal and increased display scaling.
+5. Add multiple tasks per quadrant, reorder, edit title/notes/dates without
+   reordering, reassign priority and verify destination append/source compaction.
+   Move between lists, rename/pin/delete lists and check no identity/field loss.
+   Complete/reverse tasks; they remain in context, styled muted/struck through.
+6. Test wide/narrow/short windows and populated/empty quadrants. All quadrant
+   controls and independently scrolling content must remain reachable, without
+   the removed panel consuming space. Verify keyboard navigation and editing.
+7. Quit after making edits, then verify the recoverable original backup:
+       cmp tests/fixtures/priority-v3.json "$KARA_PRIORITY_DATA/io.github.kordeone.Kara/tasks.json.pre-priority-v4.bak"
+   Expect cmp success. Inspect tasks.json: version 4, numeric priority 0..3, no
+   matrix_quadrant fields. Restart with the same XDG_DATA_HOME and verify edits,
+   ranks, IDs and completion persist; the backup must remain unchanged.
+8. Using another disposable copy only, place different bytes at the expected
+   backup path before the first save. Expect a visible save failure, original
+   legacy data unchanged and no replacement of that backup. Never use personal
+   data for corruption/failure tests. Smoke-test tray Open/Quit and Tasks dates.
 
-Known limitations
-- This report describes implemented layout rules, not graphical acceptance.
-  Exact rendering, nested scrolling, focus visibility, long labels and scaling
-  require the owner's CachyOS checks above. Headless tests cover layout decisions
-  and data behavior; they do not establish pixel correctness or desktop usability.
-- Narrow/short views deliberately scroll the grid; independently scrolling task
-  regions remain inside each fixed minimum panel. Unassigned stays below it.
-- No drag-and-drop or persistent disclosure preference was added. Matrix data
-  semantics and all deferred modules remain as before.
+Limitations
+- No graphical acceptance is claimed. Theme/selected-state contrast, compact
+  controls, text wrapping and nested scrolling need the owner's COSMIC review.
+  Marker tests cover standard COSMIC light/dark/high-contrast surfaces; unusual
+  customized themes still require visual review.
+- Legacy unclassified priorities intentionally become P0, even High/Normal.
+  Original priority information is recoverable from the pre-v4 backup only.
+- Backup creation needs free space and a writable data directory. Failures block
+  the save; the owner must resolve the storage issue rather than losing data.
+- No Tasks sorting, Show Completed toggle, drag/drop, sidebar redesign,
+  autostart, packaging or other module functionality was added.

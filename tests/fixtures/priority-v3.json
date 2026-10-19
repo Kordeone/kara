@@ -1,0 +1,14 @@
+{
+  "version": 3,
+  "tasks": [
+    {"id":"unclassified-high","title":"Old High","completed":false,"due_date":"2026-01-01","priority":"High","notes":"Keep original significance in backup","list_id":null},
+    {"id":"unclassified-normal","title":"Old Normal","completed":true,"due_date":null,"priority":"Normal","notes":null,"list_id":null},
+    {"id":"unclassified-low","title":"Old Low","completed":false,"due_date":null,"priority":"Low","notes":null,"list_id":null},
+    {"id":"classified-p0","title":"P0 existing","completed":false,"due_date":null,"priority":"High","notes":null,"list_id":null,"matrix_quadrant":"NotImportantNotUrgent","matrix_order":3},
+    {"id":"classified-p1","title":"P1 existing","completed":false,"due_date":null,"priority":"Low","notes":null,"list_id":"work","matrix_quadrant":"NotImportantUrgent","matrix_order":0},
+    {"id":"classified-p2","title":"P2 complete","completed":true,"due_date":"2026-10-18","priority":"Low","notes":"Retain completion and list","list_id":"work","matrix_quadrant":"ImportantNotUrgent","matrix_order":9},
+    {"id":"classified-p3-first","title":"P3 rank seven","completed":false,"due_date":null,"priority":"Normal","notes":null,"list_id":"work","matrix_quadrant":"ImportantUrgent","matrix_order":7},
+    {"id":"classified-p3-second","title":"P3 rank two","completed":false,"due_date":null,"priority":"High","notes":null,"list_id":"work","matrix_quadrant":"ImportantUrgent","matrix_order":2}
+  ],
+  "lists":[{"id":"work","name":"Work","pinned":true}]
+}

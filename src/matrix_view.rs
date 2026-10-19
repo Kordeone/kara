@@ -4,7 +4,7 @@ use crate::{
     app::{Message, edit_task_icon},
     matrix::{self, Direction},
     storage::Store,
-    tasks::{Priority, Quadrant, Task},
+    tasks::{Quadrant, Task},
 };
 use cosmic::{
     Element,
@@ -15,9 +15,8 @@ use cosmic::{
 #[derive(Debug, Clone)]
 pub enum Action {
     SelectList(usize),
-    ToggleUnassigned,
-    Add(Option<Quadrant>),
-    Classify(String, Option<Quadrant>),
+    Add(Quadrant),
+    Classify(String, Quadrant),
     Reorder(String, Direction),
 }
 
@@ -41,19 +40,10 @@ impl Layout {
     }
 }
 
-fn unassigned_height(viewport_height: f32, task_count: usize) -> f32 {
-    if task_count == 0 {
-        0.0
-    } else {
-        (viewport_height * 0.25).clamp(0.0, 240.0)
-    }
-}
-
 pub fn view<'a>(
     store: Option<&'a Store>,
     list: Option<&'a str>,
     can_write: bool,
-    unassigned_expanded: bool,
 ) -> Element<'a, Message> {
     let Some(store) = store else {
         return widget::column::with_capacity(2)
@@ -100,59 +90,47 @@ pub fn view<'a>(
                 .push(selector)
                 .into()
         };
-        let body = widget::responsive(move |viewport| {
-            let unassigned =
-                unassigned(store, list, can_write, unassigned_expanded, viewport.height);
-            // This responsive region receives the actual space remaining after
-            // the disclosure and optional Unassigned scroller have been measured.
-            let grid = widget::responsive(move |available| {
-                let layout = Layout::for_viewport(
-                    available.width,
-                    available.height,
-                    f32::from(spacing.space_m),
-                );
-                let panel_height = if layout.scroll_grid {
-                    Length::Fixed(MIN_PANEL_HEIGHT)
-                } else {
-                    Length::Fill
-                };
-                let mut grid = widget::column::with_capacity(4)
-                    .spacing(spacing.space_m)
-                    .width(Length::Fill);
-                if layout.columns {
-                    for pair in Quadrant::ALL.chunks(2) {
-                        grid = grid.push(
-                            widget::row::with_capacity(2)
-                                .spacing(spacing.space_m)
-                                .height(panel_height)
-                                .width(Length::Fill)
-                                .push(quadrant(store, list, pair[0], can_write))
-                                .push(quadrant(store, list, pair[1], can_write)),
-                        );
-                    }
-                } else {
-                    for value in Quadrant::ALL {
-                        grid = grid.push(
-                            widget::container(quadrant(store, list, value, can_write))
-                                .height(panel_height),
-                        );
-                    }
-                }
-                if layout.scroll_grid {
-                    widget::scrollable(grid)
-                        .height(Length::Fill)
-                        .width(Length::Fill)
-                        .into()
-                } else {
-                    grid.height(Length::Fill).into()
-                }
-            });
-            widget::column::with_capacity(2)
+        let body = widget::responsive(move |available| {
+            let layout = Layout::for_viewport(
+                available.width,
+                available.height,
+                f32::from(spacing.space_m),
+            );
+            let panel_height = if layout.scroll_grid {
+                Length::Fixed(MIN_PANEL_HEIGHT)
+            } else {
+                Length::Fill
+            };
+            let mut grid = widget::column::with_capacity(4)
                 .spacing(spacing.space_m)
-                .push(grid)
-                .push(unassigned)
-                .height(Length::Fill)
-                .into()
+                .width(Length::Fill);
+            if layout.columns {
+                for pair in Quadrant::ALL.chunks(2) {
+                    grid = grid.push(
+                        widget::row::with_capacity(2)
+                            .spacing(spacing.space_m)
+                            .height(panel_height)
+                            .width(Length::Fill)
+                            .push(quadrant(store, list, pair[0], can_write))
+                            .push(quadrant(store, list, pair[1], can_write)),
+                    );
+                }
+            } else {
+                for value in Quadrant::ALL {
+                    grid = grid.push(
+                        widget::container(quadrant(store, list, value, can_write))
+                            .height(panel_height),
+                    );
+                }
+            }
+            if layout.scroll_grid {
+                widget::scrollable(grid)
+                    .height(Length::Fill)
+                    .width(Length::Fill)
+                    .into()
+            } else {
+                grid.height(Length::Fill).into()
+            }
         });
         widget::column::with_capacity(2)
             .spacing(spacing.space_m)
@@ -167,7 +145,7 @@ pub fn view<'a>(
 fn task_content<'a>(
     store: &'a Store,
     list: Option<&str>,
-    quadrant: Option<Quadrant>,
+    quadrant: Quadrant,
     can_write: bool,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
@@ -176,11 +154,7 @@ fn task_content<'a>(
         .width(Length::Fill);
     let tasks = matrix::ordered(store.tasks(), list, quadrant);
     if tasks.is_empty() {
-        content = content.push(widget::text::body(if quadrant.is_some() {
-            "No tasks in this quadrant."
-        } else {
-            "No unassigned tasks."
-        }));
+        content = content.push(widget::text::body("No tasks in this quadrant."));
     }
     let mut completed = false;
     for task in tasks {
@@ -196,12 +170,9 @@ fn task_content<'a>(
         .into()
 }
 
-fn add_button(quadrant: Option<Quadrant>, can_write: bool) -> Element<'static, Message> {
+fn add_button(quadrant: Quadrant, can_write: bool) -> Element<'static, Message> {
     widget::button::icon(icon::from_name("list-add-symbolic"))
-        .tooltip(format!(
-            "Add task to {}",
-            quadrant.map_or("Unassigned", Quadrant::label)
-        ))
+        .tooltip(format!("Add task to {}", quadrant.label()))
         .name("Add task")
         .width(Length::Fixed(36.0))
         .height(Length::Fixed(36.0))
@@ -216,11 +187,12 @@ fn quadrant<'a>(
     can_write: bool,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
-    let header = widget::row::with_capacity(2)
+    let header = widget::row::with_capacity(3)
         .spacing(spacing.space_s)
         .align_y(Alignment::Center)
+        .push(crate::priority_style::marker(quadrant.priority()))
         .push(widget::text::heading(quadrant.label()).width(Length::Fill))
-        .push(add_button(Some(quadrant), can_write));
+        .push(add_button(quadrant, can_write));
     let header = widget::container(header)
         .padding(spacing.space_s)
         .width(Length::Fill)
@@ -228,7 +200,7 @@ fn quadrant<'a>(
     let content = widget::column::with_capacity(2)
         .push(header)
         .push(
-            widget::scrollable(task_content(store, list, Some(quadrant), can_write))
+            widget::scrollable(task_content(store, list, quadrant, can_write))
                 .height(Length::Fill)
                 .width(Length::Fill),
         )
@@ -236,57 +208,6 @@ fn quadrant<'a>(
     widget::container(content)
         .class(cosmic::theme::Container::Card)
         .height(Length::Fill)
-        .width(Length::Fill)
-        .into()
-}
-
-fn unassigned<'a>(
-    store: &'a Store,
-    list: Option<&str>,
-    can_write: bool,
-    expanded: bool,
-    viewport_height: f32,
-) -> Element<'a, Message> {
-    let spacing = cosmic::theme::spacing();
-    let count = matrix::ordered(store.tasks(), list, None).len();
-    let header = widget::row::with_capacity(3)
-        .align_y(Alignment::Center)
-        .spacing(spacing.space_s)
-        .push(
-            widget::button::icon(icon::from_name(if expanded {
-                "pan-down-symbolic"
-            } else {
-                "pan-end-symbolic"
-            }))
-            .tooltip(if expanded {
-                "Collapse Unassigned"
-            } else {
-                "Expand Unassigned"
-            })
-            .on_press(Message::Matrix(Action::ToggleUnassigned)),
-        )
-        .push(
-            widget::button::text(format!("Unassigned ({count})"))
-                .on_press(Message::Matrix(Action::ToggleUnassigned))
-                .width(Length::Fill),
-        )
-        .push(add_button(None, can_write));
-    let mut content = widget::column::with_capacity(2).push(header);
-    if expanded {
-        let tasks = task_content(store, list, None, can_write);
-        if count == 0 {
-            content = content.push(tasks);
-        } else {
-            content = content.push(
-                widget::scrollable(tasks)
-                    .height(unassigned_height(viewport_height, count))
-                    .width(Length::Fill),
-            );
-        }
-    }
-    widget::container(content)
-        .padding(spacing.space_xxs)
-        .class(cosmic::theme::Container::Card)
         .width(Length::Fill)
         .into()
 }
@@ -338,57 +259,48 @@ fn task_row<'a>(store: &'a Store, task: &'a Task, can_write: bool) -> Element<'a
         .align_y(Alignment::Center);
     if can_write {
         let id = task.id.clone();
-        let options: Vec<_> = std::iter::once("Unassigned")
-            .chain(Quadrant::ALL.map(Quadrant::label))
-            .collect();
-        let selected = task
-            .matrix_quadrant
-            .and_then(|quadrant| Quadrant::ALL.iter().position(|q| *q == quadrant))
-            .map_or(0, |i| i + 1);
+        let options: Vec<_> = Quadrant::ALL
+            .map(|q| format!("{} — {}", q.priority().short_label(), q.label()))
+            .into();
+        let selected = Quadrant::ALL
+            .iter()
+            .position(|q| *q == task.priority.quadrant());
         controls = controls.push(
-            widget::dropdown(options, Some(selected), move |index| {
-                Message::Matrix(Action::Classify(
-                    id.clone(),
-                    index
-                        .checked_sub(1)
-                        .and_then(|i| Quadrant::ALL.get(i))
-                        .copied(),
-                ))
+            widget::dropdown(options, selected, move |index| {
+                Message::Matrix(Action::Classify(id.clone(), Quadrant::ALL[index]))
             })
             .width(Length::Fill),
         );
     } else {
-        controls = controls.push(
-            widget::text::caption(task.matrix_quadrant.map_or("Unassigned", Quadrant::label))
-                .width(Length::Fill),
+        controls = controls.push(widget::text::caption(task.priority.label()).width(Length::Fill));
+    }
+    for (direction, icon_name, label) in [
+        (Direction::Up, "go-up-symbolic", "Move task up"),
+        (Direction::Down, "go-down-symbolic", "Move task down"),
+    ] {
+        header = header.push(
+            widget::button::icon(icon::from_name(icon_name))
+                .width(Length::Fixed(36.0))
+                .height(Length::Fixed(36.0))
+                .name(label)
+                .tooltip(label)
+                .on_press_maybe(
+                    (can_write && matrix::neighbor(store.tasks(), &task.id, direction).is_some())
+                        .then(|| Message::Matrix(Action::Reorder(task.id.clone(), direction))),
+                ),
         );
     }
-    if task.matrix_quadrant.is_some() {
-        for (direction, icon_name, label) in [
-            (Direction::Up, "go-up-symbolic", "Move task up"),
-            (Direction::Down, "go-down-symbolic", "Move task down"),
-        ] {
-            header = header.push(
-                widget::button::icon(icon::from_name(icon_name))
-                    .width(Length::Fixed(36.0))
-                    .height(Length::Fixed(36.0))
-                    .name(label)
-                    .tooltip(label)
-                    .on_press_maybe(
-                        (can_write
-                            && matrix::neighbor(store.tasks(), &task.id, direction).is_some())
-                        .then(|| Message::Matrix(Action::Reorder(task.id.clone(), direction))),
-                    ),
-            );
-        }
-    }
-    let mut content = widget::column::with_capacity(3)
-        .spacing(spacing.space_xxs)
-        .push(header);
+    let mut detail = widget::row::with_capacity(2)
+        .spacing(spacing.space_xs)
+        .push(crate::priority_style::marker(task.priority));
     if let Some(metadata) = metadata(task) {
-        content = content.push(widget::text::caption(metadata));
+        detail = detail.push(widget::text::caption(metadata));
     }
-    content = content.push(controls);
+    let content = widget::column::with_capacity(3)
+        .spacing(spacing.space_xxs)
+        .push(header)
+        .push(detail)
+        .push(controls);
     widget::container(content)
         .padding(spacing.space_xxs)
         .max_width(640)
@@ -400,9 +312,6 @@ fn metadata(task: &Task) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(due) = &task.due_date {
         parts.push(format!("Due {due}"));
-    }
-    if task.priority != Priority::Normal {
-        parts.push(format!("{} priority", task.priority.label()));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
@@ -426,17 +335,6 @@ mod tests {
         assert!(Layout::for_viewport(1100., 415., 16.).scroll_grid);
     }
     #[test]
-    fn unassigned_is_bounded_by_the_actual_viewport() {
-        for height in [0., 100., 400., 800., 2000.] {
-            let expanded = unassigned_height(height, 10);
-            assert!(expanded <= height * 0.25);
-            assert!((0. ..=240.).contains(&expanded));
-        }
-        assert_eq!(unassigned_height(400., 1), 100.);
-        assert_eq!(unassigned_height(2000., 1), 240.);
-        assert_eq!(unassigned_height(2000., 0), 0.);
-    }
-    #[test]
     fn column_breakpoint_accounts_for_native_spacing_and_retains_label_order() {
         assert!(!Layout::for_viewport(850., 900., 16.).columns);
         assert!(Layout::for_viewport(856., 900., 16.).columns);
@@ -456,12 +354,9 @@ mod tests {
         let mut task = Task::new("Title").unwrap();
         assert_eq!(metadata(&task), None);
         task.due_date = Some("2026-10-18".into());
-        task.priority = Priority::High;
+        task.priority = crate::tasks::Priority::P3;
         let original = task.clone();
-        assert_eq!(
-            metadata(&task).as_deref(),
-            Some("Due 2026-10-18 · High priority")
-        );
+        assert_eq!(metadata(&task).as_deref(), Some("Due 2026-10-18"));
         assert_eq!(task, original);
     }
 }
