@@ -14,7 +14,6 @@ use cosmic::{
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    SelectList(usize),
     OpenPriority(String),
     ClosePriority,
     Add(Quadrant),
@@ -58,91 +57,54 @@ pub fn view<'a>(
             .into();
     };
     let spacing = cosmic::theme::spacing();
-    let mut options = vec!["Inbox".to_string()];
-    options.extend(store.lists().iter().map(|list| list.name.clone()));
-    let selected = list
-        .and_then(|id| store.lists().iter().position(|list| list.id == id))
-        .map_or(0, |i| i + 1);
-    // A single responsive root lets the toolbar stack at narrow widths, while
-    // the nested responsive body receives the space left after its real height.
-    widget::responsive(move |size| {
-        let selector = widget::column::with_capacity(2)
-            .spacing(spacing.space_xxs)
-            .push(widget::text::caption("Task list"))
-            .push(
-                widget::dropdown(options.clone(), Some(selected), |index| {
-                    Message::Matrix(Action::SelectList(index))
-                })
-                .width(Length::Fill),
-            );
-        let selector = widget::container(selector)
-            .max_width(280)
+    let body = widget::responsive(move |available| {
+        let layout = Layout::for_viewport(
+            available.width,
+            available.height,
+            f32::from(spacing.space_m),
+        );
+        let panel_height = if layout.scroll_grid {
+            Length::Fixed(MIN_PANEL_HEIGHT)
+        } else {
+            Length::Fill
+        };
+        let mut grid = widget::column::with_capacity(4)
+            .spacing(spacing.space_m)
             .width(Length::Fill);
-        let heading = widget::text::title1("Eisenhower Matrix");
-        let toolbar: Element<'_, Message> = if size.width >= 720.0 {
-            widget::row::with_capacity(2)
-                .spacing(spacing.space_m)
-                .align_y(Alignment::Center)
-                .push(heading.width(Length::Fill))
-                .push(selector)
+        if layout.columns {
+            for pair in Quadrant::ALL.chunks(2) {
+                grid = grid.push(
+                    widget::row::with_capacity(2)
+                        .spacing(spacing.space_m)
+                        .height(panel_height)
+                        .width(Length::Fill)
+                        .push(quadrant(store, list, pair[0], can_write, priority_task))
+                        .push(quadrant(store, list, pair[1], can_write, priority_task)),
+                );
+            }
+        } else {
+            for value in Quadrant::ALL {
+                grid = grid.push(
+                    widget::container(quadrant(store, list, value, can_write, priority_task))
+                        .height(panel_height),
+                );
+            }
+        }
+        if layout.scroll_grid {
+            widget::scrollable(grid)
+                .height(Length::Fill)
+                .width(Length::Fill)
                 .into()
         } else {
-            widget::column::with_capacity(2)
-                .spacing(spacing.space_s)
-                .push(heading)
-                .push(selector)
-                .into()
-        };
-        let body = widget::responsive(move |available| {
-            let layout = Layout::for_viewport(
-                available.width,
-                available.height,
-                f32::from(spacing.space_m),
-            );
-            let panel_height = if layout.scroll_grid {
-                Length::Fixed(MIN_PANEL_HEIGHT)
-            } else {
-                Length::Fill
-            };
-            let mut grid = widget::column::with_capacity(4)
-                .spacing(spacing.space_m)
-                .width(Length::Fill);
-            if layout.columns {
-                for pair in Quadrant::ALL.chunks(2) {
-                    grid = grid.push(
-                        widget::row::with_capacity(2)
-                            .spacing(spacing.space_m)
-                            .height(panel_height)
-                            .width(Length::Fill)
-                            .push(quadrant(store, list, pair[0], can_write, priority_task))
-                            .push(quadrant(store, list, pair[1], can_write, priority_task)),
-                    );
-                }
-            } else {
-                for value in Quadrant::ALL {
-                    grid = grid.push(
-                        widget::container(quadrant(store, list, value, can_write, priority_task))
-                            .height(panel_height),
-                    );
-                }
-            }
-            if layout.scroll_grid {
-                widget::scrollable(grid)
-                    .height(Length::Fill)
-                    .width(Length::Fill)
-                    .into()
-            } else {
-                grid.height(Length::Fill).into()
-            }
-        });
-        widget::column::with_capacity(2)
-            .spacing(spacing.space_m)
-            .push(toolbar)
-            .push(body)
-            .height(Length::Fill)
-            .into()
-    })
-    .into()
+            grid.height(Length::Fill).into()
+        }
+    });
+    widget::column::with_capacity(2)
+        .spacing(spacing.space_m)
+        .push(widget::text::title1("Eisenhower Matrix"))
+        .push(body)
+        .height(Length::Fill)
+        .into()
 }
 
 fn task_content<'a>(

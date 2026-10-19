@@ -134,3 +134,75 @@ CachyOS COSMIC graphical acceptance checklist
 Remaining limitation
 - Actual icon legibility, theme tinting, alignment, hover/focus states, and
   narrow-window appearance require CachyOS COSMIC graphical verification.
+
+Kara contextual module sidebar
+
+Implementation
+- Kept the COSMIC application shell and existing sidebar panel. Overrode only
+  the panel contents to place four equal-width, icon-only native COSMIC buttons
+  above libcosmic's existing labeled navigation rows. The module buttons use
+  normal theme-selected, hover, focus, tooltip, and accessible-name behavior.
+- Bundled symbolic SVGs for Tasks, Board View, Eisenhower Matrix, and Pomodoro.
+  Existing Tasks rows remain Inbox, Today, Calendar, and collapsible Lists;
+  pinned lists remain visible while collapsed.
+- Board View shows Inbox and Lists, with each page identified as a placeholder.
+  Pomodoro shows Focus Timer, History, Statistics, and Settings placeholders.
+- Matrix shows Inbox and collapsible Lists with named scopes. Selecting Inbox
+  clears the existing Matrix list filter; selecting a named list updates it.
+  Removed the duplicate list dropdown from Matrix content. Matrix classification
+  and quadrant ordering are unchanged.
+- Each module retains its selected subsection while switching modules for the
+  lifetime of the app process. This is in-memory navigation state; no storage
+  schema or persisted task data changed.
+
+Files changed
+- src/app.rs: module selectors, contextual page routing, remembered navigation,
+  sidebar model, and regression tests.
+- src/matrix_view.rs: removed the in-content list selector; retained the
+  existing Matrix scope filter and quadrant presentation.
+- resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg
+- resources/icons/hicolor/scalable/actions/module-board-symbolic.svg
+- resources/icons/hicolor/scalable/actions/module-matrix-symbolic.svg
+- resources/icons/hicolor/scalable/actions/module-pomodoro-symbolic.svg
+- report.txt
+
+Validation on headless Debian
+- cargo fmt --check: PASSED.
+- cargo check --locked: PASSED.
+- cargo clippy --locked --all-targets -- -D warnings: PASSED.
+- cargo test --locked: PASSED (74 passed, 0 failed, 1 ignored because it
+  requires an isolated session bus).
+- Isolated tray D-Bus regression: PASSED (1 passed).
+- cargo build --locked: PASSED.
+- Bundled module SVGs parsed as XML; regression tests verify the embedded
+  module icons resolve as symbolic SVG handles.
+- No COSMIC graphical testing was performed.
+
+CachyOS COSMIC graphical screenshot and acceptance checklist
+1. At a normal desktop window size, capture the full app with Tasks active.
+   Confirm the existing sidebar width, surface, and native labeled row styling
+   are retained; the four module selectors form one horizontal row of equal
+   width; their labels are not stacked beneath the icons; and selected, hover,
+   focus, tooltip, and keyboard activation are clear.
+2. In Tasks, capture Inbox, Today, Calendar, and expanded Lists. Collapse Lists
+   and confirm pinned lists remain visible while unpinned lists hide. Switch to
+   Today and back to Inbox and confirm the prior Tasks subsection is restored.
+3. Switch to Board View and capture Inbox and Lists. Confirm both show clear
+   Board placeholder content and switching away and back restores the last
+   Board subsection.
+4. In Eisenhower Matrix, capture Inbox and a named list scope. Confirm the
+   sidebar selection updates the tasks shown in the existing quadrants, there
+   is no duplicate Task list dropdown in the Matrix content, and returning from
+   another module restores the Matrix subsection. Verify classifications and
+   ordering remain intact.
+5. Capture Pomodoro Focus Timer, History, Statistics, and Settings; each should
+   be clearly labeled as a placeholder and the last subsection should be
+   restored after switching modules.
+6. Repeat module switching and navigation with a narrow window and in both
+   light and dark COSMIC themes. Check icon tint, spacing, selected state,
+   focus traversal, sidebar scrolling, and content width for clipping.
+
+Remaining limitation
+- Visual alignment, compact-window behavior, actual theme icon rendering,
+  accessibility announcements, and the screenshots above require CachyOS
+  COSMIC graphical acceptance.

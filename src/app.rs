@@ -33,6 +33,14 @@ const SORT_DESCENDING_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/sort-descending-symbolic.svg");
 const SORT_SELECTED_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/sort-selected-symbolic.svg");
+const MODULE_TASKS_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg");
+const MODULE_BOARD_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/module-board-symbolic.svg");
+const MODULE_MATRIX_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/module-matrix-symbolic.svg");
+const MODULE_POMODORO_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/module-pomodoro-symbolic.svg");
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -40,8 +48,10 @@ pub struct AppModel {
     tray_connection: Option<zbus::Connection>,
     tray_error: Option<String>,
     nav: nav_bar::Model,
+    navigation: ModuleNavigation,
     page: Page,
     lists_expanded: bool,
+    matrix_lists_expanded: bool,
     matrix_list: Option<String>,
     matrix_priority_task: Option<String>,
     store: Option<Store>,
@@ -85,6 +95,7 @@ pub enum Message {
     FocusToken(cosmic::iced::window::Id, Option<String>),
     Exit,
 
+    SelectModule(Module),
     Matrix(matrix_view::Action),
     NavContext(NavMenuAction),
     Add,
@@ -96,6 +107,7 @@ pub enum Message {
     SaveList,
     OpenList(String),
     ToggleLists,
+    ToggleMatrixLists,
     ToggleListPin(String),
     AssignList(usize),
     Edit(String),
@@ -127,28 +139,110 @@ pub enum Message {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Page {
-    Tasks,
     Inbox,
     Today,
     Calendar,
     Lists,
     List(String),
     Board,
+    BoardLists,
+    Matrix,
+    MatrixLists,
+    MatrixList(String),
+    Pomodoro,
+    PomodoroHistory,
+    PomodoroStatistics,
+    PomodoroSettings,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Module {
+    Tasks,
+    Board,
     Matrix,
     Pomodoro,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleNavigation {
+    active: Module,
+    tasks: Page,
+    board: Page,
+    matrix: Page,
+    pomodoro: Page,
+}
+impl Default for ModuleNavigation {
+    fn default() -> Self {
+        Self {
+            active: Module::Tasks,
+            tasks: Page::Inbox,
+            board: Page::Board,
+            matrix: Page::Matrix,
+            pomodoro: Page::Pomodoro,
+        }
+    }
+}
+impl ModuleNavigation {
+    fn remembered(&self, module: Module) -> &Page {
+        match module {
+            Module::Tasks => &self.tasks,
+            Module::Board => &self.board,
+            Module::Matrix => &self.matrix,
+            Module::Pomodoro => &self.pomodoro,
+        }
+    }
+
+    fn remember(&mut self, page: Page) {
+        match page.module() {
+            Module::Tasks => self.tasks = page,
+            Module::Board => self.board = page,
+            Module::Matrix => self.matrix = page,
+            Module::Pomodoro => self.pomodoro = page,
+        }
+    }
+
+    fn switch(&mut self, module: Module, current: &Page) -> Page {
+        self.remember(current.clone());
+        self.active = module;
+        self.remembered(module).clone()
+    }
+}
 impl Page {
-    fn title(&self) -> &'static str {
+    fn module(&self) -> Module {
         match self {
-            Self::Tasks => "Tasks",
-            Self::Inbox => "Inbox",
-            Self::Today => "Today",
-            Self::Calendar => "Calendar",
-            Self::Lists => "Lists",
-            Self::List(_) => "List",
-            Self::Board => "Board View",
-            Self::Matrix => "Eisenhower Matrix",
-            Self::Pomodoro => "Pomodoro",
+            Self::Inbox | Self::Today | Self::Calendar | Self::Lists | Self::List(_) => {
+                Module::Tasks
+            }
+            Self::Board | Self::BoardLists => Module::Board,
+            Self::Matrix | Self::MatrixLists | Self::MatrixList(_) => Module::Matrix,
+            Self::Pomodoro
+            | Self::PomodoroHistory
+            | Self::PomodoroStatistics
+            | Self::PomodoroSettings => Module::Pomodoro,
+        }
+    }
+
+    fn is_matrix(&self) -> bool {
+        self.module() == Module::Matrix
+    }
+
+    fn title(&self) -> &'static str {
+        match self.module() {
+            Module::Tasks => match self {
+                Self::Inbox => "Inbox",
+                Self::Today => "Today",
+                Self::Calendar => "Calendar",
+                Self::Lists => "Lists",
+                Self::List(_) => "List",
+                _ => unreachable!(),
+            },
+            Module::Board => "Board View",
+            Module::Matrix => "Eisenhower Matrix",
+            Module::Pomodoro => match self {
+                Self::Pomodoro => "Focus Timer",
+                Self::PomodoroHistory => "History",
+                Self::PomodoroStatistics => "Statistics",
+                Self::PomodoroSettings => "Settings",
+                _ => unreachable!(),
+            },
         }
     }
     fn draft_task(&self) -> Result<KaraTask, String> {
@@ -161,7 +255,7 @@ impl Page {
     }
     fn view(&self) -> Option<TaskView<'_>> {
         match self {
-            Self::Tasks | Self::Inbox => Some(TaskView::Inbox),
+            Self::Inbox => Some(TaskView::Inbox),
             Self::Today => Some(TaskView::Today),
             Self::List(id) => Some(TaskView::List(id)),
             _ => None,
@@ -193,7 +287,9 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
     fn init(core: cosmic::Core, _: Self::Flags) -> (Self, Task<cosmic::Action<Message>>) {
-        let nav = build_nav(&[], &Page::Inbox, true);
+        let navigation = ModuleNavigation::default();
+        let page = Page::Inbox;
+        let nav = build_nav(&[], &page, Module::Tasks, true, true);
         let about = About::default()
             .name("Kara")
             .icon(icon::from_svg_bytes(APP_ICON))
@@ -206,8 +302,10 @@ impl cosmic::Application for AppModel {
             tray_connection: None,
             tray_error: None,
             nav,
-            page: Page::Inbox,
+            navigation,
+            page,
             lists_expanded: true,
+            matrix_lists_expanded: true,
             matrix_list: None,
             matrix_priority_task: None,
             store: None,
@@ -234,24 +332,94 @@ impl cosmic::Application for AppModel {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Message>> {
         self.nav.activate(id);
         if let Some(page) = self.nav.data::<Page>(id).cloned() {
-            self.page = page;
-            if self.page == Page::Lists {
-                self.lists_expanded = !self.lists_expanded;
+            match page {
+                Page::Lists => {
+                    self.lists_expanded = !self.lists_expanded;
+                }
+                Page::MatrixLists => {
+                    self.matrix_lists_expanded = !self.matrix_lists_expanded;
+                }
+                Page::Matrix | Page::MatrixList(_) => {
+                    self.matrix_list = matrix_scope_after_page(&page, self.matrix_list.clone());
+                }
+                _ => {}
             }
+            self.page = page;
+            self.navigation.active = self.page.module();
+            self.navigation.remember(self.page.clone());
         }
+        self.matrix_priority_task = None;
         self.today = jiff::Zoned::now().date();
         self.rebuild_nav();
         self.update_title()
+    }
+    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Message>>> {
+        if !self.core.nav_bar_active() {
+            return None;
+        }
+        let spacing = cosmic::theme::spacing();
+        let selectors = [
+            (Module::Tasks, "Tasks"),
+            (Module::Board, "Board View"),
+            (Module::Matrix, "Eisenhower Matrix"),
+            (Module::Pomodoro, "Pomodoro"),
+        ];
+        let mut module_row = widget::row::with_capacity(4)
+            .spacing(spacing.space_xxs)
+            .width(Length::Fill);
+        for (module, label) in selectors {
+            module_row = module_row.push(
+                widget::button::icon(module_icon(module))
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fixed(36.0))
+                    .selected(self.navigation.active == module)
+                    .name(label)
+                    .tooltip(label)
+                    .on_press(cosmic::Action::App(Message::SelectModule(module))),
+            );
+        }
+        let module_row = widget::container(module_row)
+            .padding(spacing.space_xxs)
+            .width(Length::Fill);
+        let nav = cosmic::widget::nav_bar(&self.nav, |id| {
+            cosmic::Action::Cosmic(cosmic::app::Action::NavBar(id))
+        })
+        .on_context(|id| cosmic::Action::Cosmic(cosmic::app::Action::NavBarContext(id)))
+        .context_menu(self.nav_context_menu())
+        .into_container()
+        .width(Length::Fill)
+        .height(Length::Fill);
+        let panel = widget::container(
+            widget::column::with_capacity(2)
+                .push(module_row)
+                .push(nav)
+                .width(Length::Shrink)
+                .height(Length::Fill),
+        )
+        .height(Length::Fill)
+        .class(cosmic::theme::Container::custom(
+            cosmic::widget::nav_bar::nav_bar_style,
+        ));
+        let panel = if self.core.is_condensed() {
+            panel
+        } else {
+            panel.max_width(280)
+        };
+        Some(panel.into())
     }
     fn nav_context_menu(&self) -> Option<Vec<cosmic::widget::menu::Tree<cosmic::Action<Message>>>> {
         let children = self
             .nav
             .iter()
             .map(|entity| match self.nav.data::<Page>(entity) {
-                Some(Page::List(_)) => {
+                Some(Page::List(_)) | Some(Page::MatrixList(_)) => {
                     let id = entity;
-                    let Some(Page::List(list_id)) = self.nav.data::<Page>(id) else {
+                    let Some(page) = self.nav.data::<Page>(id) else {
                         return Vec::new();
+                    };
+                    let list_id = match page {
+                        Page::List(list_id) | Page::MatrixList(list_id) => list_id,
+                        _ => return Vec::new(),
                     };
                     let pinned = self
                         .store
@@ -266,6 +434,15 @@ impl cosmic::Application for AppModel {
                 }
                 Some(Page::Lists) => vec![widget::menu::Item::Button(
                     if self.lists_expanded {
+                        "Collapse lists"
+                    } else {
+                        "Expand lists"
+                    },
+                    None,
+                    NavMenuAction::ToggleLists(entity),
+                )],
+                Some(Page::MatrixLists) => vec![widget::menu::Item::Button(
+                    if self.matrix_lists_expanded {
                         "Collapse lists"
                     } else {
                         "Expand lists"
@@ -332,7 +509,7 @@ impl cosmic::Application for AppModel {
                     .on_press_maybe(self.can_write().then_some(Message::AddList)),
             );
         }
-        if page != Page::Matrix {
+        if !page.is_matrix() {
             content = content.push(header);
         }
         if page.view().is_some() {
@@ -532,7 +709,7 @@ impl cosmic::Application for AppModel {
                     .height(Length::Fill)
                     .width(Length::Fill),
             );
-        } else if page == Page::Matrix {
+        } else if page.is_matrix() {
             content = content.push(matrix_view::view(
                 self.store.as_ref(),
                 self.matrix_list.as_deref(),
@@ -596,6 +773,11 @@ impl cosmic::Application for AppModel {
         } else {
             content = content.push(widget::text::body(match page {
                 Page::Calendar => "Calendar view is coming later.",
+                Page::Board | Page::BoardLists => "Board View is coming later.",
+                Page::Pomodoro => "Focus Timer is coming later.",
+                Page::PomodoroHistory => "Pomodoro history is coming later.",
+                Page::PomodoroStatistics => "Pomodoro statistics are coming later.",
+                Page::PomodoroSettings => "Pomodoro settings are coming later.",
                 _ => "Coming later.",
             }));
         }
@@ -840,8 +1022,7 @@ impl cosmic::Application for AppModel {
         if let Some(conn) = &self.tray_connection {
             subscriptions.push(tray::subscription(conn.clone()).map(Message::Tray));
         }
-        if self.page == Page::Matrix && self.matrix_priority_task.is_some() && self.editor.is_none()
-        {
+        if self.page.is_matrix() && self.matrix_priority_task.is_some() && self.editor.is_none() {
             subscriptions.push(cosmic::iced::event::listen_with(
                 |event, _, _| match event {
                     cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
@@ -926,12 +1107,26 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
-            Message::NavContext(NavMenuAction::ToggleLists(_)) => {
-                return self.update(Message::ToggleLists);
+            Message::SelectModule(module) => {
+                self.page = self.navigation.switch(module, &self.page);
+                self.matrix_priority_task = None;
+                self.today = jiff::Zoned::now().date();
+                self.rebuild_nav();
+                return self.update_title();
+            }
+            Message::NavContext(NavMenuAction::ToggleLists(id)) => {
+                match self.nav.data::<Page>(id) {
+                    Some(Page::Lists) => return self.update(Message::ToggleLists),
+                    Some(Page::MatrixLists) => return self.update(Message::ToggleMatrixLists),
+                    _ => {}
+                }
             }
             Message::NavContext(NavMenuAction::ToggleListPin(id)) => {
-                if let Some(Page::List(id)) = self.nav.data::<Page>(id).cloned() {
-                    return self.update(Message::ToggleListPin(id));
+                match self.nav.data::<Page>(id).cloned() {
+                    Some(Page::List(id)) | Some(Page::MatrixList(id)) => {
+                        return self.update(Message::ToggleListPin(id));
+                    }
+                    _ => {}
                 }
             }
             Message::Matrix(matrix_view::Action::OpenPriority(id)) if self.can_write() => {
@@ -939,18 +1134,6 @@ impl cosmic::Application for AppModel {
             }
             Message::Matrix(matrix_view::Action::ClosePriority) => {
                 self.matrix_priority_task = None;
-            }
-            Message::Matrix(matrix_view::Action::SelectList(index)) => {
-                self.matrix_priority_task = None;
-                if index == 0 {
-                    self.matrix_list = None;
-                } else if let Some(list) = self
-                    .store
-                    .as_ref()
-                    .and_then(|store| store.lists().get(index - 1))
-                {
-                    self.matrix_list = Some(list.id.clone());
-                }
             }
             Message::Matrix(matrix_view::Action::Add(quadrant)) if self.can_write() => {
                 self.matrix_priority_task = None;
@@ -1100,6 +1283,8 @@ impl cosmic::Application for AppModel {
                     if !store.lists().iter().any(|list| &list.id == id) {
                         if self.page == Page::List(id.clone()) {
                             self.page = Page::Lists;
+                        } else if self.page == Page::MatrixList(id.clone()) {
+                            self.page = Page::Matrix;
                         }
                         self.delete_list_id = None;
                     }
@@ -1140,6 +1325,21 @@ impl cosmic::Application for AppModel {
                 self.rebuild_nav();
                 return self.update_title();
             }
+            Message::ToggleMatrixLists => {
+                self.matrix_lists_expanded = !self.matrix_lists_expanded;
+                if !self.matrix_lists_expanded
+                    && let Page::MatrixList(id) = &self.page
+                    && self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().iter().find(|list| &list.id == id))
+                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                {
+                    self.page = Page::MatrixLists;
+                }
+                self.rebuild_nav();
+                return self.update_title();
+            }
             Message::ToggleListPin(id) if self.can_write() => {
                 if let Some(store) = &mut self.store
                     && let Some(mut list) = store.lists().iter().find(|list| list.id == id).cloned()
@@ -1156,6 +1356,16 @@ impl cosmic::Application for AppModel {
                         .is_none_or(|list| !list.visible_in_sidebar(false))
                 {
                     self.page = Page::Lists;
+                }
+                if !self.matrix_lists_expanded
+                    && self.page == Page::MatrixList(id.clone())
+                    && self
+                        .store
+                        .as_ref()
+                        .and_then(|store| store.lists().iter().find(|list| list.id == id))
+                        .is_none_or(|list| !list.visible_in_sidebar(false))
+                {
+                    self.page = Page::MatrixLists;
                 }
                 self.rebuild_nav();
                 return self.update_title();
@@ -1445,10 +1655,14 @@ impl AppModel {
         self.store.is_some() && self.storage_error.is_none()
     }
     fn rebuild_nav(&mut self) {
+        self.navigation.active = self.page.module();
+        self.navigation.remember(self.page.clone());
         self.nav = build_nav(
             self.store.as_ref().map_or(&[], Store::lists),
             &self.page,
+            self.navigation.active,
             self.lists_expanded,
+            self.matrix_lists_expanded,
         );
     }
     fn load(&mut self) {
@@ -1557,6 +1771,16 @@ fn pinned_list_icon() -> icon::Handle {
     icon::from_svg_bytes(PINNED_LIST_ICON).symbolic(true)
 }
 
+fn module_icon(module: Module) -> icon::Handle {
+    let asset = match module {
+        Module::Tasks => MODULE_TASKS_ICON,
+        Module::Board => MODULE_BOARD_ICON,
+        Module::Matrix => MODULE_MATRIX_ICON,
+        Module::Pomodoro => MODULE_POMODORO_ICON,
+    };
+    icon::from_svg_bytes(asset).symbolic(true)
+}
+
 fn sort_mode_icon() -> icon::Handle {
     icon::from_svg_bytes(SORT_MODE_ICON).symbolic(true)
 }
@@ -1630,72 +1854,107 @@ fn invalid_text_input_style() -> cosmic::theme::TextInput {
     }
 }
 
-fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar::Model {
+fn build_nav(
+    lists: &[TaskList],
+    active: &Page,
+    module: Module,
+    lists_expanded: bool,
+    matrix_lists_expanded: bool,
+) -> nav_bar::Model {
     let mut nav = nav_bar::Model::default();
-    nav.insert()
-        .text("Tasks")
-        .data(Page::Tasks)
-        .icon(icon::from_name("view-list-symbolic"));
-
-    for page in [Page::Inbox, Page::Today, Page::Calendar, Page::Lists] {
-        let nav_icon = match page {
-            Page::Inbox => icon::icon(inbox_icon()),
-            Page::Today => icon::icon(today_icon()),
-            Page::Calendar => icon::from_name("x-office-calendar-symbolic").icon(),
-            Page::Lists => icon::from_name(if lists_expanded {
-                "pan-down-symbolic"
+    let add = |nav: &mut nav_bar::Model, page: Page, label: &'static str, nav_icon: icon::Icon| {
+        nav.insert().text(label).data(page).icon(nav_icon).id()
+    };
+    match module {
+        Module::Tasks => {
+            for (page, label, nav_icon) in [
+                (Page::Inbox, "Inbox", icon::icon(inbox_icon())),
+                (Page::Today, "Today", icon::icon(today_icon())),
+                (
+                    Page::Calendar,
+                    "Calendar",
+                    icon::from_name("x-office-calendar-symbolic").icon(),
+                ),
+            ] {
+                add(&mut nav, page, label, nav_icon);
+            }
+            let lists_id = add(
+                &mut nav,
+                Page::Lists,
+                "Lists",
+                icon::from_name(if lists_expanded {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                })
+                .icon(),
+            );
+            nav.indent_set(lists_id, 0);
+            if lists_expanded {
+                insert_list_rows(&mut nav, lists, Module::Tasks, true);
             } else {
-                "pan-end-symbolic"
-            })
-            .icon(),
-            _ => unreachable!(),
-        };
-        let id = nav
-            .insert()
-            .text(page.title())
-            .data(page.clone())
-            .icon(nav_icon)
-            .id();
-        nav.indent_set(id, 1);
-        if page == Page::Lists {
-            for list in lists
-                .iter()
-                .filter(|list| list.visible_in_sidebar(lists_expanded))
-            {
-                let id = nav
-                    .insert()
-                    .text(list.name.clone())
-                    .data(Page::List(list.id.clone()))
-                    .icon(if list.pinned {
-                        icon::icon(pinned_list_icon())
-                    } else {
-                        icon::from_name("view-list-symbolic").icon()
-                    })
-                    .id();
-                nav.indent_set(id, 2);
+                insert_list_rows(&mut nav, lists, Module::Tasks, false);
             }
         }
-    }
-
-    for (page, icon_name) in [
-        (Page::Board, "view-grid-symbolic"),
-        (Page::Matrix, "view-app-grid-symbolic"),
-        (Page::Pomodoro, "alarm-symbolic"),
-    ] {
-        nav.insert()
-            .text(page.title())
-            .data(page)
-            .icon(icon::from_name(icon_name));
+        Module::Board => {
+            add(&mut nav, Page::Board, "Inbox", icon::icon(inbox_icon()));
+            add(
+                &mut nav,
+                Page::BoardLists,
+                "Lists",
+                icon::from_name("view-list-symbolic").icon(),
+            );
+        }
+        Module::Matrix => {
+            add(&mut nav, Page::Matrix, "Inbox", icon::icon(inbox_icon()));
+            let lists_id = add(
+                &mut nav,
+                Page::MatrixLists,
+                "Lists",
+                icon::from_name(if matrix_lists_expanded {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                })
+                .icon(),
+            );
+            nav.indent_set(lists_id, 0);
+            insert_list_rows(&mut nav, lists, Module::Matrix, matrix_lists_expanded);
+        }
+        Module::Pomodoro => {
+            for (page, label, icon_name) in [
+                (Page::Pomodoro, "Focus Timer", "alarm-symbolic"),
+                (Page::PomodoroHistory, "History", "view-history-symbolic"),
+                (
+                    Page::PomodoroStatistics,
+                    "Statistics",
+                    "view-statistics-symbolic",
+                ),
+                (
+                    Page::PomodoroSettings,
+                    "Settings",
+                    "preferences-system-symbolic",
+                ),
+            ] {
+                add(&mut nav, page, label, icon::from_name(icon_name).icon());
+            }
+        }
     }
 
     let selected = nav
         .iter()
         .find(|id| nav.data::<Page>(*id) == Some(active))
         .or_else(|| {
-            matches!(active, Page::List(_))
+            matches!(active, Page::List(_) | Page::MatrixList(_))
                 .then(|| {
-                    nav.iter()
-                        .find(|id| nav.data::<Page>(*id) == Some(&Page::Lists))
+                    nav.iter().find(|id| {
+                        nav.data::<Page>(*id)
+                            == Some(&match module {
+                                Module::Tasks => Page::Lists,
+                                Module::Matrix => Page::MatrixLists,
+                                _ => return false,
+                            })
+                    })
                 })
                 .flatten()
         });
@@ -1703,6 +1962,38 @@ fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar
         nav.activate(selected);
     }
     nav
+}
+
+fn insert_list_rows(nav: &mut nav_bar::Model, lists: &[TaskList], module: Module, expanded: bool) {
+    for list in lists
+        .iter()
+        .filter(|list| list.visible_in_sidebar(expanded))
+    {
+        let page = match module {
+            Module::Tasks => Page::List(list.id.clone()),
+            Module::Matrix => Page::MatrixList(list.id.clone()),
+            _ => continue,
+        };
+        let id = nav
+            .insert()
+            .text(list.name.clone())
+            .data(page)
+            .icon(if list.pinned {
+                icon::icon(pinned_list_icon())
+            } else {
+                icon::from_name("view-list-symbolic").icon()
+            })
+            .id();
+        nav.indent_set(id, 1);
+    }
+}
+
+fn matrix_scope_after_page(page: &Page, current: Option<String>) -> Option<String> {
+    match page {
+        Page::Matrix => None,
+        Page::MatrixList(id) => Some(id.clone()),
+        _ => current,
+    }
 }
 
 #[cfg(test)]
@@ -1728,6 +2019,10 @@ mod tests {
             (SORT_ASCENDING_ICON, sort_direction_icon(true)),
             (SORT_DESCENDING_ICON, sort_direction_icon(false)),
             (SORT_SELECTED_ICON, sort_selected_icon()),
+            (MODULE_TASKS_ICON, module_icon(Module::Tasks)),
+            (MODULE_BOARD_ICON, module_icon(Module::Board)),
+            (MODULE_MATRIX_ICON, module_icon(Module::Matrix)),
+            (MODULE_POMODORO_ICON, module_icon(Module::Pomodoro)),
         ] {
             assert!(std::str::from_utf8(asset).unwrap().contains("<path"));
             assert!(handle.symbolic);
@@ -1742,24 +2037,18 @@ mod tests {
         assert!(!task.completed);
         assert!(task.due_date.is_none());
         assert_eq!(task.priority, Priority::P0);
-        for page in [
-            Page::Tasks,
-            Page::Inbox,
-            Page::Today,
-            Page::Calendar,
-            Page::Lists,
-        ] {
+        for page in [Page::Inbox, Page::Today, Page::Calendar, Page::Lists] {
             assert!(page.draft_task().unwrap().list_id.is_none());
         }
     }
     #[test]
-    fn native_sidebar_keeps_task_navigation_and_matrix_as_top_level_sections() {
+    fn contextual_sidebar_builds_only_the_selected_module_navigation() {
         let mut pinned = TaskList::new("Pinned").unwrap();
         pinned.pinned = true;
         let unpinned = TaskList::new("Unpinned").unwrap();
         let lists = [pinned.clone(), unpinned.clone()];
         let active = Page::List(pinned.id.clone());
-        let expanded = build_nav(&lists, &active, true);
+        let expanded = build_nav(&lists, &active, Module::Tasks, true, true);
         let pages: Vec<_> = expanded
             .iter()
             .map(|id| expanded.data::<Page>(id).unwrap().clone())
@@ -1768,30 +2057,129 @@ mod tests {
         assert_eq!(
             pages,
             vec![
-                Page::Tasks,
                 Page::Inbox,
                 Page::Today,
                 Page::Calendar,
                 Page::Lists,
                 Page::List(pinned.id.clone()),
                 Page::List(unpinned.id.clone()),
-                Page::Board,
-                Page::Matrix,
-                Page::Pomodoro,
             ]
         );
         assert_eq!(expanded.active_data::<Page>(), Some(&active));
-        assert_eq!(expanded.indent(expanded.active()), Some(2));
+        assert_eq!(expanded.indent(expanded.active()), Some(1));
 
-        let collapsed = build_nav(&lists, &Page::Lists, false);
+        let collapsed = build_nav(&lists, &Page::Lists, Module::Tasks, false, true);
         let collapsed_pages: Vec<_> = collapsed
             .iter()
             .map(|id| collapsed.data::<Page>(id).unwrap().clone())
             .collect();
-        assert!(collapsed_pages.contains(&Page::List(pinned.id)));
+        assert!(collapsed_pages.contains(&Page::List(pinned.id.clone())));
         assert!(!collapsed_pages.contains(&Page::List(unpinned.id)));
         assert_eq!(collapsed.active_data::<Page>(), Some(&Page::Lists));
-        assert!(collapsed_pages.contains(&Page::Matrix));
+
+        let matrix = build_nav(
+            &lists,
+            &Page::MatrixList(pinned.id.clone()),
+            Module::Matrix,
+            true,
+            true,
+        );
+        assert_eq!(
+            matrix.active_data::<Page>(),
+            Some(&Page::MatrixList(pinned.id))
+        );
+        assert!(
+            !matrix
+                .iter()
+                .any(|id| matrix.data::<Page>(id) == Some(&Page::Today))
+        );
+        assert!(
+            matrix
+                .iter()
+                .any(|id| matrix.data::<Page>(id) == Some(&Page::Matrix))
+        );
+
+        let board = build_nav(&lists, &Page::BoardLists, Module::Board, true, true);
+        let board_pages: Vec<_> = board
+            .iter()
+            .map(|id| board.data::<Page>(id).unwrap().clone())
+            .collect();
+        assert_eq!(board_pages, vec![Page::Board, Page::BoardLists]);
+
+        let pomodoro = build_nav(
+            &lists,
+            &Page::PomodoroSettings,
+            Module::Pomodoro,
+            true,
+            true,
+        );
+        let pomodoro_pages: Vec<_> = pomodoro
+            .iter()
+            .map(|id| pomodoro.data::<Page>(id).unwrap().clone())
+            .collect();
+        assert_eq!(
+            pomodoro_pages,
+            vec![
+                Page::Pomodoro,
+                Page::PomodoroHistory,
+                Page::PomodoroStatistics,
+                Page::PomodoroSettings,
+            ]
+        );
+        assert_eq!(
+            pomodoro.active_data::<Page>(),
+            Some(&Page::PomodoroSettings)
+        );
+    }
+
+    #[test]
+    fn module_navigation_remembers_each_modules_last_subsection() {
+        let mut navigation = ModuleNavigation::default();
+        assert_eq!(navigation.switch(Module::Board, &Page::Today), Page::Board);
+        navigation.remember(Page::BoardLists);
+        assert_eq!(
+            navigation.switch(Module::Matrix, &Page::BoardLists),
+            Page::Matrix
+        );
+        navigation.remember(Page::MatrixList("work".into()));
+        assert_eq!(
+            navigation.switch(Module::Pomodoro, &Page::MatrixList("work".into())),
+            Page::Pomodoro
+        );
+        navigation.remember(Page::PomodoroSettings);
+        assert_eq!(
+            navigation.switch(Module::Tasks, &Page::PomodoroSettings),
+            Page::Today
+        );
+        assert_eq!(
+            navigation.switch(Module::Matrix, &Page::Today),
+            Page::MatrixList("work".into())
+        );
+        assert_eq!(
+            navigation.switch(Module::Board, &Page::MatrixList("work".into())),
+            Page::BoardLists
+        );
+        assert_eq!(
+            navigation.switch(Module::Pomodoro, &Page::BoardLists),
+            Page::PomodoroSettings
+        );
+    }
+
+    #[test]
+    fn matrix_sidebar_scope_selection_preserves_existing_list_filter_semantics() {
+        let current = Some("work".to_string());
+        assert_eq!(
+            matrix_scope_after_page(&Page::Matrix, current.clone()),
+            None
+        );
+        assert_eq!(
+            matrix_scope_after_page(&Page::MatrixList("home".into()), current.clone()),
+            Some("home".into())
+        );
+        assert_eq!(
+            matrix_scope_after_page(&Page::MatrixLists, current.clone()),
+            current
+        );
     }
 
     #[test]
