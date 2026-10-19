@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
     matrix::{self, Direction},
-    tasks::{self, Priority, Quadrant, Task, TaskList},
+    tasks::{self, Priority, Quadrant, Task, TaskList, TaskSort},
 };
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -19,6 +19,13 @@ struct Document {
     tasks: Vec<Task>,
     #[serde(default)]
     lists: Vec<TaskList>,
+    #[serde(default)]
+    sort_mode: TaskSort,
+    #[serde(default = "default_show_completed")]
+    show_completed: bool,
+}
+fn default_show_completed() -> bool {
+    true
 }
 
 // Legacy values are deliberately accepted only by the versioned migration.
@@ -58,7 +65,7 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
     }
     let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     match header.version {
-        4 => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
+        4 | 5 => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
         1..=3 => {
             let old: LegacyDocument = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             let mut converted = Vec::with_capacity(old.tasks.len());
@@ -76,6 +83,7 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
                     due_date: task.due_date,
                     notes: task.notes,
                     list_id: task.list_id,
+                    created_at: None,
                     priority: task
                         .matrix_quadrant
                         .map_or(Priority::P0, Quadrant::priority),
@@ -86,6 +94,8 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
                 version: old.version,
                 tasks: converted,
                 lists: old.lists,
+                sort_mode: TaskSort::default(),
+                show_completed: true,
             })
         }
         other => Err(format!("Unsupported task data version {other}.")),
@@ -94,8 +104,8 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
 
 /// No-clobber publication, byte verification and directory sync must all finish
 /// before the original legacy file can be atomically replaced.
-fn ensure_migration_backup(path: &Path, original: &[u8]) -> Result<(), String> {
-    let backup = path.with_extension("json.pre-priority-v4.bak");
+fn ensure_migration_backup(path: &Path, original: &[u8], suffix: &str) -> Result<(), String> {
+    let backup = path.with_extension(suffix);
     let dir = path.parent().ok_or("Invalid storage path.")?;
     let verify = || -> Result<(), String> {
         let metadata = fs::symlink_metadata(&backup).map_err(|e| e.to_string())?;
@@ -138,9 +148,11 @@ pub struct Store {
     path: PathBuf,
     _lock: File,
     snapshot: Option<Vec<u8>>,
-    legacy: bool,
+    migration_version: Option<u32>,
     tasks: Vec<Task>,
     lists: Vec<TaskList>,
+    sort_mode: TaskSort,
+    show_completed: bool,
 }
 
 pub fn data_path() -> Result<PathBuf, String> {
@@ -187,9 +199,9 @@ impl Store {
             format!("Cannot lock task storage; another Kara instance may be using it: {e}")
         })?;
         let snapshot = read(&path)?;
-        let mut legacy = false;
-        let (tasks, lists) = match &snapshot {
-            None => (Vec::new(), Vec::new()),
+        let mut migration_version = None;
+        let (tasks, lists, sort_mode, show_completed) = match &snapshot {
+            None => (Vec::new(), Vec::new(), TaskSort::default(), true),
             Some(bytes) => {
                 let mut doc = decode_document(bytes).map_err(|e| {
                     format!(
@@ -197,7 +209,7 @@ impl Store {
                         path.display()
                     )
                 })?;
-                legacy = doc.version < 4;
+                migration_version = (doc.version < 5).then_some(doc.version);
                 if doc.version == 1 {
                     // Stage 1 allowed reserved list IDs without list definitions. Recover
                     // those definitions without changing a task or writing on load.
@@ -221,16 +233,18 @@ impl Store {
                 tasks::validate_document(&doc.tasks, &doc.lists)
                     .map_err(|e| format!("Invalid task data: {e} The file has been preserved."))?;
                 matrix::normalize(&mut doc.tasks);
-                (doc.tasks, doc.lists)
+                (doc.tasks, doc.lists, doc.sort_mode, doc.show_completed)
             }
         };
         Ok(Self {
             path,
             _lock: lock,
             snapshot,
-            legacy,
+            migration_version,
             tasks,
             lists,
+            sort_mode,
+            show_completed,
         })
     }
     pub fn tasks(&self) -> &[Task] {
@@ -238,6 +252,24 @@ impl Store {
     }
     pub fn lists(&self) -> &[TaskList] {
         &self.lists
+    }
+    pub fn sort_mode(&self) -> TaskSort {
+        self.sort_mode
+    }
+    pub fn show_completed(&self) -> bool {
+        self.show_completed
+    }
+    pub fn set_preferences(
+        &mut self,
+        sort_mode: TaskSort,
+        show_completed: bool,
+    ) -> Result<(), String> {
+        self.commit_with_preferences(
+            self.tasks.clone(),
+            self.lists.clone(),
+            sort_mode,
+            show_completed,
+        )
     }
     pub fn upsert_list(&mut self, mut list: TaskList) -> Result<(), String> {
         list.name = list.name.trim().into();
@@ -276,16 +308,27 @@ impl Store {
     pub fn replace(&mut self, tasks: Vec<Task>) -> Result<(), String> {
         self.commit(tasks, self.lists.clone())
     }
-    fn commit(&mut self, mut tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
+    fn commit(&mut self, tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
+        self.commit_with_preferences(tasks, lists, self.sort_mode, self.show_completed)
+    }
+    fn commit_with_preferences(
+        &mut self,
+        mut tasks: Vec<Task>,
+        lists: Vec<TaskList>,
+        sort_mode: TaskSort,
+        show_completed: bool,
+    ) -> Result<(), String> {
         tasks::validate_document(&tasks, &lists)?;
         matrix::normalize(&mut tasks);
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Changes were not saved. Restart Kara to reload the file.".into());
         }
         let bytes = serde_json::to_vec_pretty(&Document {
-            version: 4,
+            version: 5,
             tasks: tasks.clone(),
             lists: lists.clone(),
+            sort_mode,
+            show_completed,
         })
         .map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or("Invalid storage path.")?;
@@ -294,10 +337,16 @@ impl Store {
         temp.write_all(&bytes)
             .and_then(|()| temp.as_file().sync_all())
             .map_err(|e| format!("Cannot write task data: {e}"))?;
-        if self.legacy {
+        if let Some(version) = self.migration_version {
+            let backup_suffix = if version < 4 {
+                "json.pre-priority-v4.bak"
+            } else {
+                "json.pre-tasks-v5.bak"
+            };
             ensure_migration_backup(
                 &self.path,
                 self.snapshot.as_deref().ok_or("Missing legacy snapshot.")?,
+                backup_suffix,
             )
             .map_err(|e| {
                 format!("Cannot back up legacy task data. Migration changes were not saved: {e}")
@@ -311,8 +360,10 @@ impl Store {
             .map_err(|e| format!("Cannot replace task data: {e}"))?;
         self.tasks = tasks;
         self.lists = lists;
+        self.sort_mode = sort_mode;
+        self.show_completed = show_completed;
         self.snapshot = Some(bytes);
-        self.legacy = false;
+        self.migration_version = None;
         File::open(dir)
             .and_then(|f| f.sync_all())
             .map_err(|e| format!("Tasks were written, but durability could not be confirmed: {e}"))
@@ -329,8 +380,10 @@ impl Store {
             })
             .and_then(|old| old.matrix_order);
         if let Some(old) = tasks.iter_mut().find(|old| old.id == task.id) {
+            task.created_at = old.created_at;
             *old = task;
         } else {
+            task.created_at.get_or_insert_with(tasks::unix_timestamp);
             tasks.push(task);
         }
         self.replace(tasks)
@@ -430,7 +483,7 @@ mod tests {
         );
         let bytes = fs::read(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(saved["version"], 4);
+        assert_eq!(saved["version"], 5);
         assert_eq!(saved["lists"], original["lists"]);
         for task in saved["tasks"].as_array().unwrap() {
             assert!(task["priority"].as_u64().is_some_and(|p| p <= 3));
@@ -443,6 +496,74 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::read(&backup).unwrap(), LEGACY_MATRIX);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3); // data, lock, backup
+    }
+
+    #[test]
+    fn v4_upgrade_backs_up_exact_legacy_data_and_persists_preferences_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = path.with_extension("json.pre-tasks-v5.bak");
+        let legacy = br#"{"version":4,"tasks":[{"id":"old-a","title":"Old A","completed":true,"due_date":null,"priority":3,"notes":null,"list_id":null,"matrix_order":0},{"id":"old-b","title":"Old B","completed":false,"due_date":null,"priority":3,"notes":null,"list_id":null,"matrix_order":1}],"lists":[]}"#;
+        fs::write(&path, legacy).unwrap();
+
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.sort_mode(), TaskSort::CreationDate);
+        assert!(store.show_completed());
+        assert!(store.tasks().iter().all(|task| task.created_at.is_none()));
+        assert!(!backup.exists());
+        store.set_preferences(TaskSort::Priority, false).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), legacy);
+        assert_eq!(store.sort_mode(), TaskSort::Priority);
+        assert!(!store.show_completed());
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 5);
+        assert_eq!(saved["sort_mode"], "Priority");
+        assert_eq!(saved["show_completed"], false);
+        assert!(
+            saved["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|task| task.get("created_at").is_none())
+        );
+        assert_eq!(
+            store
+                .tasks()
+                .iter()
+                .map(|task| task.matrix_order)
+                .collect::<Vec<_>>(),
+            [Some(1), Some(0)]
+        );
+        drop(store);
+
+        let restored = Store::open(path).unwrap();
+        assert_eq!(restored.sort_mode(), TaskSort::Priority);
+        assert!(!restored.show_completed());
+        assert!(
+            restored
+                .tasks()
+                .iter()
+                .all(|task| task.created_at.is_none())
+        );
+        assert_eq!(fs::read(backup).unwrap(), legacy);
+    }
+
+    #[test]
+    fn new_task_creation_timestamp_survives_save_and_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let task = Task::new("Stamped").unwrap();
+        let created_at = task.created_at;
+        store.upsert(task.clone()).unwrap();
+        let mut edited = task;
+        edited.title = "Edited".into();
+        edited.created_at = None;
+        store.upsert(edited).unwrap();
+        assert_eq!(store.tasks()[0].created_at, created_at);
+        drop(store);
+        let restored = Store::open(path).unwrap();
+        assert_eq!(restored.tasks()[0].created_at, created_at);
     }
     #[test]
     fn legacy_versions_one_and_two_migrate_on_copies_with_verified_backups() {
@@ -475,8 +596,8 @@ mod tests {
         let path = dir.path().join("tasks.json");
         fs::write(&path, LEGACY_MATRIX).unwrap();
         // Model interruption after durable backup publication but before replacement.
-        ensure_migration_backup(&path, LEGACY_MATRIX).unwrap();
-        ensure_migration_backup(&path, LEGACY_MATRIX).unwrap();
+        ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak").unwrap();
+        ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak").unwrap();
         assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
         let mut store = Store::open(path.clone()).unwrap();
         let expected = store.tasks().to_vec();
@@ -521,7 +642,7 @@ mod tests {
         let path = dir.path().join("tasks.json");
         fs::write(&path, LEGACY_MATRIX).unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
-        let result = ensure_migration_backup(&path, LEGACY_MATRIX);
+        let result = ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak");
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
@@ -751,7 +872,7 @@ mod tests {
         assert!(store.tasks()[0].completed);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 4);
+        assert_eq!(saved["version"], 5);
         let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         saved["tasks"][0]
             .as_object_mut()
@@ -783,6 +904,8 @@ mod tests {
             version: 4,
             tasks,
             lists: vec![],
+            sort_mode: TaskSort::default(),
+            show_completed: true,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -992,7 +1115,7 @@ mod tests {
         assert_eq!(store.lists().len(), 1);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 4);
+        assert_eq!(saved["version"], 5);
         let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         for tasks in [&mut saved["tasks"], &mut legacy["tasks"]] {
             for task in tasks.as_array_mut().unwrap() {
@@ -1008,6 +1131,7 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut task = Task::new("Legacy assignment").unwrap();
         task.list_id = Some("reserved-id".into());
+        task.created_at = None;
         let mut legacy = serde_json::to_value(&task).unwrap();
         legacy["priority"] = serde_json::json!("Normal");
         let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"tasks":[legacy]})).unwrap();
@@ -1046,6 +1170,8 @@ mod tests {
                 version: 4,
                 tasks: vec![],
                 lists,
+                sort_mode: TaskSort::default(),
+                show_completed: true,
             })
             .unwrap();
             fs::write(&path, &bytes).unwrap();
@@ -1058,6 +1184,8 @@ mod tests {
             version: 4,
             tasks: vec![task],
             lists: vec![list],
+            sort_mode: TaskSort::default(),
+            show_completed: true,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -1233,18 +1361,24 @@ mod tests {
                 version: 99,
                 lists: vec![],
                 tasks: vec![],
+                sort_mode: TaskSort::default(),
+                show_completed: true,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
                 version: 4,
                 lists: vec![],
                 tasks: vec![task.clone(), task.clone()],
+                sort_mode: TaskSort::default(),
+                show_completed: true,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
                 version: 4,
                 lists: vec![],
                 tasks: vec![invalid],
+                sort_mode: TaskSort::default(),
+                show_completed: true,
             })
             .unwrap(),
             br#"{"version":1,"tasks":[],"future_field":true}"#.to_vec(),

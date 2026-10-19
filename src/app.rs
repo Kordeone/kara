@@ -19,6 +19,12 @@ use std::time::Duration;
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
 const EDIT_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/scalable/actions/edit-symbolic.svg");
+const INBOX_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/inbox-tray-symbolic.svg");
+const TODAY_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/calendar-check-symbolic.svg");
+const PINNED_LIST_ICON: &[u8] =
+    include_bytes!("../resources/icons/hicolor/scalable/actions/list-pinned-symbolic.svg");
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -37,6 +43,8 @@ pub struct AppModel {
     list_editor: Option<ListEditor>,
     delete_list_id: Option<String>,
     today: jiff::civil::Date,
+    task_sort: tasks::TaskSort,
+    show_completed: bool,
     about: About,
     title_input: cosmic::iced::widget::Id,
 }
@@ -99,6 +107,8 @@ pub enum Message {
     Save,
     RetryStorage,
     DateTick,
+    SortTasks(usize),
+    ShowCompleted(bool),
     About,
     LaunchUrl(String),
 }
@@ -194,6 +204,8 @@ impl cosmic::Application for AppModel {
             list_editor: None,
             delete_list_id: None,
             today: jiff::Zoned::now().date(),
+            task_sort: tasks::TaskSort::default(),
+            show_completed: true,
             about,
             title_input: cosmic::iced::widget::Id::unique(),
         };
@@ -308,6 +320,28 @@ impl cosmic::Application for AppModel {
         if page != Page::Matrix {
             content = content.push(header);
         }
+        if page.view().is_some() {
+            let options = tasks::TaskSort::ALL
+                .into_iter()
+                .map(|sort| sort.label().to_string())
+                .collect::<Vec<_>>();
+            let selected = tasks::TaskSort::ALL
+                .iter()
+                .position(|sort| *sort == self.task_sort);
+            let toolbar = widget::row::with_capacity(3)
+                .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
+                .push(
+                    widget::dropdown(options, selected, Message::SortTasks)
+                        .width(Length::Fixed(220.0)),
+                )
+                .push(
+                    widget::checkbox(self.show_completed)
+                        .label("Show Completed")
+                        .on_toggle_maybe(self.can_write().then_some(Message::ShowCompleted)),
+                );
+            content = content.push(toolbar);
+        }
         if let Page::List(id) = &page {
             content =
                 content.push(
@@ -328,12 +362,14 @@ impl cosmic::Application for AppModel {
                 .align_x(Alignment::Center);
             let mut count = 0;
             if let Some(store) = &self.store {
-                let visible = tasks::visible_tasks(store.tasks(), view, self.today);
-                let completed_start = visible.iter().position(|task| task.completed);
-                for (index, task) in visible.iter().enumerate() {
-                    if completed_start == Some(index) {
-                        rows = rows.push(widget::text::caption("Completed"));
-                    }
+                let visible = tasks::sorted_visible_tasks(
+                    store.tasks(),
+                    view,
+                    self.today,
+                    self.task_sort,
+                    self.show_completed,
+                );
+                for task in visible {
                     count += 1;
                     let id = task.id.clone();
                     let check = widget::checkbox(task.completed).on_toggle_maybe(
@@ -419,6 +455,9 @@ impl cosmic::Application for AppModel {
                     "Tasks are unavailable. Resolve the storage error and retry."
                 } else {
                     match view {
+                        _ if !self.show_completed => {
+                            "No active tasks in this view. Enable Show Completed to see completed tasks."
+                        }
                         TaskView::Inbox => "Your inbox is empty. Add a task to get started.",
                         TaskView::Today => "No tasks due today or overdue.",
                         TaskView::List(_) => "No tasks in this list. Add a task to get started.",
@@ -1225,6 +1264,14 @@ impl cosmic::Application for AppModel {
                 return self.update_title();
             }
             Message::DateTick => self.today = jiff::Zoned::now().date(),
+            Message::SortTasks(index) if self.can_write() => {
+                if let Some(sort) = tasks::TaskSort::ALL.get(index).copied() {
+                    self.save_task_preferences(sort, self.show_completed);
+                }
+            }
+            Message::ShowCompleted(show) if self.can_write() => {
+                self.save_task_preferences(self.task_sort, show);
+            }
             Message::About => self.core.window.show_context = !self.core.window.show_context,
             Message::LaunchUrl(url) => {
                 if let Err(e) = open::that_detached(url) {
@@ -1317,12 +1364,26 @@ impl AppModel {
     fn load(&mut self) {
         match storage::data_path().and_then(Store::open) {
             Ok(store) => {
+                self.task_sort = store.sort_mode();
+                self.show_completed = store.show_completed();
                 self.store = Some(store);
                 self.storage_error = None;
                 self.rebuild_nav();
             }
             Err(error) => {
                 self.storage_error = Some(error);
+            }
+        }
+    }
+    fn save_task_preferences(&mut self, sort: tasks::TaskSort, show_completed: bool) {
+        if let Some(store) = &mut self.store {
+            match store.set_preferences(sort, show_completed) {
+                Ok(()) => {
+                    self.task_sort = sort;
+                    self.show_completed = show_completed;
+                    self.storage_error = None;
+                }
+                Err(error) => self.storage_error = Some(error),
             }
         }
     }
@@ -1385,6 +1446,18 @@ pub(crate) fn priority_button<M: Clone + 'static>(
 
 pub(crate) fn edit_task_icon() -> icon::Handle {
     icon::from_svg_bytes(EDIT_ICON).symbolic(true)
+}
+
+fn inbox_icon() -> icon::Handle {
+    icon::from_svg_bytes(INBOX_ICON).symbolic(true)
+}
+
+fn today_icon() -> icon::Handle {
+    icon::from_svg_bytes(TODAY_ICON).symbolic(true)
+}
+
+fn pinned_list_icon() -> icon::Handle {
+    icon::from_svg_bytes(PINNED_LIST_ICON).symbolic(true)
 }
 
 fn priority_accessible_name(selected: Priority, priority: Priority) -> String {
@@ -1450,24 +1523,24 @@ fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar
         .data(Page::Tasks)
         .icon(icon::from_name("view-list-symbolic"));
 
-    for (page, icon_name) in [
-        (Page::Inbox, "mail-inbox-symbolic"),
-        (Page::Today, "view-calendar-symbolic"),
-        (Page::Calendar, "x-office-calendar-symbolic"),
-        (
-            Page::Lists,
-            if lists_expanded {
+    for page in [Page::Inbox, Page::Today, Page::Calendar, Page::Lists] {
+        let nav_icon = match page {
+            Page::Inbox => icon::icon(inbox_icon()),
+            Page::Today => icon::icon(today_icon()),
+            Page::Calendar => icon::from_name("x-office-calendar-symbolic").icon(),
+            Page::Lists => icon::from_name(if lists_expanded {
                 "pan-down-symbolic"
             } else {
                 "pan-end-symbolic"
-            },
-        ),
-    ] {
+            })
+            .icon(),
+            _ => unreachable!(),
+        };
         let id = nav
             .insert()
             .text(page.title())
             .data(page.clone())
-            .icon(icon::from_name(icon_name))
+            .icon(nav_icon)
             .id();
         nav.indent_set(id, 1);
         if page == Page::Lists {
@@ -1479,11 +1552,11 @@ fn build_nav(lists: &[TaskList], active: &Page, lists_expanded: bool) -> nav_bar
                     .insert()
                     .text(list.name.clone())
                     .data(Page::List(list.id.clone()))
-                    .icon(icon::from_name(if list.pinned {
-                        "view-pin-symbolic"
+                    .icon(if list.pinned {
+                        icon::icon(pinned_list_icon())
                     } else {
-                        "view-list-symbolic"
-                    }))
+                        icon::from_name("view-list-symbolic").icon()
+                    })
                     .id();
                 nav.indent_set(id, 2);
             }
@@ -1529,6 +1602,19 @@ mod tests {
         let handle = edit_task_icon();
         assert!(handle.symbolic);
         assert!(matches!(&handle.data, icon::Data::Svg(_)));
+    }
+
+    #[test]
+    fn task_navigation_assets_are_bundled_symbolic_svgs() {
+        for (asset, handle) in [
+            (INBOX_ICON, inbox_icon()),
+            (TODAY_ICON, today_icon()),
+            (PINNED_LIST_ICON, pinned_list_icon()),
+        ] {
+            assert!(std::str::from_utf8(asset).unwrap().contains("<path"));
+            assert!(handle.symbolic);
+            assert!(matches!(&handle.data, icon::Data::Svg(_)));
+        }
     }
 
     #[test]

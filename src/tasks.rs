@@ -3,8 +3,35 @@ use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskSort {
+    #[default]
+    CreationDate,
+    DueDate,
+    Priority,
+    Name,
+}
+impl TaskSort {
+    pub const ALL: [Self; 4] = [
+        Self::CreationDate,
+        Self::DueDate,
+        Self::Priority,
+        Self::Name,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CreationDate => "Creation date (newest first)",
+            Self::DueDate => "Due date (earliest first)",
+            Self::Priority => "Priority (P3 first)",
+            Self::Name => "Name (A–Z)",
+        }
+    }
+}
+
 /// The sole persisted classification. Numeric values are part of schema v4.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum Priority {
     #[default]
@@ -100,6 +127,8 @@ pub struct Task {
     pub notes: Option<String>,
     pub list_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matrix_order: Option<u64>,
 }
 
@@ -120,6 +149,7 @@ impl Task {
             priority: Priority::P0,
             notes: None,
             list_id: None,
+            created_at: Some(unix_timestamp()),
             matrix_order: None,
         };
         validate(std::slice::from_ref(&task))?;
@@ -138,13 +168,47 @@ impl Task {
     }
 }
 
-pub fn visible_tasks<'a>(tasks: &'a [Task], view: TaskView<'_>, today: Date) -> Vec<&'a Task> {
+pub fn sorted_visible_tasks<'a>(
+    tasks: &'a [Task],
+    view: TaskView<'_>,
+    today: Date,
+    sort: TaskSort,
+    show_completed: bool,
+) -> Vec<&'a Task> {
     let mut visible: Vec<_> = tasks
         .iter()
-        .filter(|task| task.visible(view, today))
+        .filter(|task| task.visible(view, today) && (show_completed || !task.completed))
         .collect();
-    visible.sort_by_key(|task| task.completed);
+    visible.sort_by(|a, b| match sort {
+        TaskSort::CreationDate => match (a.created_at, b.created_at) {
+            (Some(a), Some(b)) => b.cmp(&a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
+        TaskSort::DueDate => match (&a.due_date, &b.due_date) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
+        TaskSort::Priority => b.priority.cmp(&a.priority),
+        TaskSort::Name => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+    });
     visible
+}
+
+#[cfg(test)]
+pub fn visible_tasks<'a>(tasks: &'a [Task], view: TaskView<'_>, today: Date) -> Vec<&'a Task> {
+    sorted_visible_tasks(tasks, view, today, TaskSort::CreationDate, true)
+}
+
+pub(crate) fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX)
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,8 +368,14 @@ mod tests {
         assert!(completed_inbox.visible(TaskView::Inbox, today));
         let inbox_tasks = [completed_inbox.clone(), task.clone()];
         assert_eq!(
-            visible_tasks(&inbox_tasks, TaskView::Inbox, today),
-            vec![&task, &completed_inbox]
+            sorted_visible_tasks(
+                &inbox_tasks,
+                TaskView::Inbox,
+                today,
+                TaskSort::CreationDate,
+                true,
+            ),
+            vec![&completed_inbox, &task]
         );
     }
     #[test]
@@ -331,7 +401,7 @@ mod tests {
         assert!(validate_document(&[task], &[list]).is_ok());
     }
     #[test]
-    fn list_and_today_views_keep_completed_tasks_in_context_after_active_tasks() {
+    fn list_and_today_views_keep_completed_tasks_in_context_and_filter_is_non_destructive() {
         let today = parse_date("2026-10-18").unwrap();
         let mut first = Task::new("First").unwrap();
         first.list_id = Some("first".into());
@@ -354,8 +424,162 @@ mod tests {
         active.id = "active-task".into();
         active.completed = false;
         let all = [first.clone(), active.clone()];
-        let visible = visible_tasks(&all, TaskView::List("first"), today);
-        assert_eq!(visible, vec![&active, &first]);
+        let visible = sorted_visible_tasks(
+            &all,
+            TaskView::List("first"),
+            today,
+            TaskSort::CreationDate,
+            true,
+        );
+        assert_eq!(visible, vec![&first, &active]);
+        let hidden = sorted_visible_tasks(
+            &all,
+            TaskView::List("first"),
+            today,
+            TaskSort::CreationDate,
+            false,
+        );
+        assert_eq!(hidden, vec![&active]);
+        assert!(first.completed);
+    }
+
+    #[test]
+    fn all_task_sort_modes_are_stable_and_never_change_matrix_ranks() {
+        let create = |id: &str,
+                      title: &str,
+                      created_at: Option<i64>,
+                      due_date: Option<&str>,
+                      priority: Priority,
+                      completed: bool,
+                      matrix_order: Option<u64>| {
+            let mut task = Task::new(title).unwrap();
+            task.id = id.into();
+            task.created_at = created_at;
+            task.due_date = due_date.map(str::to_owned);
+            task.priority = priority;
+            task.completed = completed;
+            task.matrix_order = matrix_order;
+            task
+        };
+        let tasks = vec![
+            create(
+                "old",
+                "bravo",
+                Some(10),
+                Some("2026-10-20"),
+                Priority::P0,
+                false,
+                Some(9),
+            ),
+            create("new", "Alpha", Some(30), None, Priority::P3, true, Some(2)),
+            create(
+                "same-time-first",
+                "alpha",
+                Some(30),
+                Some("2026-10-18"),
+                Priority::P1,
+                false,
+                Some(7),
+            ),
+            create(
+                "unknown-first",
+                "charlie",
+                None,
+                Some("2026-10-18"),
+                Priority::P2,
+                false,
+                Some(4),
+            ),
+            create(
+                "unknown-second",
+                "delta",
+                None,
+                None,
+                Priority::P2,
+                true,
+                Some(3),
+            ),
+        ];
+        let ranks: Vec<_> = tasks.iter().map(|task| task.matrix_order).collect();
+        let today = parse_date("2026-10-18").unwrap();
+        let titles = |sort| {
+            sorted_visible_tasks(&tasks, TaskView::Inbox, today, sort, true)
+                .into_iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            titles(TaskSort::CreationDate),
+            [
+                "new",
+                "same-time-first",
+                "old",
+                "unknown-first",
+                "unknown-second"
+            ]
+        );
+        assert_eq!(
+            titles(TaskSort::DueDate),
+            [
+                "same-time-first",
+                "unknown-first",
+                "old",
+                "new",
+                "unknown-second"
+            ]
+        );
+        assert_eq!(
+            titles(TaskSort::Priority),
+            [
+                "new",
+                "unknown-first",
+                "unknown-second",
+                "same-time-first",
+                "old"
+            ]
+        );
+        assert_eq!(
+            titles(TaskSort::Name),
+            [
+                "new",
+                "same-time-first",
+                "old",
+                "unknown-first",
+                "unknown-second"
+            ]
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.matrix_order)
+                .collect::<Vec<_>>(),
+            ranks
+        );
+
+        let active_only =
+            sorted_visible_tasks(&tasks, TaskView::Inbox, today, TaskSort::Name, false);
+        assert_eq!(
+            active_only
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            ["same-time-first", "old", "unknown-first"]
+        );
+        assert!(tasks[1].completed && tasks[4].completed);
+    }
+
+    #[test]
+    fn legacy_tasks_keep_unknown_creation_time_without_synthesizing_history() {
+        let legacy = serde_json::json!({
+            "id":"legacy", "title":"Old", "completed":false, "due_date":null,
+            "priority":0, "notes":null, "list_id":null, "matrix_order":0
+        });
+        let task: Task = serde_json::from_value(legacy).unwrap();
+        assert_eq!(task.created_at, None);
+
+        let created = Task::new("New").unwrap();
+        assert!(created.created_at.is_some());
     }
 
     #[test]
