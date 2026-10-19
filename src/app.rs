@@ -29,6 +29,7 @@ pub struct AppModel {
     page: Page,
     lists_expanded: bool,
     matrix_list: Option<String>,
+    matrix_unassigned_expanded: bool,
     store: Option<Store>,
     storage_error: Option<String>,
     editor: Option<Editor>,
@@ -185,6 +186,7 @@ impl cosmic::Application for AppModel {
             page: Page::Inbox,
             lists_expanded: true,
             matrix_list: None,
+            matrix_unassigned_expanded: false,
             store: None,
             storage_error: None,
             editor: None,
@@ -303,7 +305,9 @@ impl cosmic::Application for AppModel {
                     .on_press_maybe(self.can_write().then_some(Message::AddList)),
             );
         }
-        content = content.push(header);
+        if page != Page::Matrix {
+            content = content.push(header);
+        }
         if let Page::List(id) = &page {
             content =
                 content.push(
@@ -431,6 +435,7 @@ impl cosmic::Application for AppModel {
                 self.store.as_ref(),
                 self.matrix_list.as_deref(),
                 self.can_write(),
+                self.matrix_unassigned_expanded,
             ));
         } else if page == Page::Lists {
             let mut lists = widget::column::with_capacity(8).spacing(spacing.space_s);
@@ -811,6 +816,9 @@ impl cosmic::Application for AppModel {
                 if let Some(Page::List(id)) = self.nav.data::<Page>(id).cloned() {
                     return self.update(Message::ToggleListPin(id));
                 }
+            }
+            Message::Matrix(matrix_view::Action::ToggleUnassigned) => {
+                self.matrix_unassigned_expanded = !self.matrix_unassigned_expanded;
             }
             Message::Matrix(matrix_view::Action::SelectList(index)) => {
                 if index == 0 {
@@ -1364,7 +1372,7 @@ fn priority_button(
     .into()
 }
 
-fn edit_task_icon() -> icon::Handle {
+pub(crate) fn edit_task_icon() -> icon::Handle {
     icon::from_svg_bytes(EDIT_ICON).symbolic(true)
 }
 

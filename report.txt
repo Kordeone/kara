@@ -1,30 +1,124 @@
-Kara Tasks action icon corrections
+Kara — Eisenhower Matrix UI refinement
 
-Implemented
-- Reduced Low, Normal, and High priority symbols from 24px to 17px and their COSMIC buttons from 48x48px to 36x36px. Existing selected styling, keyboard behavior, labels, tooltips, and priority mapping are unchanged.
-- Replaced the missing theme-resolved task Edit icon with a packaged 16px COSMIC edit-symbolic SVG. The icon is embedded at compile time and loaded as a theme-tinted symbolic SVG, so it does not depend on an installed icon-theme alias. The resource is present in the pinned libcosmic icon source and is also checked by a regression test.
-- Kept task action controls icon-only; Edit and Delete now use matching 36x36px targets, tooltips, accessible names, and their existing task operations.
+Status
+- Based on clean main at 39587bb, including accepted Tasks/dialog/icon fixes.
+- Automated validation passed. COSMIC visual acceptance is pending the owner.
+- No graphical testing was performed on headless Debian. No push, installation,
+  packaging, theme customization or unrelated feature work was performed.
 
-Files changed
-- src/app.rs
-- resources/icons/hicolor/scalable/actions/edit-symbolic.svg
-- report.txt
+UI changes
+- Replaced content-sized quadrant cards with a viewport-filling 2x2 grid.
+  Two equal-width columns and equal-height flex rows share the measured space.
+  Task count does not determine quadrant dimensions.
+- Exact quadrant order: Important & Urgent / Important & Not Urgent above
+  Not Important & Urgent / Not Important & Not Urgent.
+- Each quadrant has a native Primary surface header, compact Add button and
+  Card surface content region. Only the task region scrolls inside each panel;
+  headers and Add controls remain outside those scrollers.
+- Matrix owns its heading/toolbar to avoid a duplicate heading. The Inbox/named
+  list selector sits beside the heading where space permits and stacks below
+  it on narrow views. The selector is capped at 280 logical pixels.
+- Layout measures actual available space after the toolbar and Unassigned have
+  been laid out. Two columns require 420 logical pixels each plus native gap.
+  Desktop rows use Fill rather than fixed heights. Below the space needed for
+  two readable 200-pixel panels and their gap, the grid itself scrolls. Narrow
+  views stack the four panels in row-major order in that same grid scroller.
+- Unassigned remains beneath the grid, visible even when the grid scrolls.
+  A count and disclosure control form a compact, initially collapsed section.
+  Expanded tasks scroll in at most 25% of the measured body viewport, capped
+  at 240 logical pixels. Empty expansion uses only the empty-state text height.
+  Expansion is session-only UI state, not persisted.
+- Task rows group Edit and Up/Down controls together, retain a full-width
+  classification selector within the row, and show optional due-date and
+  non-Normal priority captions. Row width is capped at 640 logical pixels,
+  including Unassigned, so controls do not span the whole application.
+- Matrix Edit reuses the accepted embedded, theme-tinted symbolic Tasks icon.
+  Action targets are compact 36px native icon buttons with tooltips/names.
+- Completed titles retain muted strikethrough; completed tasks stay below
+  active tasks with the same editing, reversal and ordering actions.
+- Add actions continue using the existing Matrix draft/list defaults and the
+  shared Tasks dialog. Classification and all mutations use existing messages.
 
-Validation
-- cargo fmt --check: passed
-- cargo check --locked: passed
-- cargo clippy --locked --all-targets -- -D warnings: passed
-- cargo test --locked: passed (50 passed, 0 failed, 1 ignored because it requires an isolated session bus)
-- KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture: passed (1 passed)
-- cargo build --locked: passed
-- git diff --check: passed
+Modified files
+- src/matrix_view.rs: viewport layout, toolbar, panel scrollers, disclosure UI,
+  compact task presentation, metadata and four focused layout/metadata tests.
+- src/app.rs: Matrix disclosure state and toggle message handling, passing that
+  state into Matrix; skip only Matrix's old generic heading; expose the existing
+  edit-icon helper to the sibling Matrix module without changing its behavior.
+- report.txt: this milestone report and acceptance instructions.
 
-COSMIC graphical acceptance (not run; development environment is headless Debian)
-- Confirm all three priority symbols render at a compact, consistent 16–18px visual size inside approximately 36px controls.
-- Confirm selected priority remains clearly highlighted and keyboard focus/hover states are visible in both light and dark themes.
-- Confirm Edit displays a recognizable pencil icon, with Edit and Delete aligned and icon-only; verify tooltips and keyboard accessibility.
-- Activate Edit and Delete on separate tasks and confirm each performs its existing operation.
-- Check the controls at normal and narrow window sizes for clipping or row overflow.
+Preservation checks
+- Sidebar builder, Tasks rendering and shared dialog implementation compared
+  byte-for-byte against the accepted baseline and remain unchanged.
+- src/tasks.rs, src/matrix.rs, src/storage.rs, src/tray.rs, src/lifecycle.rs,
+  src/date_entry.rs, Cargo.toml and Cargo.lock remain byte-for-byte unchanged.
+- Same shared task records/IDs, classifications, ordering, list assignment and
+  atomic JSON schema. No user storage was opened for automated validation.
+- Existing tests verify classification, stable ranks, list moves/deletion,
+  shared editor fields, completion/reversal, legacy compatibility, corruption
+  protection, atomic writes and failed-write preservation.
 
-Remaining limitation
-- Final appearance and interaction acceptance requires the owner's COSMIC graphical review.
+Validation on Debian
+- cargo fmt --check: PASSED.
+- cargo check --locked: PASSED.
+- cargo clippy --locked --all-targets -- -D warnings: PASSED.
+- cargo test --locked: PASSED, 53 passed, 0 failed, 1 ignored private-bus test.
+  Four focused presentation tests replace the former single breakpoint test.
+- Isolated D-Bus tray regression: PASSED separately, 1 test. All 54 tests were
+  exercised across the normal and private-bus runs. Command:
+    KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
+- cargo build --locked: PASSED; target/debug/kara produced.
+- git diff --check: PASSED.
+
+CachyOS COSMIC acceptance checklist — REQUIRED before visual approval
+1. Quit all Kara instances via the tray (single-instance activation otherwise
+   opens the already running binary). Transfer current main source via Samba,
+   retaining Cargo.lock. Build and launch without installation:
+       cargo build --locked
+       KARA_MATRIX_DATA=$(mktemp -d)
+       XDG_DATA_HOME="$KARA_MATRIX_DATA" ./target/debug/kara
+   Keep KARA_MATRIX_DATA for relaunch tests. This uses disposable task data.
+2. Open Matrix in a wide desktop window, for example 1440x1000, sidebar visible.
+   Verify exact quadrant positions, equal columns/heights, most body space used,
+   readable native surfaces/header separation and compact aligned toolbar.
+3. Start empty. Confirm all four empty states, visible header/Add controls and
+   compact collapsed Unassigned (0). Expand/collapse Unassigned with both the
+   disclosure and text button. Empty expansion must remain unobtrusive.
+4. Create Work/Home lists in Tasks. Select each and Inbox in Matrix. Add a task
+   from every quadrant; verify the accepted shared dialog, selected list and
+   quadrant defaults, normal priority and optional fields. Cancel one creation.
+5. Populate one quadrant heavily (15+ tasks), another with one task, and leave
+   another empty. Verify equal panel sizes regardless of population. Scroll the
+   populated quadrant: its header/Add remain visible and other panels do not
+   scroll. Check long titles, due dates, High/Low metadata and dropdown labels.
+6. Use classification dropdowns and Up/Down. Verify destination append, stable
+   order, disabled boundary arrows and no cross-list changes. Edit/move a task
+   to another list; its ID/classification persist and destination order appends.
+7. Complete several tasks. Verify muted/struck-through titles after active
+   tasks; edit, reorder completed tasks and reverse completion. Check Tasks
+   context matches Matrix without duplicated records.
+8. Create Unassigned tasks in the selected list. Confirm count, expand, scroll
+   that section and classify tasks. The section must stay reachable regardless
+   of grid size/population; switching lists must filter its tasks correctly.
+9. Reduce width gradually, including a 1024x768 window and minimum window size,
+   with sidebar visible/hidden. Verify one-column fallback as needed, exact
+   row-major order, grid scrolling to all panels and visible Unassigned below.
+   Reduce height at wide width: verify scrolling instead of compressed panels.
+   Expand Unassigned in each size and ensure all controls remain reachable.
+10. Test Tab/Shift-Tab, Space/Enter, dropdown navigation, tooltips, mouse wheel
+    and touchpad in nested scrollers. Check no overlap/clipped controls at normal
+    and increased display scaling, and in both light/dark COSMIC themes.
+11. Quit/relaunch with the same XDG_DATA_HOME. Verify classifications, ranks,
+    lists, edits and completion persist. Unassigned intentionally starts closed.
+    Smoke-test accepted Tasks dialog/date entry, Inbox/Today/lists, tray close,
+    Open/Quit and second-launch restoration. No personal task file needs editing.
+
+Known limitations
+- This report describes implemented layout rules, not graphical acceptance.
+  Exact rendering, nested scrolling, focus visibility, long labels and scaling
+  require the owner's CachyOS checks above. Headless tests cover layout decisions
+  and data behavior; they do not establish pixel correctness or desktop usability.
+- Narrow/short views deliberately scroll the grid; independently scrolling task
+  regions remain inside each fixed minimum panel. Unassigned stays below it.
+- No drag-and-drop or persistent disclosure preference was added. Matrix data
+  semantics and all deferred modules remain as before.
