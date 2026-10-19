@@ -407,14 +407,13 @@ fn drag_handle(task: &Task, enabled: bool, drag: &matrix_drag::State) -> Element
     }
     let payload = Payload::new(&task.id);
     let start = Message::Matrix(Action::DragStart(payload.clone(), task.clone()));
-    let priority = task.priority;
     widget::DndSource::with_id(handle, drag.widget_id(format!("matrix-handle:{}", task.id)))
         .action(cosmic::iced::clipboard::dnd::DndAction::Move)
         .drag_content(move || payload.clone())
-        .drag_icon(move |offset| {
+        .drag_icon(|offset| {
             // The locked source constrains its icon to the grip's 24px bounds.
-            // A native flag badge fits; a title/card preview would be clipped.
-            let preview = drag_preview(priority);
+            // A neutral task badge fits; a title/card preview would be clipped.
+            let preview = drag_preview();
             let state = preview.as_widget().state();
             (preview, state, offset)
         })
@@ -507,9 +506,20 @@ fn feedback_appearance(
     style
 }
 
-fn drag_preview(priority: Priority) -> Element<'static, ()> {
+fn drag_preview_icon() -> icon::Icon {
+    // Bundled symbolic task-list silhouette; no source or destination priority.
+    widget::icon(
+        icon::from_svg_bytes(include_bytes!(
+            "../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg"
+        ))
+        .symbolic(true),
+    )
+    .size(16)
+}
+
+fn drag_preview() -> Element<'static, ()> {
     // No second task record or interactive content in the compositor drag icon.
-    widget::container(crate::priority_style::flag(priority))
+    widget::container(drag_preview_icon())
         .padding(4)
         .class(feedback_style(Feedback::Source, true))
         .into()
@@ -548,6 +558,29 @@ fn metadata(task: &Task) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_drag_badge_is_bundled_symbolic_and_not_a_priority_flag() {
+        let neutral = drag_preview_icon().into_svg_handle().unwrap();
+        for priority in Priority::ALL {
+            assert_ne!(
+                neutral.id(),
+                crate::priority_style::flag(priority)
+                    .into_svg_handle()
+                    .unwrap()
+                    .id()
+            );
+        }
+        match neutral.data() {
+            cosmic::iced::advanced::svg::Data::Bytes(bytes) => assert_eq!(
+                bytes.as_ref(),
+                include_bytes!(
+                    "../resources/icons/hicolor/scalable/actions/module-tasks-symbolic.svg"
+                )
+            ),
+            _ => panic!("Native drag badge must use the bundled task symbol"),
+        }
+    }
+
     #[test]
     fn destination_feedback_covers_row_and_append_targets_and_clears_on_cancel() {
         let task = Task::new("Original source").unwrap();
@@ -614,8 +647,8 @@ mod tests {
     #[test]
     fn native_preview_state_survives_the_locked_source_container_wrapper() {
         use cosmic::iced::advanced::widget::Tree;
-        for priority in Priority::ALL {
-            let preview = drag_preview(priority);
+        for _ in Priority::ALL {
+            let preview = drag_preview();
             let mut state = Tree::new(&preview);
             // DndSource wraps the returned icon in a grip-sized container.
             // Container forwards state/tag/children to its content in this lock.

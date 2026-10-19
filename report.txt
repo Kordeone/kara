@@ -1,115 +1,108 @@
-Kara — Matrix drag-and-drop visual feedback refinement
+Kara — Final navigation and drag-preview refinement
 
-Scope and isolation
-- Worktree: /tmp/kara-matrix-feedback
-- Branch: feat/matrix-dnd-feedback, based on b744b6b.
-- The prior isolated Matrix review was a source snapshot, not a Git worktree.
-  The reviewed patch was applied only to this new worktree and recorded as
-  fe41fe9 (feat: add Kara Matrix drag and drop) before the visual refinement.
-- The refinement changes only src/matrix_view.rs and report.txt. Shared main,
-  Luna's uncommitted navigation repair and other shared source are untouched.
-  No merge, push, installation or system configuration changes were performed.
-- This branch contains the committed navigation baseline. It deliberately does
-  not include Luna's shared-tree sidebar repair; coordinate later integration.
+Candidate
+- Worktree: /tmp/kara-matrix-integration
+- Branch: integration/matrix-feedback
+- Baseline: 8027bf0 (sidebar sizing repair), retaining fe41fe9 (complete Matrix
+  DnD implementation) and 1daeb9d (source/destination/insertion feedback).
+- The owner confirmed restored sidebar visibility, module navigation and Matrix
+  dragging on CachyOS before this update. The refinements below await graphical
+  acceptance; Debian validation is headless only.
 
-Visual changes
-- The dragged source row receives a restrained system-accent surface tint and
-  a 2px accent border, retaining its title, controls and completion treatment.
-- A valid hovered quadrant receives a lighter accent tint and border for both
-  before-row and header/background targets. Feedback is scoped to the current
-  list and active drag session.
-- The insertion marker is now a 4px accent bar with 8px end caps. Its fixed 8px
-  slot exists while idle too: hover does not shift rows or drop hit boxes.
-- The marker appears before the hovered row. Header/background drops append
-  within the source task's active/completed group, with the marker at that
-  group's end. Empty quadrant markers appear above the empty-state text, where
-  the first task will be placed.
-- The locked libcosmic DndSource::drag_icon API supplies a native compositor
-  preview. Its dimensions are constrained to the drag handle's 24px bounds, so
-  the preview is a small themed badge using the existing task priority flag.
-  A readable title-card preview would be clipped by this API. The source row
-  remains highlighted and readable throughout the gesture. No backend patch,
-  dependency change, alternative input path or custom preview window was added.
-- Source/destination fills blend existing COSMIC surface and accent colors;
-  regular widget styles and completed muted/struck-through titles remain.
-- Cancellation and finish use the existing lifecycle. Clearing the session
-  removes source/destination feedback; the native backend owns preview cleanup.
+Module selector
+- Four icon-only buttons now use equal FillPortion cells, centered on both axes.
+- The selector receives the sidebar's measured inner width. Its fixed outer
+  height makes native flex layout defer it until navigation establishes width.
+- A spacer retains the former four 40px cells' intrinsic minimum width, including
+  native theme padding/gaps. Its natural Shrink height is zero. The sidebar's
+  existing shrink sizing and 280px desktop cap remain; long list labels continue
+  contributing to the measured width. Condensed-mode visibility is unchanged.
+- The locked Column drops children with an explicit zero height. The new test
+  caught that during development; using natural Shrink height preserves the
+  spacer in layout without adding a visible gap.
+- Native IconVertical button styling supplies a rounded selected overlay across
+  the whole cell, native hover/pressed styling and a separate keyboard outline.
+  No custom palette or button styling callbacks were introduced.
+- Tooltips are below the cells. Names and selected accessibility state remain.
+  Contextual subsections, remembered module state and sidebar toggle are unchanged.
 
-Preserved implementation and safety
-- Native DndSource/DndDestination, grip threshold, stable numeric routing IDs,
-  clipped scrolling drop targets and private MIME/Move negotiation remain.
-- No changes to Matrix placement validation, completion boundaries, priority
-  transitions, ranks, persistence, task IDs/fields, list scope or Tasks sorting.
-- Only an observed physical drop plus matching valid session data can move a
-  task. Hover, canceled/invalid/stale/replayed drops never mutate records.
-- Existing atomic saves and visible errors remain; existing keyboard flag and
-  Up/Down controls and far-right action grouping remain.
-- Prior Matrix implementation files are retained in fe41fe9: src/matrix.rs,
-  src/matrix_drag.rs, src/matrix_clip.rs, src/storage.rs, minimal app/main wiring,
-  matrix_view.rs, report.txt and the existing locked a11y dependency edge.
-- No user task data was opened or modified. Regression data uses temp files.
+Matrix preview
+- The native DndSource drag icon now uses the bundled symbolic task-list icon
+  in the normal theme foreground. It does not capture source priority or change
+  dynamically during hover. The hovered quadrant communicates destination priority.
+- The existing source-row feedback, destination highlight, capped insertion bar,
+  grip threshold, routing IDs, clipping, payload validation and cancellation
+  behavior remain. A valid drop still atomically updates priority and ordering.
+- Native previews remain limited to the handle's 24px bounds by the locked API.
+  No pointer tracking, animations, custom preview windows or new dependencies.
 
-Validation — headless Debian
-All commands ran from the isolated worktree. CARGO_TARGET_DIR reused the
-existing /home/rapper/projects/kara/target build cache; generated binaries in
-that directory are therefore builds of this isolated branch.
+Changed files
+- src/app.rs: equal module cells, centering, native selected cell style, bottom
+  tooltips, intrinsic sizing spacer, layout and native-style regression tests.
+- src/matrix_view.rs: neutral bundled drag icon and preview regression tests.
+- report.txt: this consolidated report.
+- No task CRUD, sorting, subsections, Matrix move semantics, storage/migration,
+  tray, single-instance or packaging changes. No user task data was modified.
+
+Validation from the isolated worktree
+Build output: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target.
 - cargo fmt --check: PASSED
 - cargo check --locked: PASSED
 - cargo clippy --locked --all-targets -- -D warnings: PASSED
-- cargo test --locked: PASSED, 91 passed, 0 failed, 1 ignored private-bus test
+- cargo test --locked: PASSED, 95 passed, 0 failed, 1 ignored private-bus test
 - cargo build --locked: PASSED
-- Isolated D-Bus regression: PASSED, 1 test; all 92 tests exercised
+- Isolated D-Bus regression: PASSED, 1 test; all 96 tests exercised successfully
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-- Four new tests cover row/append quadrant feedback and cancellation, restoring
-  native appearance in light/dark/high-contrast themes, fixed indicator geometry,
-  and preview state compatibility with the locked source container wrapper.
-- Existing tests cover same/cross-quadrant movement, priority/order synchronization,
-  identity/field preservation, completed tasks, lists, invalid/canceled/stale
-  sessions, duplicate delivery, native finish ordering, clipping, restart saves,
-  denied writes, corruption/migration protection, task CRUD and tray lifecycle.
-- No graphical Wayland/COSMIC validation was performed on Debian.
+- Retains the old collapse regression and adds 32 layout combinations: available
+  widths 240/280/640/1024, short/long navigation widths and two native spacing
+  values. Checks preserved sidebar width, four equal cells, complete inner-width
+  coverage, tooltip-wrapped cells, centered icons and zero spacer height.
+- Tests native selected/hover/focus styles in light/dark/high-contrast themes,
+  neutral bundled preview asset identity and native preview widget state.
+- Existing Matrix placement, completed grouping, priority/order persistence,
+  invalid/canceled drops, task/list, migration/corruption and tray tests remain.
 
-CachyOS visual and functional acceptance
-1. Quit the running Kara through its tray before launching another build.
-   Transfer this isolated branch's source/Cargo.lock to a separate source folder
-   using the existing Samba workflow; do not overwrite Luna's working sources.
-   From that folder run:
+Exact CachyOS acceptance steps
+1. Quit Kara using tray Quit so single-instance activation cannot restore an old
+   binary. Transfer this integration candidate's source/Cargo.lock through Samba
+   into a separate folder, preserving shared main and Luna's worktree. Build:
      cargo build --locked
-     KARA_FEEDBACK_DATA=$(mktemp -d)
-     XDG_DATA_HOME="$KARA_FEEDBACK_DATA" ./target/debug/kara
-   Retain KARA_FEEDBACK_DATA for restart checks. Use disposable or copied data.
-2. Open Matrix; create active and completed tasks in Inbox and a named list,
-   with enough tasks to scroll. Confirm editing, flags and keyboard arrows work.
-   If baseline contextual navigation blocks Matrix/list selection, record the
-   exact control and screenshot; sidebar repair remains outside this branch.
-3. In light and dark themes (also high contrast and 100%/200% scaling), drag a
-   grip. Verify the source row is clearly identified, text remains readable,
-   and the small native flag badge follows the pointer without clipping/crash.
-   The badge depicts the source priority until the drop; target priority is
-   communicated by the highlighted quadrant and its existing heading.
-4. Hover each quadrant header, empty body and task row. Exactly the valid
-   destination quadrant should have subtle tinted feedback, including row
-   targets. Confirm no indicator/row jump or flicker after repeated crossings.
-5. Drop before first/middle rows, reorder upward/downward and append via header
-   or background. The capped bar must predict the resulting position. Repeat
-   with empty quadrants and completed tasks; active tasks remain before completed
-   tasks, and cross-completion before-row targets remain invalid.
-6. Cancel with Escape, release outside the window or drop on a non-target.
-   Source, panel and marker must return to their idle appearance and the native
-   badge must disappear. Verify task priority/order and all fields are unchanged.
-   Then drag again immediately; no stale highlight, lost task or duplicate move.
-7. Repeat in wide, narrow and short windows, with long titles, scrolled quadrant
-   content and the outer grid scroller. Only visible rows should receive drops;
-   actions remain at the right and keyboard movement remains available.
-8. Quit/relaunch with the same XDG_DATA_HOME. Verify priorities/ranks, completion,
-   list assignment, notes and dates persist, with no missing/duplicate IDs.
-   Smoke-test task editing, list switching, tray Open/Quit and second launch.
+     KARA_REFINEMENT_DATA=$(mktemp -d)
+     XDG_DATA_HOME="$KARA_REFINEMENT_DATA" ./target/debug/kara
+   Retain the temporary data directory for restart checks.
+2. In a wide window, confirm the sidebar has its previous width and four equal
+   module cells span its inner width. Icons must be horizontally/vertically
+   centered. Click near each cell's left/right edges, not just the glyph: all
+   edges should switch to the corresponding module and highlight its full cell.
+3. Check the selected rounded background, hover and keyboard Tab/Shift+Tab focus
+   are distinguishable. Activate modules by keyboard. Hover each tooltip: labels
+   should appear below the selector without covering the header controls.
+4. Switch among Tasks, Board, Matrix and Pomodoro and back. Verify contextual
+   subsections, remembered list selection, Matrix Lists expansion and Tasks list
+   pins/collapse remain unchanged. Add a long named list to exercise wider native
+   navigation measurement; cells must still span the sidebar without clustering.
+5. Repeat maximized, narrow and short windows, light/dark themes and 100%/200%
+   scaling. Toggle the native sidebar off/on and cross the condensed breakpoint.
+   Confirm no collapsed/empty panel, cropped controls, overlapping cells or gaps.
+6. In Matrix, create active/completed tasks across all priorities. Drag each
+   from its grip and hover another quadrant. The moving badge must stay the same
+   neutral task-list symbol, never show a misleading old priority flag. Original
+   row feedback, destination tint and exact insertion marker must remain visible.
+7. Drop before first/middle rows and on headers/backgrounds to append. Confirm
+   the actual task receives the destination flag and correct rank, with stable
+   identity, list, completion, dates and notes. Test same-quadrant reordering,
+   completed tasks, empty targets and scrolled quadrant/narrow-window content.
+8. Cancel via Escape, drop outside valid targets, then drag again immediately.
+   Badge/highlights must clear with no data change or duplication. Check existing
+   keyboard priority/Up/Down fallback, task editing and normal Tasks sorting.
+9. Quit/relaunch with the same XDG_DATA_HOME. Confirm priorities/order and task
+   fields persist. Smoke-test tray Open/Quit and second-launch activation.
 
-Limitations / acceptance gate
-- The owner confirmed the prior drag behavior graphically. This visual refinement
-  still requires CachyOS acceptance: native preview rendering/cleanup, pointer
-  hit areas, actual contrast, scaling and scrolling cannot be proven headlessly.
-- Preview is a compact priority badge, not a title card, due to the locked native
-  source-size constraint. No drag animations, edge auto-scroll or Matrix redesign.
-- Shared main and Luna's sidebar work are preserved for later integration. This
-  feature branch is committed separately and is not merged or pushed.
+Limitations and delivery boundary
+- Actual visual layout, tooltip placement, native compositor badge cleanup and
+  theme/scaling readability need owner acceptance on CachyOS. Null-renderer
+  geometry/style tests do not establish graphical correctness.
+- Preview is a neutral 24px task badge, not a title card. No edge auto-scroll,
+  touch-drag feature, sidebar redesign or unrelated UI changes were added.
+- Changes are committed only on the isolated integration branch. No merge into
+  main or push; shared main, Luna's worktree and the original Matrix branch remain.
