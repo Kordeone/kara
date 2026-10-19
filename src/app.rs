@@ -42,6 +42,7 @@ struct Editor {
     due: String,
     notes: widget::text_editor::Content,
     error: Option<String>,
+    title_error: Option<String>,
     due_error: Option<String>,
     calendar: cosmic::widget::calendar::CalendarModel,
     calendar_open: bool,
@@ -84,6 +85,7 @@ pub enum Message {
     Title(String),
     Due(String),
     DueBlur,
+    DateShortcut(i64),
     Priority(usize),
     ToggleCalendar,
     CloseCalendar,
@@ -559,9 +561,32 @@ impl cosmic::Application for AppModel {
         }
         if let Some(editor) = &self.editor {
             let spacing = cosmic::theme::spacing();
+            let calendar_button =
+                widget::button::icon(icon::from_name("x-office-calendar-symbolic"))
+                    .tooltip("Choose date")
+                    .name("Choose due date")
+                    .on_press(Message::ToggleCalendar);
+            let calendar_button = widget::popover(calendar_button)
+                .position(widget::popover::Position::Bottom)
+                .on_close(Message::CloseCalendar);
+            let calendar_button = if editor.calendar_open {
+                calendar_button.popup(
+                    widget::container(widget::calendar(
+                        &editor.calendar,
+                        Message::CalendarSelect,
+                        || Message::CalendarPrev,
+                        || Message::CalendarNext,
+                        Weekday::Sunday,
+                    ))
+                    .class(cosmic::theme::Container::Card)
+                    .padding(spacing.space_xxs),
+                )
+            } else {
+                calendar_button
+            };
             let due_input = widget::text_input("YYYY-MM-DD", &editor.due)
                 .style(if editor.due_error.is_some() {
-                    invalid_date_input_style()
+                    invalid_text_input_style()
                 } else {
                     cosmic::theme::TextInput::Default
                 })
@@ -573,26 +598,7 @@ impl cosmic::Application for AppModel {
                 .align_y(Alignment::Center)
                 .spacing(spacing.space_xxs)
                 .push(due_input)
-                .push(
-                    widget::button::icon(icon::from_name("x-office-calendar-symbolic"))
-                        .tooltip("Choose date")
-                        .name("Choose due date")
-                        .on_press(Message::ToggleCalendar),
-                );
-            let due_entry = widget::popover(due_entry)
-                .position(widget::popover::Position::Bottom)
-                .on_close(Message::CloseCalendar);
-            let due_entry = if editor.calendar_open {
-                due_entry.popup(widget::calendar(
-                    &editor.calendar,
-                    Message::CalendarSelect,
-                    || Message::CalendarPrev,
-                    || Message::CalendarNext,
-                    Weekday::Sunday,
-                ))
-            } else {
-                due_entry
-            };
+                .push(calendar_button);
 
             let priority_buttons = widget::row::with_capacity(3)
                 .spacing(spacing.space_xxs)
@@ -631,37 +637,46 @@ impl cosmic::Application for AppModel {
             }
             let list_selector =
                 widget::dropdown(options, selected, Message::AssignList).width(Length::Fill);
-            let title_field = widget::column::with_capacity(2)
+            let title_field = widget::column::with_capacity(3)
                 .spacing(spacing.space_xxs)
                 .push(widget::text::body("Title"))
                 .push(
                     widget::text_input("Task title", &editor.task.title)
+                        .style(if editor.title_error.is_some() {
+                            invalid_text_input_style()
+                        } else {
+                            cosmic::theme::TextInput::Default
+                        })
                         .id(self.title_input.clone())
                         .on_input(Message::Title)
                         .on_submit(|_| Message::Save)
                         .width(Length::Fill),
-                );
-            let metadata = widget::row::with_capacity(3)
+                )
+                .push_maybe(editor.title_error.as_ref().map(widget::text::body));
+            let shortcuts = widget::row::with_capacity(3)
+                .spacing(spacing.space_xxs)
+                .push(widget::button::text("Today").on_press(Message::DateShortcut(0)))
+                .push(widget::button::text("Tomorrow").on_press(Message::DateShortcut(1)))
+                .push(widget::button::text("Next week").on_press(Message::DateShortcut(7)));
+            let due_field = widget::column::with_capacity(4)
+                .spacing(spacing.space_xxs)
+                .push(widget::text::body("Due date"))
+                .push(due_entry)
+                .push(shortcuts)
+                .push_maybe(editor.due_error.as_ref().map(widget::text::body));
+            let metadata = widget::row::with_capacity(2)
                 .align_y(Alignment::Start)
                 .spacing(spacing.space_s)
                 .push(
-                    widget::column::with_capacity(3)
-                        .width(Length::FillPortion(4))
-                        .spacing(spacing.space_xxs)
-                        .push(widget::text::body("Due date"))
-                        .push(due_entry)
-                        .push_maybe(editor.due_error.as_ref().map(widget::text::body)),
-                )
-                .push(
                     widget::column::with_capacity(2)
-                        .width(Length::FillPortion(2))
+                        .width(Length::FillPortion(1))
                         .spacing(spacing.space_xxs)
                         .push(widget::text::body("Priority"))
                         .push(priority_buttons),
                 )
                 .push(
                     widget::column::with_capacity(2)
-                        .width(Length::FillPortion(4))
+                        .width(Length::FillPortion(1))
                         .spacing(spacing.space_xxs)
                         .push(widget::text::body("List"))
                         .push(list_selector),
@@ -670,6 +685,7 @@ impl cosmic::Application for AppModel {
                 .spacing(spacing.space_s)
                 .push(title_field)
                 .push_maybe(editor.error.as_ref().map(widget::text::body))
+                .push(due_field)
                 .push(metadata)
                 .push(widget::text::body("Notes"))
                 .push(
@@ -723,6 +739,24 @@ impl cosmic::Application for AppModel {
         ];
         if let Some(conn) = &self.tray_connection {
             subscriptions.push(tray::subscription(conn.clone()).map(Message::Tray));
+        }
+        if self
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.calendar_open)
+        {
+            subscriptions.push(cosmic::iced::event::listen_with(
+                |event, _, _| match event {
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                        key:
+                            cosmic::iced::keyboard::Key::Named(
+                                cosmic::iced::keyboard::key::Named::Escape,
+                            ),
+                        ..
+                    }) => Some(Message::CloseCalendar),
+                    _ => None,
+                },
+            ));
         }
         Subscription::batch(subscriptions)
     }
@@ -1021,6 +1055,7 @@ impl cosmic::Application for AppModel {
             Message::Title(title) => {
                 if let Some(e) = &mut self.editor {
                     e.task.title = title;
+                    e.title_error = title_validation_error(&e.task.title).map(str::to_string);
                     e.error = None;
                 }
             }
@@ -1036,6 +1071,12 @@ impl cosmic::Application for AppModel {
                     let year = jiff::Zoned::now().year();
                     e.due = date_entry::normalize_edit(&e.due, year);
                     e.due_error = date_entry::validation_error_for_edit(&e.due, year);
+                }
+            }
+            Message::DateShortcut(days) => {
+                if let Some(e) = &mut self.editor {
+                    e.due = date_entry::relative_date(jiff::Zoned::now().date(), days).to_string();
+                    e.due_error = None;
                 }
             }
             Message::Priority(index) => {
@@ -1084,6 +1125,10 @@ impl cosmic::Application for AppModel {
             }
             Message::Save if self.can_write() => {
                 if let Some(e) = &mut self.editor {
+                    e.title_error = title_validation_error(&e.task.title).map(str::to_string);
+                    if e.title_error.is_some() {
+                        return Task::none();
+                    }
                     let due = match date_entry::parse_optional(&e.due, jiff::Zoned::now().year()) {
                         Ok(due) => {
                             e.due_error = None;
@@ -1265,6 +1310,7 @@ impl AppModel {
             ),
             task,
             error: None,
+            title_error: None,
             due_error: None,
             calendar: cosmic::widget::calendar::CalendarModel::new(picker_date, picker_date),
             calendar_open: false,
@@ -1289,16 +1335,40 @@ fn priority_button(
     icon_name: &'static str,
     label: &'static str,
 ) -> cosmic::Element<'static, Message> {
-    widget::button::icon(icon::from_name(icon_name))
-        .selected(selected == priority)
-        .tooltip(label)
-        .name(label)
-        .on_press(Message::Priority(index))
-        .into()
+    let button = widget::button::custom(
+        widget::container(widget::icon(icon::from_name(icon_name).into()).size(24))
+            .width(Length::Fixed(48.0))
+            .height(Length::Fixed(48.0))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fixed(48.0))
+    .height(Length::Fixed(48.0))
+    .class(cosmic::theme::Button::IconVertical)
+    .selected(priority_selected(selected, priority))
+    .name(label)
+    .on_press(Message::Priority(index));
+    widget::tooltip(
+        button,
+        widget::text::body(label),
+        widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
+fn priority_selected(selected: Priority, option: Priority) -> bool {
+    selected == option
 }
 
 fn priority_at(index: usize) -> Option<Priority> {
     Priority::ALL.get(index).copied()
+}
+
+fn title_validation_error(title: &str) -> Option<&'static str> {
+    title
+        .trim()
+        .is_empty()
+        .then_some("A task title is required.")
 }
 
 fn apply_editor_fields(
@@ -1313,7 +1383,7 @@ fn apply_editor_fields(
     task
 }
 
-fn invalid_date_input_style() -> cosmic::theme::TextInput {
+fn invalid_text_input_style() -> cosmic::theme::TextInput {
     use cosmic::widget::text_input::StyleSheet;
     let appearance = |theme: &cosmic::Theme| {
         let mut appearance = theme.active(&cosmic::theme::TextInput::Default);
@@ -1473,6 +1543,29 @@ mod tests {
         assert_eq!(priority_at(1), Some(Priority::Normal));
         assert_eq!(priority_at(2), Some(Priority::High));
         assert_eq!(priority_at(3), None);
+        for selected in Priority::ALL {
+            assert!(priority_selected(selected, selected));
+            assert_eq!(
+                Priority::ALL
+                    .iter()
+                    .filter(|option| priority_selected(selected, **option))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn title_validation_rejects_empty_or_whitespace_and_recovers_on_valid_text() {
+        assert_eq!(
+            title_validation_error(""),
+            Some("A task title is required.")
+        );
+        assert_eq!(
+            title_validation_error(" \t "),
+            Some("A task title is required.")
+        );
+        assert_eq!(title_validation_error(" Write report "), None);
     }
 
     #[test]

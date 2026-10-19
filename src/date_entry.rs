@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Parsing and non-destructive formatting for the task due-date field.
 
-use jiff::civil::Date;
+use jiff::{ToSpan, civil::Date};
 
 const INVALID: &str = "Enter a valid date, or leave it empty.";
 
@@ -110,6 +110,13 @@ pub fn picker_date(value: &str, today: Date) -> Date {
     value.parse().unwrap_or(today)
 }
 
+/// Return a local-calendar day offset used by the due-date shortcuts.
+pub fn relative_date(today: Date, days: i64) -> Date {
+    today
+        .checked_add(days.days())
+        .expect("task date shortcut stays within the supported calendar range")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +186,17 @@ mod tests {
             parse_optional("2024-2-29", 2026).unwrap(),
             Some("2024-02-29".into())
         );
+    }
+
+    #[test]
+    fn relative_shortcuts_cross_month_year_and_leap_day_boundaries() {
+        let today: Date = "2023-12-29".parse().unwrap();
+        assert_eq!(relative_date(today, 0).to_string(), "2023-12-29");
+        assert_eq!(relative_date(today, 1).to_string(), "2023-12-30");
+        assert_eq!(relative_date(today, 7).to_string(), "2024-01-05");
+
+        let leap_eve: Date = "2024-02-28".parse().unwrap();
+        assert_eq!(relative_date(leap_eve, 1).to_string(), "2024-02-29");
+        assert_eq!(relative_date(leap_eve, 7).to_string(), "2024-03-06");
     }
 }
