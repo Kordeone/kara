@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
-    calendar_month, calendar_view, date_entry,
+    backup, backup_ui, calendar_month, calendar_view, date_entry,
     lifecycle::{Effect, Lifecycle, State},
     matrix, matrix_drag, matrix_view,
     storage::{self, Store},
@@ -189,6 +189,7 @@ pub struct AppModel {
     task_sort: tasks::TaskSort,
     task_sort_ascending: bool,
     show_completed: bool,
+    backup: backup_ui::State,
     about: About,
     title_input: cosmic::iced::widget::Id,
 }
@@ -211,6 +212,7 @@ struct ListEditor {
 }
 #[derive(Debug, Clone)]
 pub enum Message {
+    Backup(backup_ui::Action),
     Tray(tray::Event),
     CloseMain,
     WindowCloseRequested(cosmic::iced::window::Id),
@@ -459,6 +461,7 @@ impl cosmic::Application for AppModel {
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
+            backup: backup_ui::State::default(),
             about,
             title_input: cosmic::iced::widget::Id::unique(),
         };
@@ -593,6 +596,26 @@ impl cosmic::Application for AppModel {
     }
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
+            widget::button::icon(
+                icon::from_svg_bytes(include_bytes!("../assets/tabler/database-export.svg"))
+                    .symbolic(true),
+            )
+            .icon_size(16)
+            .width(32)
+            .height(32)
+            .padding(8)
+            .class(cosmic::theme::Button::Icon)
+            .name("Backup and Restore")
+            .tooltip("Backup and Restore")
+            .on_press_maybe(
+                (self.editor.is_none()
+                    && self.list_editor.is_none()
+                    && self.delete_id.is_none()
+                    && self.delete_list_id.is_none()
+                    && !self.backup.open)
+                    .then_some(Message::Backup(backup_ui::Action::Open)),
+            )
+            .into(),
             widget::button::icon(icon::from_svg_bytes(INFO_ICON).symbolic(true))
                 .icon_size(16)
                 .width(Length::Fixed(32.0))
@@ -977,6 +1000,13 @@ impl cosmic::Application for AppModel {
             .into()
     }
     fn dialog(&self) -> Option<Element<'_, Message>> {
+        if self.backup.open {
+            let (tasks, lists) = self
+                .store
+                .as_ref()
+                .map_or((0, 0), |s| (s.tasks().len(), s.lists().len()));
+            return self.backup.view(self.backup_available(), tasks, lists);
+        }
         if let Some(editor) = &self.list_editor {
             let mut fields = widget::column::with_capacity(2)
                 .spacing(cosmic::theme::spacing().space_s)
@@ -1274,6 +1304,12 @@ impl cosmic::Application for AppModel {
         self.window_effect(effect)
     }
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.backup.open {
+            if !self.backup.busy {
+                self.backup = backup_ui::State::default();
+            }
+            return Task::none();
+        }
         self.editor = None;
         self.delete_id = None;
         self.list_editor = None;
@@ -1283,6 +1319,7 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Backup(action) => return self.update_backup(action),
             Message::Month(action) if self.page.is_calendar() => match action {
                 calendar_view::Action::Previous => self.month_view.navigate(-1),
                 calendar_view::Action::Next => self.month_view.navigate(1),
@@ -1830,6 +1867,112 @@ impl cosmic::Application for AppModel {
     }
 }
 impl AppModel {
+    fn update_backup(&mut self, action: backup_ui::Action) -> Task<cosmic::Action<Message>> {
+        use backup_ui::Action;
+        match action {
+            Action::Open
+                if self.editor.is_none()
+                    && self.list_editor.is_none()
+                    && self.delete_id.is_none()
+                    && self.delete_list_id.is_none()
+                    && !self.backup.open =>
+            {
+                self.matrix_drag.cancel();
+                self.matrix_priority_task = None;
+                self.backup.open = true;
+            }
+            Action::Close if !self.backup.busy => self.backup = backup_ui::State::default(),
+            Action::Export
+                if self.backup.open && self.backup_available() && self.backup.pending.is_none() =>
+            {
+                let bytes = match self.store.as_ref().unwrap().backup_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.backup.notice = Some(error);
+                        return Task::none();
+                    }
+                };
+                self.backup.busy = true;
+                self.backup.notice = None;
+                return Task::perform(
+                    async move {
+                        let Some(path) = backup::choose(true).await? else {
+                            return Ok(None);
+                        };
+                        tokio::task::spawn_blocking(move || {
+                            backup::export(&path, &bytes)?;
+                            Ok(Some(path))
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    |result| cosmic::Action::App(Message::Backup(Action::Exported(result))),
+                );
+            }
+            Action::Restore
+                if self.backup.open && self.backup_available() && self.backup.pending.is_none() =>
+            {
+                self.backup.busy = true;
+                self.backup.notice = None;
+                return Task::perform(
+                    async {
+                        let Some(path) = backup::choose(false).await? else {
+                            return Ok(None);
+                        };
+                        tokio::task::spawn_blocking(move || {
+                            backup::read(&path).map(|b| Some(std::sync::Arc::new(b)))
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    |result| cosmic::Action::App(Message::Backup(Action::Loaded(result))),
+                );
+            }
+            Action::Exported(result) if self.backup.busy && self.backup.open => {
+                self.backup.busy = false;
+                self.backup.notice = match result {
+                    Ok(Some(path)) => Some(format!("Backup exported to {}", path.display())),
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                };
+            }
+            Action::Loaded(result) if self.backup.busy && self.backup.open => {
+                self.backup.busy = false;
+                match result {
+                    Ok(backup) => self.backup.pending = backup,
+                    Err(error) => self.backup.notice = Some(error),
+                }
+            }
+            Action::Confirm if self.backup.open && self.backup_available() => {
+                if let Some(prepared) = self.backup.pending.take() {
+                    let store = self.store.as_mut().unwrap();
+                    let result = store.restore_backup(&prepared);
+                    // A failed post-publication rollback can still leave data active;
+                    // always reflect the Store's actual state/preferences in the UI.
+                    self.task_sort = store.sort_mode();
+                    self.task_sort_ascending = store.sort_ascending();
+                    self.show_completed = store.show_completed();
+                    self.storage_error = store.check_storage().err();
+                    self.backup.notice = Some(match result {
+                        Ok(path) => format!(
+                            "Backup restored. Previous data recovery file: {}",
+                            path.display()
+                        ),
+                        Err(error) => error,
+                    });
+                    self.page = Page::Inbox;
+                    self.navigation = ModuleNavigation::default();
+                    self.matrix_list = None;
+                    self.matrix_drag = matrix_drag::State::default();
+                    self.matrix_priority_task = None;
+                    self.rebuild_nav();
+                    return self.update_title();
+                }
+            }
+            _ => {}
+        }
+        Task::none()
+    }
     fn window_effect(&mut self, effect: Effect) -> Task<cosmic::Action<Message>> {
         use cosmic::iced::{Size, window};
         match effect {
@@ -1898,7 +2041,10 @@ impl AppModel {
         self.page.title().into()
     }
     fn can_write(&self) -> bool {
-        self.store.is_some() && self.storage_error.is_none()
+        self.store.is_some() && self.storage_error.is_none() && !self.backup.open
+    }
+    fn backup_available(&self) -> bool {
+        self.store.is_some() && self.storage_error.is_none() && !self.backup.busy
     }
     fn rebuild_nav(&mut self) {
         if let Some(store) = &self.store {
@@ -2356,6 +2502,7 @@ mod tests {
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
+            backup: backup_ui::State::default(),
             about: About::default(),
             title_input: cosmic::iced::widget::Id::unique(),
         }
@@ -2483,6 +2630,124 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn backup_restore_requires_confirmation_and_cancel_never_changes_tasks() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .upsert(KaraTask::new("Keep until confirmation").unwrap())
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        let _ = app.update(Message::Backup(Action::Open));
+        assert!(app.backup.open);
+        assert!(!app.can_write());
+        let _ = app.update(Message::Backup(Action::Confirm));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = app.update(Message::Add);
+        assert!(app.editor.is_none());
+        let prepared = std::sync::Arc::new(
+            backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
+        );
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared.clone())))));
+        assert!(app.backup.pending.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(app.dialog().is_some());
+        let _ = app.update(Message::Backup(Action::Close));
+        assert!(!app.backup.open);
+        assert!(app.backup.pending.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        // Only this explicit confirmation replaces the shared records/preferences.
+        let _ = app.update(Message::Backup(Action::Open));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared.clone())))));
+        let _ = app.update(Message::Backup(Action::Confirm));
+        assert!(app.backup.pending.is_none());
+        assert!(
+            app.backup
+                .notice
+                .as_ref()
+                .unwrap()
+                .contains("Backup restored")
+        );
+        assert_eq!(app.task_sort, tasks::TaskSort::Name);
+        assert!(!app.task_sort_ascending);
+        assert!(!app.show_completed);
+        assert_eq!(app.page, Page::Inbox);
+        let store = app.store.as_ref().unwrap();
+        assert_eq!(store.tasks(), prepared.data.tasks);
+        assert_eq!(store.lists(), prepared.data.lists);
+        assert_eq!(
+            calendar_month::on_date(
+                store.tasks(),
+                "2024-02-29".parse().unwrap(),
+                calendar_month::Filter::All
+            )[0]
+            .id,
+            "portable-a"
+        );
+        assert_eq!(
+            matrix::ordered(
+                store.tasks(),
+                Some("portable-list"),
+                tasks::Quadrant::ImportantUrgent
+            )
+            .len(),
+            2
+        );
+        let _ = app.update(Message::Backup(Action::Close));
+        assert!(app.can_write());
+        assert!(
+            app.nav
+                .iter()
+                .any(|id| app.nav.data::<Page>(id) == Some(&Page::List("portable-list".into())))
+        );
+        let _ = app.update(Message::Backup(Action::Confirm));
+        assert_eq!(app.store.as_ref().unwrap().tasks(), prepared.data.tasks);
+    }
+
+    #[test]
+    fn backup_cancellation_errors_and_busy_state_preserve_editor_and_store() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(Store::open(dir.path().join("tasks.json")).unwrap());
+        let _ = app.update(Message::Add);
+        let _ = app.update(Message::Title("Unsaved draft".into()));
+        let _ = app.update(Message::Backup(Action::Open));
+        assert!(!app.backup.open);
+        assert_eq!(app.editor.as_ref().unwrap().task.title, "Unsaved draft");
+        let _ = app.update(Message::Cancel);
+        let _ = app.update(Message::Backup(Action::Open));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Close));
+        let _ = app.on_escape();
+        assert!(app.backup.open && app.backup.busy);
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(None))));
+        assert!(!app.backup.busy);
+        assert!(app.backup.pending.is_none());
+        assert!(app.backup.notice.is_none());
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(
+            Err("Invalid backup".into()),
+        )));
+        assert_eq!(app.backup.notice.as_deref(), Some("Invalid backup"));
+        assert!(app.backup.pending.is_none());
+        let _ = app.update(Message::Backup(Action::Confirm));
+        assert!(app.store.as_ref().unwrap().tasks().is_empty());
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Exported(Ok(None))));
+        assert!(app.backup.notice.is_none());
+        let _ = app.on_escape();
+        assert!(!app.backup.open);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1); // lock only
     }
 
     #[test]

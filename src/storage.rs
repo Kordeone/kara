@@ -147,6 +147,20 @@ fn ensure_migration_backup(path: &Path, original: &[u8], suffix: &str) -> Result
         .map_err(|e| format!("Cannot verify migration backup; legacy data was not replaced: {e}"))
 }
 
+// A one-shot, thread-local fault injection covers rollback after publication
+// without touching real user data or affecting concurrently running tests.
+#[cfg(test)]
+thread_local! {
+    static FAIL_COMMIT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn sync_committed_directory(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if FAIL_COMMIT_SYNC.with(|flag| flag.replace(false)) {
+        return Err(io::Error::other("injected directory sync failure"));
+    }
+    File::open(dir).and_then(|f| f.sync_all())
+}
+
 pub struct Store {
     path: PathBuf,
     _lock: File,
@@ -266,6 +280,90 @@ impl Store {
             sort_ascending,
             show_completed,
         })
+    }
+    fn backup_data(&self) -> crate::backup::Data {
+        crate::backup::Data {
+            version: 6,
+            tasks: self.tasks.clone(),
+            lists: self.lists.clone(),
+            sort_mode: self.sort_mode,
+            sort_ascending: self.sort_ascending,
+            show_completed: self.show_completed,
+        }
+    }
+    pub fn backup_bytes(&self) -> Result<Vec<u8>, String> {
+        self.check_storage()?;
+        crate::backup::encode(self.backup_data())
+    }
+    /// The recovery file is portable and verified/durable before any live write.
+    /// Normal legacy migration still makes its own byte-exact original backup.
+    pub fn restore_backup(&mut self, backup: &crate::backup::Prepared) -> Result<PathBuf, String> {
+        crate::backup::encode(backup.data.clone())?;
+        self.check_storage()?;
+        let previous = self.backup_data();
+        let before = self.snapshot.clone();
+        let bytes = self.backup_bytes()?;
+        let dir = self.path.parent().ok_or("Invalid storage path.")?;
+        let mut recovery = tempfile::Builder::new()
+            .prefix("kara-before-restore-")
+            .suffix(".kara-backup")
+            .tempfile_in(dir)
+            .map_err(|e| format!("Cannot create recovery snapshot; nothing restored: {e}"))?;
+        recovery
+            .write_all(&bytes)
+            .and_then(|()| recovery.as_file().sync_all())
+            .map_err(|e| format!("Cannot write recovery snapshot; nothing restored: {e}"))?;
+        let (file, path) = recovery.keep().map_err(|e| e.to_string())?;
+        drop(file);
+        if fs::read(&path).map_err(|e| e.to_string())? != bytes {
+            return Err(format!(
+                "Recovery snapshot verification failed: {}. Nothing restored.",
+                path.display()
+            ));
+        }
+        crate::backup::read(&path)?;
+        File::open(dir).and_then(|f| f.sync_all()).map_err(|e| {
+            format!(
+                "Cannot sync recovery snapshot {}; nothing restored: {e}",
+                path.display()
+            )
+        })?;
+        let data = &backup.data;
+        let result = self.commit_with_preferences(
+            data.tasks.clone(),
+            data.lists.clone(),
+            data.sort_mode,
+            data.sort_ascending,
+            data.show_completed,
+        );
+        if let Err(error) = result {
+            if self.snapshot != before {
+                // Publication succeeded but directory durability failed. Roll back
+                // through the same checked atomic path, never overwrite a later edit.
+                let rollback = self.commit_with_preferences(
+                    previous.tasks.clone(),
+                    previous.lists.clone(),
+                    previous.sort_mode,
+                    previous.sort_ascending,
+                    previous.show_completed,
+                );
+                let state = if self.backup_data() == previous {
+                    "Previous data is active again."
+                } else {
+                    "Restored data is currently active; automatic rollback could not finish."
+                };
+                return Err(format!(
+                    "Restore durability failure: {error}. {state} Rollback: {} Recovery snapshot: {}",
+                    rollback.err().unwrap_or_else(|| "completed".into()),
+                    path.display()
+                ));
+            }
+            return Err(format!(
+                "Restore failed before replacement: {error}. Previous data remains active. Recovery snapshot: {}",
+                path.display()
+            ));
+        }
+        Ok(path)
     }
     pub fn tasks(&self) -> &[Task] {
         &self.tasks
@@ -398,8 +496,7 @@ impl Store {
         self.show_completed = show_completed;
         self.snapshot = Some(bytes);
         self.migration_version = None;
-        File::open(dir)
-            .and_then(|f| f.sync_all())
+        sync_committed_directory(dir)
             .map_err(|e| format!("Tasks were written, but durability could not be confirmed: {e}"))
     }
     pub fn upsert(&mut self, mut task: Task) -> Result<(), String> {
@@ -462,6 +559,154 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const PORTABLE: &[u8] = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
+    #[test]
+    fn portable_restore_round_trips_all_fields_preferences_and_recovery_across_roots() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Before restore").unwrap()).unwrap();
+        let original = store.backup_data();
+        let prepared = crate::backup::decode(PORTABLE).unwrap();
+        let recovery = store.restore_backup(&prepared).unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, original);
+        assert_eq!(store.backup_data(), prepared.data);
+        let bytes = store.backup_bytes().unwrap();
+        let export = source.path().join("portable.kara-backup");
+        crate::backup::export(&export, &bytes).unwrap();
+        assert!(
+            !String::from_utf8(bytes)
+                .unwrap()
+                .contains(destination.path().to_str().unwrap())
+        );
+        drop(store);
+        let mut reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.backup_data(), prepared.data);
+        reopened
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(reopened.backup_data(), original);
+        // A different data root imports exactly the same record IDs, not copies.
+        let mut other = Store::open(source.path().join("tasks.json")).unwrap();
+        other
+            .restore_backup(&crate::backup::read(&export).unwrap())
+            .unwrap();
+        let again = other.restore_backup(&prepared).unwrap();
+        assert_eq!(other.backup_data(), prepared.data);
+        assert_eq!(crate::backup::read(&again).unwrap().data, prepared.data);
+    }
+    #[test]
+    fn legacy_export_does_not_migrate_and_restore_keeps_exact_migration_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        let exported = store.backup_bytes().unwrap();
+        let old = crate::backup::decode(&exported).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert_eq!(old.data.tasks, store.tasks());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        let recovery = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-priority-v4.bak")).unwrap(),
+            LEGACY_MATRIX
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old.data);
+    }
+    #[test]
+    fn failed_migration_backup_blocks_restore_and_leaves_recoverable_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        let old = store.backup_data();
+        fs::write(
+            path.with_extension("json.pre-priority-v4.bak"),
+            b"conflicting backup",
+        )
+        .unwrap();
+        let error = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap_err();
+        assert!(error.contains("Previous data remains active"));
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert_eq!(store.backup_data(), old);
+        let recovery = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "kara-backup"))
+            .unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        // Resolve only the deliberately created fixture conflict, then retry.
+        fs::remove_file(path.with_extension("json.pre-priority-v4.bak")).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        assert_eq!(store.tasks().len(), 2);
+    }
+    #[test]
+    fn restore_sync_failure_rolls_back_live_disk_and_restart_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Do not lose").unwrap()).unwrap();
+        let old = store.backup_data();
+        let bytes = fs::read(&path).unwrap();
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        let error = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap_err();
+        assert!(error.contains("Previous data is active again"));
+        assert!(error.contains("Rollback: completed"));
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), old);
+    }
+    #[test]
+    fn missing_snapshot_permission_and_external_changes_block_restore_without_data_loss() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        let old = store.backup_data();
+        let bytes = fs::read(&path).unwrap();
+        let prepared = crate::backup::decode(PORTABLE).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.restore_backup(&prepared);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        fs::write(&path, b"external damaged data").unwrap();
+        assert!(store.restore_backup(&prepared).is_err());
+        assert!(store.backup_bytes().is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external damaged data");
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn first_run_empty_store_can_be_restored_and_recovered_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let old = store.backup_data();
+        let recovery = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+        assert!(store.tasks().is_empty());
+        drop(store);
+        assert!(Store::open(path).unwrap().tasks().is_empty());
+    }
     const Q1: Quadrant = Quadrant::ImportantUrgent;
     const Q2: Quadrant = Quadrant::ImportantNotUrgent;
     fn matrix_task(title: &str, list: Option<&str>, quadrant: Quadrant) -> Task {

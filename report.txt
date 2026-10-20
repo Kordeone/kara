@@ -1,63 +1,89 @@
-KARA — Calendar Stage 1: Functional Month View
+KARA — Calendar Promotion and Stage 2 Backup/Restore
 
-Integration and scope
-- Clean main was fast-forwarded from 7259a39 to accepted UI commit 716cf96.
-  Baseline formatting, check, strict Clippy, tests, build and private D-Bus
-  regression passed (101 regular tests plus 1 separately exercised bus test).
-- Calendar development is isolated in /home/rapper/projects/kara-calendar on
-  feat/calendar-month, based on 716cf96. No Calendar merge or push was performed.
-- Original rescue checkout, other worktrees, branches and backups are preserved.
+Git and integration
+- Canonical main /home/rapper/projects/kara-main was clean at 716cf96 and was
+  fast-forwarded normally to graphically accepted Calendar commit 2ec9ed3.
+- Main promotion passed fmt, locked check, strict Clippy, 111 regular tests,
+  build and 1 private D-Bus regression. Main remains clean at 2ec9ed3.
+- Backup/Restore development is isolated on feat/backup-restore in
+  /home/rapper/projects/kara-backup-restore, based on that updated main.
+- No feature merge or push. Original rescue checkout, backups, Calendar branch,
+  Luna's UI worktree and all other worktrees/commits were preserved.
 
 Implementation
-- Five top modules: Tasks, Calendar, Board View, Eisenhower Matrix, Pomodoro.
-  Calendar uses the owner's existing bundled Tabler calendar-month.svg. The
-  accepted selector, selected-cell background, hover, focus and tooltips remain.
-  Five cells share the measured inner sidebar width without widening the panel.
-- Calendar is removed from the Tasks sidebar. Inbox, Today, Lists, sorting and
-  pinned-list behavior remain. Calendar has Month (all lists), a Lists heading,
-  Inbox and the existing named lists as mutually exclusive calendar filters.
-  Week and Day entries are deferred rather than displaying fake views.
-- Native month grid with Monday–Sunday columns and complete 4/5/6-week rows,
-  adjacent-month dates, month/year heading, previous/next and Today controls.
-  Current day has an accent border; selected day has an accent border and theme
-  surface. Day buttons expose full dates, task counts and state in their names.
-- Date cells show up to two compact task previews, priority flags and +N more.
-  Selected-day details show every matching task in a scrollable list, including
-  reversible completion and access to the accepted task editor. Completed tasks
-  are muted/struck through and follow active tasks, without reordering records.
-- Add task preselects the selected civil date, selected named list (or Inbox for
-  Month/all lists and Inbox), and normal P0 defaults. Generic Add uses the same
-  handler. Editing, completion and saving use existing task IDs and Store APIs.
-- Wide content (at least 950px) places selected-day details beside the grid;
-  narrower content places details below it. Overall scrolling keeps dates and
-  details accessible in short windows; details also scroll independently.
-- Calendar filters, month and selection are session state. Switching modules
-  remembers Calendar context; deleting a shared list safely resets its filter.
-- Civil dates use Jiff Date throughout. Today uses the local timezone; no UTC
-  conversion is applied to due dates. Undated tasks appear on no calendar date.
+- A compact Backup and Restore button with an accessible name and tooltip
+  beside About opens a native
+  COSMIC dialog. Export and Restore use libcosmic's existing XDG portal save/open
+  dialogs, respecting user-selected paths rather than hardcoded host locations.
+- Export captures tasks, lists (including pins), priority, Matrix ranks, IDs,
+  dates, notes, completion, creation timestamps and persisted sort/direction/
+  Show Completed preferences. No separate Calendar/Matrix records are created.
+- Portable .kara-backup files contain JSON: explicit Kara format identifier,
+  backup_version 1, embedded task schema version 6, data and a SHA-256 checksum.
+  The checksum covers UTF-8 compact serialization of the typed data in fixed
+  struct-field order, retaining vector order. JSON indentation/key reordering
+  does not affect verification. An independently generated Python fixture tests
+  compatibility with the format rather than only testing our writer against itself.
+- Full validation precedes restore confirmation: format/version, required fields,
+  data types/ranges, unknown fields, task/list uniqueness, list references, dates
+  and checksum. Inputs are bounded at 64 MiB. Plain tasks.json, incomplete,
+  truncated, damaged and unsupported files are rejected without touching live data.
+- Restore clearly states current/imported counts and that all tasks, lists and
+  saved preferences are REPLACED, not merged. Only explicit Replace data proceeds.
+  Canceling the file dialog/confirmation has no data effect. Existing unsaved
+  editors cannot be displaced by opening Backup and Restore; task writes are
+  disabled while its modal is open. Portal and file errors are visible there.
+- Selected backup loading/export disk work runs off the UI thread. Closing the
+  panel is disabled during its outstanding portal/file operation; Cancel in the
+  native file chooser returns to the panel. Long messages scroll, keeping Close
+  accessible. Normal keyboard controls and the accepted task editor are retained.
+- Confirmed restore updates the same Store, refreshes preferences/navigation and
+  returns to Inbox, avoiding stale list references or drag sessions. Tasks,
+  Calendar and Matrix immediately see the same restored records.
+
+Safety and recovery
+- Existing task JSON remains schema 6. There is no RON migration/new database.
+- Export stages a private file in the destination directory, syncs it, publishes
+  without clobbering and syncs the directory. Choose a NEW .kara-backup filename:
+  existing files (even backups), symlinks and directories are never overwritten.
+- Before restoration, Kara creates a unique portable recovery snapshot in the
+  live data directory: kara-before-restore-<random>.kara-backup. Its bytes are
+  read back, fully validated, and both file and directory synced BEFORE live
+  replacement. The recovery path is shown after success or a later failure.
+- Recovery snapshots preserve the previously loaded logical document. Existing
+  legacy migration still creates its separate byte-exact original .bak file
+  before replacing legacy JSON; export alone never triggers a migration write.
+- Restore uses the existing locked Store commit path: complete validation,
+  Matrix normalization, expected-file checks, staged file sync, atomic replacement
+  and directory sync. Failed pre-publication writes leave the old Store/file intact.
+- If publication succeeds but durability confirmation fails, Kara attempts an
+  atomic rollback through the same external-change checks. It never blindly
+  overwrites a later external edit. A rollback failure is reported with the actual
+  in-memory state and retained recovery path; UI preferences reflect that state.
+- Recovery snapshots are not automatically deleted. They are ordinary portable
+  backups and can be selected with Restore to undo a restore. Each further
+  confirmed restore first saves another recovery snapshot.
+- Tests use temporary directories only. Actual user task storage was not loaded
+  or modified by development tests.
 
 Changed files
-- src/calendar_month.rs: civil-date state, complete-week calculations, shared
-  task filtering and creation draft defaults, with focused unit tests.
-- src/calendar_view.rs: native calendar grid, controls, selected-day details,
-  theme styling, responsive scrolling and real-widget layout regression.
-- src/app.rs: fifth module, contextual navigation, shared editor dispatch,
-  deleted-filter recovery, application regressions and five-cell geometry tests.
-- src/main.rs: registers the two Calendar modules.
-- report.txt: this consolidated milestone report.
+- src/backup.rs: strict backup format, SHA-256, bounded reading, native portal
+  selection/cancellation, atomic export and format/file regressions.
+- src/backup_ui.rs: compact native panel/confirmation and layout regression.
+- src/storage.rs: export snapshots, verified pre-restore recovery and rollback;
+  comprehensive temporary-data storage regressions and test-only sync fault.
+- src/app.rs: header action, modal state/async operations, confirmation dispatch,
+  shared-view/preference refresh, cancellation/unsaved-editor regressions.
+- src/main.rs: registers the two backup modules.
+- tests/fixtures/backup-v1.kara-backup: independently checksummed portable fixture.
+- Cargo.toml/Cargo.lock: name already-locked sha2 0.11.1 as a direct dependency;
+  lockfile changes only Kara's dependency list. No packages were upgraded.
+- report.txt: this consolidated report.
+- Accepted existing task/list dialogs, Tasks data model, Calendar, Matrix/DnD,
+  date entry, tray/lifecycle, branding and bundled icons remain unchanged.
 
-Compatibility and preserved behavior
-- No new schema, migration, dependencies, database or separate task records.
-  JSON remains version 6 with existing atomic writes and corruption protection.
-- Cargo.toml/Cargo.lock, task/storage modules, Matrix/DnD modules, tray/lifecycle,
-  branding and icon assets are unchanged. The accepted dialog implementation
-  matches main byte for byte; its date picker, validation and layout are intact.
-- Tests use temporary data only. Existing user task data was not opened or changed.
-- Tasks sort preferences and Show Completed setting are not modified by Calendar;
-  Calendar deliberately displays completed dated tasks with reversible controls.
-
-Validation — headless Debian
-All final commands passed from the Calendar worktree:
+Final automated validation — headless Debian
+All passed from the isolated feature worktree:
   cargo fmt --check
   cargo check --locked
   cargo clippy --locked --all-targets -- -D warnings
@@ -66,70 +92,85 @@ All final commands passed from the Calendar worktree:
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
     -- --ignored --exact --nocapture
-Existing cache used: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
-- Regular suite: 111 passed, 0 failed, 1 intentionally ignored bus test.
-- Private D-Bus regression: 1 passed, 0 failed (112 tests exercised in total).
-- Ten new tests cover year/month/leap boundaries, Date range limits, complete
-  Monday weeks, task placement, undated exclusion, list filtering, creation date
-  and list defaults, shared editing/completion/restart identity across Tasks and
-  Matrix, retained sort preferences, deleted-list recovery, failed saves, module
-  navigation, and populated native layout at 400x350, 680x600 and 1200x700.
-- Existing real-widget selector tests now verify five widths, positions, icon
-  centering and total occupied width in Tasks, Calendar and Matrix. Tested sidebar
-  constraints: 200/240/280/640/1024px; full frames: 640/800/1024/1440px wide.
-  At native 8px padding/gaps, measured sidebar 280px -> inner 264px -> five 46.4px
-  cells + four 8px gaps = 264px. At 240px: inner 224px, five 38.4px cells; at
-  200px: inner 184px, five 30.4px cells. Sidebar remains capped at 280px.
-- Populated layout uses 40 tasks on one date, six equal seven-cell week rows,
-  finite geometry and viewport-bound roots. An initial test counted the vertical
-  grid container as a row; the final test distinguishes horizontal full-height
-  cells and passes. Software geometry testing is not COSMIC visual acceptance.
+Build cache: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
+- 126 regular tests passed; 0 failed; the one private-bus test is normally ignored.
+- Private D-Bus test separately passed: 127 tests exercised altogether.
+- 15 added tests cover independent format compatibility; reformatting; corrupt,
+  incomplete/unsupported/oversized backups; broken references/duplicate IDs;
+  portable/private no-clobber exports; portal cancellation; cross-root/repeated
+  restore/restart; recovery snapshot restoration; first-run empty recovery;
+  legacy export/migration backup conflicts; denied snapshot creation; external
+  edits; injected post-publication sync failure and successful atomic rollback;
+  explicit UI confirmation/cancellation and shared-view/preference refresh.
+- Native panel layout test keeps footer actions inside 400x480, 640x560 and
+  1000x700 bounds, including long errors, busy state and restore confirmation.
+  Existing five-module geometry, Calendar, Matrix, persistence and tray regressions
+  continue passing. No graphical acceptance is claimed by these headless tests.
 
-Known limitations
-- No graphical verification was performed on Debian. CachyOS acceptance pending.
-- Month/day labels are currently English; weeks always start Monday. There is no
-  existing reliable locale week-start preference in this application to reuse.
-- Week/Day layouts, external calendars, recurrence, scheduling times, Calendar
-  drag-and-drop, Backup/Restore, Board and Pomodoro functionality are out of scope.
-- Selection/filter/month are not persisted. Month defaults to the local current
-  date on a new process. Long preview titles are compact; full titles are in the
-  selected-day details/editor. Narrow/short windows may require vertical scrolling.
+Known limitations and packaging considerations
+- CachyOS graphical acceptance of Backup/Restore remains pending. No COSMIC,
+  Flatpak or AppImage installation/testing was performed on Debian.
+- Portal selection supports normal Linux and sandbox-granted local file URLs;
+  the existing XDG data path follows the runtime environment, not executable or
+  installation location. No packaging, permission or authentication changes.
+- A portal backend is required. Filesystems/portal grants must permit staging,
+  atomic no-clobber publication and sync. Otherwise export fails visibly; there
+  is no unsafe in-place fallback. In particular, writable document-portal grants
+  need graphical/sandbox acceptance testing; packaged compatibility is not proven.
+- Only backup format 1 / embedded schema 6 is accepted. Legacy ordinary storage
+  can be opened and exported through Kara's existing migrations; raw tasks.json
+  is deliberately not treated as a portable backup file.
+- Exports/recovery snapshots have a 64 MiB limit. Backups are plaintext, not
+  encrypted or authenticated; SHA-256 detects damage, not trusted provenance.
+- Export/restore require a successfully loaded Store with no outstanding storage
+  error. A corrupt/unrecognized live file stays protected: resolve/preserve it
+  manually before loading a Store; this milestone does not auto-repair it.
+- If storage hardware prevents both commit durability and rollback, the durable
+  pre-restore recovery file remains available and the error explains the state.
+  Power-loss handling relies on atomic file replacement and the synced recovery
+  snapshot; no real power-loss/hardware fault experiment was performed.
 
-CachyOS launch and acceptance checklist
-1. Transfer the Calendar feature source using the established Samba workflow.
-   Fully Quit any existing Kara via its tray before launching this build, so
-   single-instance activation cannot restore an older binary. In that source
-   directory run cargo build --locked, then cargo run --locked. No installation.
-   For isolated graphical test data, first choose a fresh directory, e.g.
-     KARA_CALENDAR_DATA="$(mktemp -d)"
-     XDG_DATA_HOME="$KARA_CALENDAR_DATA" cargo run --locked
-   Reuse that same directory for restart checks; do not delete real Kara data.
-2. In light and dark COSMIC themes, verify five evenly distributed icons, full
-   selected cells, hover, keyboard focus and tooltips. Confirm Tasks has Inbox,
-   Today and Lists only; named/pinned lists and sorting retain accepted behavior.
-3. Open Calendar. Verify local month/year, Monday-first alignment, correct current
-   day border and clear selected day. Navigate December/January, February 2024
-   (29 days), February 2025 (28 days), and months requiring six complete weeks.
-   Click adjacent-month dates; verify displayed month and selected date change.
-   Today must return to the local current date without timezone shifts.
-4. Select Month for all lists, Inbox and multiple named lists. Create tasks from
-   dates in each filter. Verify the accepted dialog's date/list defaults and P0,
-   date picker, shortcuts and validation. Cancel once and confirm no new record.
-   Add an undated task in Tasks: it must not appear on arbitrary Calendar dates.
-5. Put many tasks on one date. Verify two previews and +N more, full scrollable
-   selected-day list, correct titles/flags and no lost or duplicate tasks. Edit a
-   title, date, priority and list using the shared editor; check immediate changes
-   in the grid, Tasks and Matrix. Complete and uncomplete a task from Calendar;
-   confirm muted strikethrough, retained identity/list and Matrix classification.
-6. Test maximized, normal, narrow and short windows, including 640x560 application
-   size. Check equal date columns, readable controls, selected-day details moving
-   below the grid, and all dates/tasks/Add reachable by scrolling. Check month
-   controls and keyboard navigation with both empty and heavily populated dates.
-7. Rename/delete a filtered list in Tasks. Calendar must show the updated name or
-   return safely to Month/all lists; deleted-list tasks remain in Inbox. Switch
-   modules and confirm Calendar date/filter remain during the session.
-8. Quit/relaunch with the same test-data directory. Confirm dates, priorities,
-   IDs, completion and list assignments persist. Recheck Matrix drag/drop and its
-   keyboard fallback, Tasks sorting/pins, About/branding, tray close/open, panel
-   recovery and single-instance activation. No graphical acceptance is claimed
-   until these CachyOS checks are completed by the owner.
+CachyOS graphical acceptance instructions
+1. Transfer this FEATURE source using the existing Samba workflow. Fully Quit
+   older Kara via the tray first, avoiding activation of an old single instance.
+   In the transferred source directory run cargo build --locked.
+2. Use isolated graphical test data, keeping the directory for restart checks:
+     KARA_BACKUP_TEST_DATA="$(mktemp -d)"
+     XDG_DATA_HOME="$KARA_BACKUP_TEST_DATA" cargo run --locked
+   Never test replacement/corruption against actual production task data.
+3. Create Inbox/named-list tasks with dates, notes, multiple priorities and
+   completed states; pin a list, reorder Matrix tasks and change sort/direction/
+   Show Completed. Verify Calendar, Tasks and Matrix agree before exporting.
+4. Open the toolbar Backup and Restore action. Check compact native layout,
+   Tab/Shift-Tab, Escape/Close, readable light/dark themes, narrow/short windows
+   and scrollable long messages. Open an unsaved task editor and confirm the
+   backup action cannot replace that draft.
+5. Export to a NEW .kara-backup filename using the native chooser. Verify the
+   success path. Cancel save/open dialogs: no error and no data change. Try an
+   existing filename, missing suffix and unwritable folder: visible error, no
+   overwrite. Keep a copy of the successful backup outside the test data folder.
+6. Modify/delete test records and preferences. Select the exported backup with
+   Restore. Verify replacement wording/counts and explicit Replace data action.
+   Cancel once: current data remains unchanged and no recovery file is created.
+7. Confirm restore. Verify exact IDs/properties, list pins, Matrix ordering,
+   completed states, sort/direction/Show Completed and Calendar date placement.
+   Repeat restore: no duplicates. Fully Quit/relaunch with the SAME test XDG
+   directory; verify persistence. Export again and compare logical contents.
+8. Note the displayed recovery filename. Restore that file and verify the state
+   immediately before the previous restore is recovered, with another snapshot
+   created first. Recovery files are under:
+     $KARA_BACKUP_TEST_DATA/io.github.kordeone.Kara/
+   Do not remove production backups during this test.
+9. Make separate copies of the exported backup, truncate one, edit a title
+   without updating its checksum, remove a required field, or set backup_version
+   to 999. Select each: clear rejection BEFORE confirmation; live data unchanged.
+   The included tests/fixtures/backup-v1.kara-backup is also a valid independent
+   two-task/one-list import fixture for the isolated test store.
+10. Recheck Tasks dialog/date shortcuts, Calendar month/list filtering, five-icon
+    navigation, Matrix drag/drop and keyboard fallback, About branding/credits,
+    tray close/open and single-instance activation. No automatic remote backups.
+11. When packaged builds later exist, repeat save/open/cancel and full restore
+    using host-visible and document-portal paths under Flatpak, and different
+    AppImage launch directories. Verify native grants, atomic publication, visible
+    unsupported-filesystem errors and runtime XDG paths; do not bypass sandbox
+    permissions or fall back to unsafe writes to make the test pass.
