@@ -189,7 +189,7 @@ pub async fn choose(exporting: bool) -> Result<Option<PathBuf>, String> {
         }
     } else {
         match file_chooser::open::Dialog::new()
-            .title("Restore Kara backup")
+            .title("Import Kara backup")
             .filter(filter)
             .open_file()
             .await
@@ -228,12 +228,35 @@ mod tests {
     }
     pub const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
     #[test]
+    fn old_version_two_checksums_default_to_ten_and_custom_retention_round_trips() {
+        let bytes = include_bytes!("../tests/fixtures/backup-v2-default-retention.kara-backup");
+        let mut prepared = decode(bytes).unwrap();
+        assert_eq!(
+            prepared.data.automatic_backups.as_ref().unwrap().retention,
+            10
+        );
+        let encoded = encode(prepared.data.clone()).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let new: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(original["sha256"], new["sha256"]);
+        prepared.data.automatic_backups.as_mut().unwrap().retention = 3;
+        assert_eq!(
+            decode(&encode(prepared.data.clone()).unwrap())
+                .unwrap()
+                .data,
+            prepared.data
+        );
+        prepared.data.automatic_backups.as_mut().unwrap().retention = 101;
+        assert!(encode(prepared.data).is_err());
+    }
+    #[test]
     fn version_two_backups_include_settings_and_reject_invalid_settings() {
         let mut data = decode(FIXTURE).unwrap().data;
         data.automatic_backups = Some(crate::automatic::Preferences {
             enabled: true,
             interval: "P1W".into(),
             last_success: Some(1000),
+            retention: crate::automatic::RETENTION,
         });
         let bytes = encode(data.clone()).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

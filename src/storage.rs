@@ -317,11 +317,13 @@ impl Store {
         &mut self,
         enabled: bool,
         interval: String,
+        retention: u16,
     ) -> Result<(), String> {
         let prefs = crate::automatic::Preferences {
             enabled,
             interval,
             last_success: self.automatic_backups.last_success,
+            retention,
         };
         self.commit_full(
             self.tasks.clone(),
@@ -331,6 +333,17 @@ impl Store {
             self.show_completed,
             prefs,
         )
+    }
+    pub fn apply_retention(&self) -> Result<(), String> {
+        let dir = self
+            .path
+            .parent()
+            .ok_or("Invalid storage path.")?
+            .join("automatic-backups");
+        if !dir.try_exists().map_err(|e| e.to_string())? {
+            return Ok(());
+        }
+        crate::automatic::retain(&dir, self.automatic_backups.retention)
     }
     pub fn automatic_backup(&mut self, now: i64) -> Result<(), String> {
         self.check_storage()?;
@@ -353,7 +366,7 @@ impl Store {
             self.show_completed,
             prefs,
         )?;
-        crate::automatic::retain(&dir)
+        crate::automatic::retain(&dir, self.automatic_backups.retention)
             .map_err(|e| format!("Automatic backup saved, but retention failed: {e}"))
     }
     pub fn clear_all_data(&mut self) -> Result<PathBuf, String> {
@@ -377,6 +390,25 @@ impl Store {
     /// Normal legacy migration still makes its own byte-exact original backup.
     pub fn restore_backup(&mut self, backup: &crate::backup::Prepared) -> Result<PathBuf, String> {
         self.replace_from_backup(backup, "kara-before-restore-")
+    }
+    pub fn preview_add(
+        &self,
+        backup: &crate::backup::Prepared,
+    ) -> Result<crate::import::Summary, String> {
+        crate::import::plan(self.backup_data(), backup).map(|(_, summary)| summary)
+    }
+    pub fn add_backup(
+        &mut self,
+        backup: &crate::backup::Prepared,
+    ) -> Result<(Option<PathBuf>, crate::import::Summary), String> {
+        self.check_storage()?;
+        let (data, summary) = crate::import::plan(self.backup_data(), backup)?;
+        if !summary.has_changes() {
+            return Ok((None, summary));
+        }
+        let prepared = crate::backup::decode(&crate::backup::encode(data)?)?;
+        let recovery = self.replace_from_backup(&prepared, "kara-before-import-add-")?;
+        Ok((Some(recovery), summary))
     }
     fn replace_from_backup(
         &mut self,
@@ -680,6 +712,175 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
+    fn add_import_preserves_existing_records_preferences_and_recovers_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let mut local = Task::new("Existing wins").unwrap();
+        local.id = "portable-a".into();
+        local.notes = Some("Local notes".into());
+        store.upsert(local).unwrap();
+        store
+            .set_preferences(TaskSort::Priority, true, true)
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into(), 3)
+            .unwrap();
+        let old = store.backup_data();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        let preview = store.preview_add(&incoming).unwrap();
+        assert_eq!(preview.tasks_added, 1);
+        assert_eq!(preview.tasks_skipped, 1);
+        assert_eq!(preview.lists_added, 1);
+        assert_eq!(preview.conflicts.len(), 1);
+        let (recovery, summary) = store.add_backup(&incoming).unwrap();
+        assert_eq!(summary, preview);
+        let recovery = recovery.unwrap();
+        assert!(
+            recovery
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("kara-before-import-add-")
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        assert_eq!(store.tasks()[0], old.tasks[0]);
+        assert_eq!(store.tasks().len(), 2);
+        assert_eq!(store.tasks()[1].list_id.as_deref(), Some("portable-list"));
+        assert_eq!(store.sort_mode(), old.sort_mode);
+        assert_eq!(store.sort_ascending(), old.sort_ascending);
+        assert_eq!(store.show_completed(), old.show_completed);
+        assert_eq!(
+            store.automatic_preferences(),
+            old.automatic_backups.as_ref().unwrap()
+        );
+        let added = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        let (snapshot, again) = store.add_backup(&incoming).unwrap();
+        assert!(snapshot.is_none());
+        assert_eq!(again.tasks_added, 0);
+        assert_eq!(again.tasks_skipped, 2);
+        assert_eq!(again.lists_skipped, 1);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert_eq!(store.backup_data(), added);
+        store.restore_backup(&incoming).unwrap();
+        assert_eq!(store.backup_data(), incoming.data); // Replace really replaces preferences and ID matches.
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+    }
+    #[test]
+    fn conflicting_add_is_atomic_and_replace_remains_explicitly_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        let mut list = incoming.data.lists[0].clone();
+        list.name = "Different meaning".into();
+        store.upsert_list(list).unwrap();
+        store.upsert(Task::new("Keep untouched").unwrap()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        assert!(
+            store
+                .preview_add(&incoming)
+                .unwrap_err()
+                .contains("list ID")
+        );
+        assert!(store.add_backup(&incoming).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        store.restore_backup(&incoming).unwrap();
+        assert_eq!(store.backup_data(), incoming.data);
+    }
+    #[test]
+    fn add_failures_preserve_data_and_rollback_with_a_verified_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        let old = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let denied = store.add_backup(&incoming);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(denied.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        assert!(
+            store
+                .add_backup(&incoming)
+                .unwrap_err()
+                .contains("Previous data is active again")
+        );
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let recovery = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|s| s == "kara-backup"))
+            .unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        fs::write(&path, b"external damaged data").unwrap();
+        assert!(store.add_backup(&incoming).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external damaged data");
+        assert_eq!(store.backup_data(), old);
+        fs::write(&path, &before).unwrap();
+        store.add_backup(&incoming).unwrap();
+        assert_eq!(store.tasks().len(), 3);
+        let expected = store.backup_data();
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), expected);
+    }
+    #[test]
+    fn retention_count_persists_restores_and_rejects_invalid_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .set_automatic_preferences(true, "PT6H".into(), 2)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        for count in [0, 101] {
+            assert!(
+                store
+                    .set_automatic_preferences(true, "PT6H".into(), count)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        for time in 1000..1005 {
+            store.automatic_backup(time).unwrap();
+        }
+        let archives = dir.path().join("automatic-backups");
+        assert_eq!(fs::read_dir(&archives).unwrap().count(), 3); // two files and catalogue
+        let old = store.backup_data();
+        let backup = store.backup_bytes().unwrap();
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert_eq!(store.backup_data(), old);
+        store
+            .set_automatic_preferences(false, "PT6H".into(), 1)
+            .unwrap();
+        store.apply_retention().unwrap();
+        assert_eq!(fs::read_dir(archives).unwrap().count(), 2);
+        store
+            .restore_backup(&crate::backup::decode(&backup).unwrap())
+            .unwrap();
+        assert_eq!(store.automatic_preferences().retention, 2);
+        store.clear_all_data().unwrap();
+        assert_eq!(store.automatic_preferences().retention, 10);
+    }
+    #[test]
     fn settings_schema_six_upgrade_and_invalid_intervals_preserve_original_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
@@ -694,11 +895,15 @@ mod tests {
             &crate::automatic::Preferences::default()
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(store.set_automatic_preferences(true, "P1M".into()).is_err());
+        assert!(
+            store
+                .set_automatic_preferences(true, "P1M".into(), 10)
+                .is_err()
+        );
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert!(!path.with_extension("json.pre-settings-v7.bak").exists());
         store
-            .set_automatic_preferences(true, "PT30M".into())
+            .set_automatic_preferences(true, "PT30M".into(), 10)
             .unwrap();
         assert_eq!(
             fs::read(path.with_extension("json.pre-settings-v7.bak")).unwrap(),
@@ -726,7 +931,7 @@ mod tests {
             .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
             .unwrap();
         store
-            .set_automatic_preferences(true, "PT30M".into())
+            .set_automatic_preferences(true, "PT30M".into(), 10)
             .unwrap();
         let manual = dir.path().join("manual.kara-backup");
         crate::backup::export(&manual, &store.backup_bytes().unwrap()).unwrap();
@@ -765,7 +970,7 @@ mod tests {
         let mut store = Store::open(path.clone()).unwrap();
         store.upsert(Task::new("Keep").unwrap()).unwrap();
         store
-            .set_automatic_preferences(true, "PT1S".into())
+            .set_automatic_preferences(true, "PT1S".into(), 10)
             .unwrap();
         let before = fs::read(&path).unwrap();
         let auto = dir.path().join("automatic-backups");
@@ -784,7 +989,9 @@ mod tests {
         store
             .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
             .unwrap();
-        store.set_automatic_preferences(true, "P1D".into()).unwrap();
+        store
+            .set_automatic_preferences(true, "P1D".into(), 10)
+            .unwrap();
         store.automatic_backup(1000).unwrap();
         let manual = dir.path().join("manual.kara-backup");
         let bytes = store.backup_bytes().unwrap();
@@ -866,7 +1073,7 @@ mod tests {
             .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
             .unwrap();
         store
-            .set_automatic_preferences(true, "PT30M".into())
+            .set_automatic_preferences(true, "PT30M".into(), 10)
             .unwrap();
         let old = store.backup_data();
         let before = fs::read(&path).unwrap();

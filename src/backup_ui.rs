@@ -13,6 +13,10 @@ pub struct State {
     pub auto_enabled: bool,
     pub interval: String,
     pub interval_error: Option<String>,
+    pub retention: String,
+    pub retention_error: Option<String>,
+    pub add_preview: Option<Result<crate::import::Summary, String>>,
+    pub replace_confirm: bool,
     pub clear_open: bool,
     pub clear_text: String,
 }
@@ -25,6 +29,9 @@ pub enum Action {
     Exported(Result<Option<PathBuf>, String>),
     Loaded(Result<Option<Arc<Prepared>>, String>),
     Confirm,
+    ChooseReplace,
+    AddImport,
+    Retention(String),
     AutoEnabled(bool),
     Interval(String),
     SaveAutomatic,
@@ -51,6 +58,18 @@ impl State {
                 .secondary_action(widget::button::standard("Cancel").on_press(message(Action::Close))).into());
         }
         if let Some(backup) = &self.pending {
+            if !self.replace_confirm {
+                let preview = match &self.add_preview {
+                    Some(Ok(summary)) => summary.description(),
+                    Some(Err(error)) => error.clone(),
+                    None => "Choose Add to keep existing data, or Replace to restore the complete backup.".into(),
+                };
+                return Some(widget::dialog().title("Import Backup")
+                    .body(format!("Backup: {} tasks, {} lists.\nAdd preview: {preview}{}\nA verified recovery backup is created before changes. Replace will also replace saved preferences.", backup.task_count(), backup.list_count(), self.notice.as_ref().map(|s| format!("\n{s}")).unwrap_or_default()))
+                    .primary_action(widget::button::suggested("Add").on_press_maybe((available && matches!(self.add_preview,Some(Ok(_)))).then_some(message(Action::AddImport))))
+                    .tertiary_action(widget::button::destructive("Replace").on_press_maybe(available.then_some(message(Action::ChooseReplace))))
+                    .secondary_action(widget::button::standard("Cancel").on_press(message(Action::Close))).into());
+            }
             let mut dialog = widget::dialog()
                 .title("Replace Kara data?")
                 .body(format!("Replace all {tasks} current tasks, {lists} lists and saved preferences (including automatic backup settings) with {} tasks and {} lists from this backup. This replaces data; it does not merge it. A verified recovery backup will be saved in Kara's data directory before replacement.", backup.task_count(), backup.list_count()))
@@ -70,38 +89,78 @@ impl State {
         automatic_error: Option<&str>,
     ) -> Element<'_, Message> {
         let message = |action| Message::Backup(action);
+        let spacing = cosmic::theme::spacing();
+        let valid = crate::automatic::interval_seconds(&self.interval).is_ok()
+            && crate::automatic::retention_count(&self.retention).is_ok();
+        let fields = widget::row::with_capacity(2)
+            .spacing(spacing.space_s)
+            .push(
+                widget::text_input("PT6H", &self.interval)
+                    .label("ISO 8601 interval")
+                    .on_input(|value| Message::Backup(Action::Interval(value)))
+                    .width(cosmic::iced::Length::Fill),
+            )
+            .push(
+                widget::text_input("10", &self.retention)
+                    .label("Keep last")
+                    .on_input(|value| Message::Backup(Action::Retention(value)))
+                    .width(90),
+            );
         let mut automatic = widget::settings::section()
             .title("Automatic backups")
-            .add(widget::toggler(self.auto_enabled).label(String::from("Enable automatic backups")).on_toggle_maybe(available.then_some(|value| Message::Backup(Action::AutoEnabled(value)))))
-            .add(widget::text_input("PT6H", &self.interval).label("ISO 8601 interval").on_input(|value| Message::Backup(Action::Interval(value))))
-            .add(widget::text::caption("PT30M · PT6H · P1D · P1W. Fixed weeks/days, hours, minutes and whole seconds; no months or years. Apply to save changes. Keep the latest 10 successful automatic archives."));
+            .add(
+                widget::toggler(self.auto_enabled)
+                    .label(String::from("Enable automatic backups"))
+                    .width(cosmic::iced::Length::Fill)
+                    .on_toggle_maybe(
+                        available.then_some(|value| Message::Backup(Action::AutoEnabled(value))),
+                    ),
+            )
+            .add(fields)
+            .add(widget::text::caption(
+                "e.g. PT30M, PT6H, P1D, P1W · Keep 1–100",
+            ));
         if let Some(error) = &self.interval_error {
-            automatic = automatic.add(widget::text::body(error.to_string()));
+            automatic = automatic.add(widget::text::body(error));
+        }
+        if let Some(error) = &self.retention_error {
+            automatic = automatic.add(widget::text::body(error));
         }
         let last = preferences
             .last_success
             .and_then(|t| jiff::Timestamp::from_second(t).ok())
-            .map(|t| t.to_zoned(jiff::tz::TimeZone::system()).to_string())
-            .unwrap_or_else(|| "None yet".into());
+            .map(|t| {
+                let local = t.to_zoned(jiff::tz::TimeZone::system());
+                format!("{} {:02}:{:02}", local.date(), local.hour(), local.minute())
+            })
+            .unwrap_or_else(|| "Not yet".into());
         automatic = automatic
-            .add(widget::text::body(format!(
-                "Last successful automatic backup: {last}"
-            )))
+            .add(widget::text::caption(format!("Last backup: {last}")))
             .add(
-                widget::button::suggested("Apply automatic backup settings").on_press_maybe(
-                    (available && crate::automatic::interval_seconds(&self.interval).is_ok())
-                        .then_some(message(Action::SaveAutomatic)),
-                ),
+                widget::button::suggested("Apply")
+                    .on_press_maybe((available && valid).then_some(message(Action::SaveAutomatic))),
             );
         if let Some(error) = automatic_error {
             automatic = automatic.add(widget::text::body(error.to_string()));
         }
-        let mut content = widget::column::with_capacity(6)
-            .spacing(cosmic::theme::spacing().space_s)
-            .push(widget::settings::section().title("Backup & Restore")
-                .add(widget::text::body("Export or restore tasks, lists and preferences. Choose a new .kara-backup filename; existing files are never overwritten. Backups are local and unencrypted."))
-                .add(widget::button::standard("Export backup…").on_press_maybe(available.then_some(message(Action::Export))))
-                .add(widget::button::standard("Restore backup…").on_press_maybe(available.then_some(message(Action::Restore)))))
+        let export = widget::button::standard("Export Backup")
+            .leading_icon(
+                widget::icon::from_svg_bytes(include_bytes!(
+                    "../assets/tabler/database-export.svg"
+                ))
+                .symbolic(true),
+            )
+            .on_press_maybe(available.then_some(message(Action::Export)));
+        let import = widget::button::standard("Import Backup")
+            .leading_icon(
+                widget::icon::from_svg_bytes(include_bytes!(
+                    "../assets/tabler/database-import.svg"
+                ))
+                .symbolic(true),
+            )
+            .on_press_maybe(available.then_some(message(Action::Restore)));
+        let mut content = widget::column::with_capacity(4).spacing(spacing.space_s)
+            .push(widget::settings::section().title("Backup & Restore").add(export).add(import))
             .push(automatic)
             .push(widget::settings::section().title("Clear All Data")
                 .add(widget::text::body("Reset tasks, lists and saved preferences. Backup archives will be preserved."))
@@ -143,7 +202,7 @@ mod tests {
             crate::backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup"))
                 .unwrap(),
         );
-        for (width, height) in [(400., 480.), (640., 560.), (1000., 700.)] {
+        for (width, height) in [(300., 480.), (400., 480.), (640., 560.), (1000., 700.)] {
             for state in [
                 State {
                     open: true,
@@ -169,6 +228,18 @@ mod tests {
                     open: true,
                     interval: "bad interval".into(),
                     interval_error: Some("Invalid duration".into()),
+                    ..State::default()
+                },
+                State {
+                    open: true,
+                    pending: Some(prepared.clone()),
+                    replace_confirm: true,
+                    ..State::default()
+                },
+                State {
+                    open: true,
+                    pending: Some(prepared.clone()),
+                    add_preview: Some(Err("Ambiguous list ID. ".repeat(40))),
                     ..State::default()
                 },
                 State {

@@ -600,25 +600,36 @@ impl cosmic::Application for AppModel {
         ))
     }
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        // libcosmic inserts its native navigation toggle immediately before this.
+        // Native navigation toggle is inserted immediately before header_start.
+        let button = widget::button::icon(
+            icon::from_svg_bytes(include_bytes!("../assets/tabler/settings.svg")).symbolic(true),
+        )
+        .icon_size(16)
+        .width(32)
+        .height(32)
+        .padding(8)
+        .class(cosmic::theme::Button::Icon)
+        .selected(self.backup.open)
+        .name("Settings")
+        .on_press_maybe(
+            (self.editor.is_none()
+                && self.list_editor.is_none()
+                && self.delete_id.is_none()
+                && self.delete_list_id.is_none()
+                && !self.backup.busy)
+                .then_some(Message::Backup(if self.backup.open {
+                    backup_ui::Action::Close
+                } else {
+                    backup_ui::Action::Open
+                })),
+        );
         vec![
-            widget::button::icon(
-                icon::from_svg_bytes(include_bytes!("../assets/tabler/settings.svg"))
-                    .symbolic(true),
+            widget::tooltip(
+                button,
+                widget::text::body("Settings"),
+                widget::tooltip::Position::Bottom,
             )
-            .padding([8, 16])
-            .class(cosmic::theme::Button::Icon)
-            .selected(self.backup.open)
-            .name("Settings")
-            .tooltip("Settings")
-            .on_press_maybe(
-                (self.editor.is_none()
-                    && self.list_editor.is_none()
-                    && self.delete_id.is_none()
-                    && self.delete_list_id.is_none()
-                    && !self.backup.open)
-                    .then_some(Message::Backup(backup_ui::Action::Open)),
-            )
+            .gap(8)
             .into(),
         ]
     }
@@ -630,7 +641,7 @@ impl cosmic::Application for AppModel {
                 .height(Length::Fixed(32.0))
                 .padding(8)
                 .class(cosmic::theme::Button::Icon)
-                .selected(self.core.window.show_context)
+                .selected(self.core.window.show_context && !self.backup.open)
                 .name("About Kara")
                 .tooltip("About Kara")
                 .on_press(Message::About)
@@ -1925,6 +1936,8 @@ impl AppModel {
             self.backup.auto_enabled = prefs.enabled;
             self.backup.interval = prefs.interval.clone();
             self.backup.interval_error = None;
+            self.backup.retention = prefs.retention.to_string();
+            self.backup.retention_error = None;
         }
     }
     fn refresh_after_replacement(&mut self) {
@@ -2060,7 +2073,16 @@ impl AppModel {
             Action::Loaded(result) if self.backup.busy && self.backup.open => {
                 self.backup.busy = false;
                 match result {
-                    Ok(backup) => self.backup.pending = backup,
+                    Ok(backup) => {
+                        self.backup.add_preview = backup.as_ref().map(|b| {
+                            self.store
+                                .as_ref()
+                                .ok_or_else(|| "Task storage unavailable.".to_string())
+                                .and_then(|s| s.preview_add(b))
+                        });
+                        self.backup.replace_confirm = false;
+                        self.backup.pending = backup;
+                    }
                     Err(error) => self.backup.notice = Some(error),
                 }
             }
@@ -2071,18 +2093,36 @@ impl AppModel {
                 self.backup.interval_error = automatic::interval_seconds(&value).err();
                 self.backup.interval = value;
             }
+            Action::Retention(value) if self.backup.open && !self.backup.busy => {
+                self.backup.retention_error = automatic::retention_count(&value).err();
+                self.backup.retention = value;
+            }
             Action::SaveAutomatic if self.backup.open && self.backup_available() => {
                 if let Err(error) = automatic::interval_seconds(&self.backup.interval) {
                     self.backup.interval_error = Some(error);
+                } else if let Err(error) = automatic::retention_count(&self.backup.retention) {
+                    self.backup.retention_error = Some(error);
                 } else if let Some(store) = &mut self.store {
                     match store.set_automatic_preferences(
                         self.backup.auto_enabled,
                         self.backup.interval.clone(),
+                        automatic::retention_count(&self.backup.retention)
+                            .expect("validated retention"),
                     ) {
                         Ok(()) => {
                             self.auto_scheduler = automatic::Scheduler::default();
                             self.auto_error = None;
-                            self.backup.notice = Some("Automatic backup settings saved. Backups run while Kara is running; none run while fully quit.".into());
+                            match store.apply_retention() {
+                                Ok(()) => {
+                                    self.backup.notice =
+                                        Some("Automatic backup settings saved.".into())
+                                }
+                                Err(error) => {
+                                    self.auto_error =
+                                        Some(format!("Retention cleanup failed: {error}"));
+                                    self.backup.notice = Some("Settings saved; retention cleanup could not complete. Archives preserved.".into());
+                                }
+                            }
                         }
                         Err(error) => self.backup.notice = Some(error),
                     }
@@ -2112,7 +2152,42 @@ impl AppModel {
                 self.refresh_after_replacement();
                 return self.update_title();
             }
-            Action::Confirm if self.backup.open && self.backup_available() => {
+            Action::ChooseReplace
+                if self.backup.open && self.backup.pending.is_some() && self.backup_available() =>
+            {
+                self.backup.replace_confirm = true
+            }
+            Action::AddImport
+                if self.backup.open && self.backup_available() && !self.backup.replace_confirm =>
+            {
+                if let Some(prepared) = &self.backup.pending {
+                    match self.store.as_mut().unwrap().add_backup(prepared) {
+                        Ok((recovery, summary)) => {
+                            self.backup.pending = None;
+                            self.backup.add_preview = None;
+                            self.backup.notice = Some(format!(
+                                "{}{}",
+                                summary.description(),
+                                recovery
+                                    .map(|p| format!("\nRecovery backup: {}", p.display()))
+                                    .unwrap_or_else(|| " No changes were needed.".into())
+                            ));
+                            // Add keeps current preferences, scheduler and navigation context.
+                            self.rebuild_nav();
+                            return self.update_title();
+                        }
+                        Err(error) => {
+                            let store = self.store.as_ref().unwrap();
+                            self.backup.add_preview = Some(store.preview_add(prepared));
+                            self.storage_error = store.check_storage().err();
+                            self.backup.notice = Some(format!("Add import failed: {error}"));
+                        }
+                    }
+                }
+            }
+            Action::Confirm
+                if self.backup.open && self.backup_available() && self.backup.replace_confirm =>
+            {
                 if let Some(prepared) = self.backup.pending.take() {
                     let store = self.store.as_mut().unwrap();
                     let result = store.restore_backup(&prepared);
@@ -2802,6 +2877,145 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn settings_header_matches_about_glyph_and_button_dimensions() {
+        use cosmic::iced::{
+            Size,
+            advanced::{layout::Limits, renderer::Headless, widget::Tree},
+        };
+        let app = sidebar_fixture();
+        let renderer = cosmic::Renderer::new(cosmic::font::default(), 14.into(), Some("tiny-skia"))
+            .await
+            .unwrap();
+        for mut element in [app.header_start().remove(0), app.header_end().remove(0)] {
+            let mut tree = Tree::new(&element);
+            let layout = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(120., 60.)),
+            );
+            assert_eq!(layout.size(), Size::new(32., 32.));
+            fn glyph(node: &cosmic::iced::advanced::layout::Node) -> bool {
+                node.size() == Size::new(16., 16.) || node.children().iter().any(glyph)
+            }
+            assert!(glyph(&layout));
+        }
+    }
+    #[test]
+    fn add_choice_preserves_context_preferences_and_does_not_duplicate_on_repeat() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(KaraTask::new("Existing").unwrap()).unwrap();
+        store
+            .set_preferences(tasks::TaskSort::Priority, true, true)
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT6H".into(), 4)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        app.page = Page::Calendar;
+        app.rebuild_nav();
+        app.task_sort = tasks::TaskSort::Priority;
+        app.auto_scheduler.finished(21600, 1000, true);
+        let prepared = std::sync::Arc::new(
+            backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
+        );
+        let _ = app.update(Message::Backup(Action::Open));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared.clone())))));
+        assert_eq!(
+            app.backup
+                .add_preview
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .tasks_added,
+            2
+        );
+        let _ = app.update(Message::Backup(Action::Confirm)); // Replace requires choosing its mode first.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = app.update(Message::Backup(Action::AddImport));
+        assert!(app.backup.pending.is_none());
+        assert_eq!(app.page, Page::Calendar);
+        assert_eq!(app.task_sort, tasks::TaskSort::Priority);
+        assert!(
+            app.backup
+                .notice
+                .as_ref()
+                .unwrap()
+                .contains("Tasks: 2 added, 0 skipped")
+        );
+        let store = app.store.as_ref().unwrap();
+        assert_eq!(store.tasks().len(), 3);
+        assert_eq!(store.automatic_preferences().retention, 4);
+        assert!(
+            !app.auto_scheduler
+                .due(store.automatic_preferences(), 0, 1001)
+                .unwrap()
+        );
+        let added = std::fs::read(&path).unwrap();
+        let count = std::fs::read_dir(dir.path()).unwrap().count();
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared)))));
+        let _ = app.update(Message::Backup(Action::AddImport));
+        assert!(
+            app.backup
+                .notice
+                .as_ref()
+                .unwrap()
+                .contains("Tasks: 0 added, 2 skipped")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), added);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), count);
+    }
+    #[test]
+    fn blocked_add_and_cancel_are_safe_and_replace_requires_a_second_confirmation() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let prepared = std::sync::Arc::new(
+            backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
+        );
+        let mut list = prepared.data.lists[0].clone();
+        list.name = "Different list".into();
+        store.upsert_list(list).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let count = std::fs::read_dir(dir.path()).unwrap().count();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        let _ = app.update(Message::Backup(Action::Open));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared.clone())))));
+        assert!(app.backup.add_preview.as_ref().unwrap().is_err());
+        let _ = app.update(Message::Backup(Action::AddImport));
+        assert!(
+            app.backup
+                .notice
+                .as_ref()
+                .unwrap()
+                .contains("Add import failed")
+        );
+        assert!(app.dialog().is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), count);
+        let _ = app.update(Message::Backup(Action::Close));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = app.update(Message::Backup(Action::Open));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared)))));
+        let _ = app.update(Message::Backup(Action::ChooseReplace));
+        assert!(app.backup.replace_confirm);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = app.update(Message::Backup(Action::Confirm));
+        assert_eq!(app.store.as_ref().unwrap().tasks().len(), 2);
+        assert_eq!(app.store.as_ref().unwrap().lists()[0].name, "Work");
+    }
     #[test]
     fn settings_header_and_interval_validation_preserve_saved_preferences() {
         use backup_ui::Action;
@@ -2835,6 +3049,25 @@ mod tests {
         let _ = app.update(Message::Backup(Action::Close));
         let _ = app.update(Message::Backup(Action::Open));
         assert_eq!(app.backup.interval, "PT30M");
+        for value in ["0", "101", "bad"] {
+            let _ = app.update(Message::Backup(Action::Retention(value.into())));
+            let _ = app.update(Message::Backup(Action::SaveAutomatic));
+            assert!(app.backup.retention_error.is_some());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        let _ = app.update(Message::Backup(Action::Retention("3".into())));
+        let _ = app.update(Message::Backup(Action::SaveAutomatic));
+        assert_eq!(
+            app.store
+                .as_ref()
+                .unwrap()
+                .automatic_preferences()
+                .retention,
+            3
+        );
+        let _ = app.update(Message::Backup(Action::Close));
+        let _ = app.update(Message::Backup(Action::Open));
+        assert_eq!(app.backup.retention, "3");
     }
     #[test]
     fn typed_clear_confirmation_cancel_and_stale_editor_messages_are_safe() {
@@ -2847,7 +3080,9 @@ mod tests {
                 &backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
             )
             .unwrap();
-        store.set_automatic_preferences(true, "P1D".into()).unwrap();
+        store
+            .set_automatic_preferences(true, "P1D".into(), 10)
+            .unwrap();
         let before = std::fs::read(&path).unwrap();
         let count = std::fs::read_dir(dir.path()).unwrap().count();
         let mut app = sidebar_fixture();
@@ -2885,7 +3120,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path().join("tasks.json")).unwrap();
         store
-            .set_automatic_preferences(true, "PT30M".into())
+            .set_automatic_preferences(true, "PT30M".into(), 10)
             .unwrap();
         let mut app = sidebar_fixture();
         app.store = Some(store);
@@ -2934,6 +3169,7 @@ mod tests {
         let _ = app.update(Message::Backup(Action::Open));
         assert!(app.backup.open);
         assert!(app.can_write());
+        let _ = app.update(Message::Backup(Action::ChooseReplace));
         let _ = app.update(Message::Backup(Action::Confirm));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let _ = app.update(Message::Add);
@@ -2958,6 +3194,7 @@ mod tests {
         let _ = app.update(Message::Backup(Action::Open));
         app.backup.busy = true;
         let _ = app.update(Message::Backup(Action::Loaded(Ok(Some(prepared.clone())))));
+        let _ = app.update(Message::Backup(Action::ChooseReplace));
         let _ = app.update(Message::Backup(Action::Confirm));
         assert!(app.backup.pending.is_none());
         assert!(
@@ -2999,6 +3236,7 @@ mod tests {
                 .iter()
                 .any(|id| app.nav.data::<Page>(id) == Some(&Page::List("portable-list".into())))
         );
+        let _ = app.update(Message::Backup(Action::ChooseReplace));
         let _ = app.update(Message::Backup(Action::Confirm));
         assert_eq!(app.store.as_ref().unwrap().tasks(), prepared.data.tasks);
     }
@@ -3030,6 +3268,7 @@ mod tests {
         )));
         assert_eq!(app.backup.notice.as_deref(), Some("Invalid backup"));
         assert!(app.backup.pending.is_none());
+        let _ = app.update(Message::Backup(Action::ChooseReplace));
         let _ = app.update(Message::Backup(Action::Confirm));
         assert!(app.store.as_ref().unwrap().tasks().is_empty());
         app.backup.busy = true;

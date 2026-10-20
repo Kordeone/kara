@@ -8,13 +8,41 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const RETENTION: usize = 10;
+pub const RETENTION: u16 = 10;
+fn default_retention() -> u16 {
+    RETENTION
+}
+fn is_default_retention(value: &u16) -> bool {
+    *value == RETENTION
+}
+pub fn retention_count(input: &str) -> Result<u16, String> {
+    if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Keep last must be a whole number from 1 to 100.".into());
+    }
+    let value = input
+        .parse::<u16>()
+        .map_err(|_| "Keep last must be a whole number from 1 to 100.")?;
+    validate_retention(value)?;
+    Ok(value)
+}
+fn validate_retention(value: u16) -> Result<(), String> {
+    if !(1..=100).contains(&value) {
+        return Err("Keep last must be from 1 to 100.".into());
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preferences {
     pub enabled: bool,
     pub interval: String,
     pub last_success: Option<i64>,
+    // Omitting the default preserves checksums of existing version-2 backups.
+    #[serde(
+        default = "default_retention",
+        skip_serializing_if = "is_default_retention"
+    )]
+    pub retention: u16,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -22,12 +50,14 @@ impl Default for Preferences {
             enabled: false,
             interval: "PT6H".into(),
             last_success: None,
+            retention: RETENTION,
         }
     }
 }
 impl Preferences {
     pub fn validate(&self) -> Result<(), String> {
         interval_seconds(&self.interval)?;
+        validate_retention(self.retention)?;
         if self
             .last_success
             .is_some_and(|t| t < 0 || jiff::Timestamp::from_second(t).is_err())
@@ -244,9 +274,17 @@ pub fn publish(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     save_catalogue(dir, &index, expected.as_deref())?;
     Ok(path)
 }
-pub fn retain(dir: &Path) -> Result<(), String> {
+pub fn retain(dir: &Path, keep: u16) -> Result<(), String> {
+    validate_retention(keep)?;
+    if !fs::symlink_metadata(dir)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_dir()
+    {
+        return Err("Automatic backup directory is not a real directory; files preserved.".into());
+    }
     let (mut index, expected) = catalogue(dir)?;
-    let excess = index.files.len().saturating_sub(RETENTION);
+    let excess = index.files.len().saturating_sub(usize::from(keep));
     // Only catalogue-owned, regular, valid backups are candidates. Manual files,
     // recovery files, unknown files, symlinks and damaged archives are preserved.
     for archive in &index.files[..excess] {
@@ -280,6 +318,31 @@ pub fn retain(dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retention_count_is_bounded_and_custom_cleanup_preserves_unowned_files() {
+        for value in ["1", "10", "100"] {
+            assert!(retention_count(value).is_ok());
+        }
+        for value in ["", "0", "101", "-1", "+1", "1.5", " 2", "2 ", "65536"] {
+            assert!(retention_count(value).is_err(), "{value}");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let bytes = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
+        for _ in 0..6 {
+            publish(dir, bytes).unwrap();
+        }
+        let manual = dir.join("manual.kara-backup");
+        crate::backup::export(&manual, bytes).unwrap();
+        let recovery = dir.join("kara-before-clear-protected.kara-backup");
+        crate::backup::export(&recovery, bytes).unwrap();
+        assert!(retain(dir, 0).is_err());
+        assert_eq!(catalogue(dir).unwrap().0.files.len(), 6);
+        retain(dir, 2).unwrap();
+        assert_eq!(catalogue(dir).unwrap().0.files.len(), 2);
+        assert_eq!(fs::read(&manual).unwrap(), bytes);
+        assert_eq!(fs::read(&recovery).unwrap(), bytes);
+    }
     #[test]
     fn iso_intervals_accept_fixed_units_and_reject_invalid_or_ambiguous_values() {
         for (text, seconds) in [
@@ -320,6 +383,7 @@ mod tests {
             enabled: true,
             interval: "PT30M".into(),
             last_success: last,
+            retention: RETENTION,
         }
     }
     #[test]
@@ -369,7 +433,7 @@ mod tests {
         let mut owned = Vec::new();
         for _ in 0..12 {
             owned.push(publish(&dir, bytes).unwrap());
-            retain(&dir).unwrap();
+            retain(&dir, RETENTION).unwrap();
         }
         assert!(!owned[0].exists() && !owned[1].exists());
         assert!(owned[2..].iter().all(|p| p.exists()));
@@ -380,9 +444,12 @@ mod tests {
         let recovery = dir.join("kara-before-clear-protected.kara-backup");
         crate::backup::export(&recovery, bytes).unwrap();
         publish(&dir, bytes).unwrap();
-        retain(&dir).unwrap();
+        retain(&dir, RETENTION).unwrap();
         assert!(manual.exists() && looks_owned.exists() && recovery.exists());
-        assert_eq!(catalogue(&dir).unwrap().0.files.len(), RETENTION);
+        assert_eq!(
+            catalogue(&dir).unwrap().0.files.len(),
+            usize::from(RETENTION)
+        );
         assert!(
             fs::read_dir(&dir).unwrap().all(|e| !e
                 .unwrap()
@@ -408,7 +475,7 @@ mod tests {
         assert_eq!(fs::read(&archive).unwrap(), bytes);
         fs::write(dir.join("index.json"), b"damaged").unwrap();
         assert!(publish(&dir, bytes).is_err());
-        assert!(retain(&dir).is_err());
+        assert!(retain(&dir, RETENTION).is_err());
         assert_eq!(fs::read(&archive).unwrap(), bytes);
         let link = temp.path().join("linked");
         symlink(&dir, &link).unwrap();
@@ -425,7 +492,7 @@ mod tests {
         }
         fs::remove_file(&oldest).unwrap();
         crate::backup::export(&oldest, bytes).unwrap(); // same content, different file identity
-        assert!(retain(dir).is_err());
+        assert!(retain(dir, RETENTION).is_err());
         assert_eq!(fs::read(&oldest).unwrap(), bytes);
         assert_eq!(catalogue(dir).unwrap().0.files.len(), 11);
     }
@@ -439,7 +506,7 @@ mod tests {
             publish(dir, bytes).unwrap();
         }
         fs::write(&oldest, b"damaged archive").unwrap();
-        assert!(retain(dir).is_err());
+        assert!(retain(dir, RETENTION).is_err());
         assert_eq!(fs::read(&oldest).unwrap(), b"damaged archive");
         assert_eq!(catalogue(dir).unwrap().0.files.len(), 11);
     }

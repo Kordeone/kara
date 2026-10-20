@@ -8,6 +8,7 @@ mod calendar_month;
 mod calendar_view;
 mod date_entry;
 mod i18n;
+mod import;
 mod lifecycle;
 mod matrix;
 mod matrix_clip;

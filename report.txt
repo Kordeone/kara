@@ -1,115 +1,88 @@
-KARA — Stage 2 Extension: Settings, Automatic Backup and Clear All Data
+KARA — Settings refinement and Add/Replace backup import
 
-Scope and Git
-- Extended clean feat/backup-restore at 9a353c5, exclusively in
-  /home/rapper/projects/kara-backup-restore. Main remains at accepted Calendar
-  2ec9ed3. No merges, pushes, installations, packaging or system changes.
-- Rescue checkout, backups and other worktrees preserved. Accepted Tasks/list
-  dialogs, Calendar, Matrix, branding, application identity and tray lifecycle
-  remain intact. Existing manual export/restore protections are retained.
+Scope
+- Feature worktree: /home/rapper/projects/kara-backup-restore
+- Branch: feat/backup-restore; starting commit: 790cb39.
+- No merge, push, dependency changes, installation or other worktree edits.
+- Headless Debian validation only; COSMIC visual acceptance remains pending.
 
-Settings
-- Bundled Tabler settings.svg is in header_start(), which locked libcosmic places
-  immediately RIGHT of the native sidebar toggle. It uses the toggle's native
-  icon sizing/padding, theme styling, accessible name and tooltip.
-- A native COSMIC Settings drawer shares the existing drawer slot with About.
-  Opening it preserves the current module/context. Module navigation and normal
-  task editing remain available; task dialogs correctly overlay the drawer.
-- Backup & Restore contains the existing native portal export/open actions.
-  Restore and Clear use separate native modal confirmations. Busy file operations
-  cannot be overlapped or dismissed prematurely. Status/errors appear at the top.
-- Automatic backups has an enable toggle, editable ISO duration, inline error,
-  explicit Apply button, last successful timestamp in local time and retention
-  information. Edits are staged until Apply. Invalid input is never substituted
-  for a saved interval; failed saves retain the existing persisted preferences.
+Implementation
+- Backup & Restore now has compact Export Backup and Import Backup buttons with
+  bundled Tabler icons. Existing native portal save/open behavior is retained.
+- Settings uses bundled settings.svg, a neutral native 32x32 button with a 16px
+  glyph matching About, and an explicit bottom tooltip with an 8px gap. Its
+  accessible name, focus behavior and drawer toggle are preserved.
+- Automatic settings use an aligned toggle, ISO interval and Keep last fields,
+  brief examples, inline validation, compact local last-backup time and one Apply.
+- Keep last defaults to 10 and accepts integers 1–100. Invalid input remains
+  visible without changing persisted settings. Apply saves preferences atomically
+  and applies retention; subsequent automatic backups use the saved count.
 
-Automatic backup behavior and locations
-- Disabled by default; default interval PT6H. Supported durations are positive
-  ISO 8601 fixed weeks/days/hours/minutes/whole seconds, including PT30M, PT6H,
-  P1D, P1W and PT1S. One day means 24 elapsed hours; one week means seven days.
-  Months, years, zero/negative values, subsecond intervals and malformed input
-  are rejected visibly rather than assigned an ambiguous schedule.
-- Data root: $XDG_DATA_HOME/io.github.kordeone.Kara/ (or existing
-  $HOME/.local/share/io.github.kordeone.Kara/ fallback).
-  Live document: tasks.json; lock: tasks.lock.
-  Automatic archives: automatic-backups/auto-<random-id>.kara-backup.
-  Ownership/creation-order catalogue: automatic-backups/index.json (versioned JSON).
-- A process subscription checks once per second regardless of window visibility.
-  Linux CLOCK_BOOTTIME includes suspend and is immune to wall-clock adjustments.
-  Persisted last success determines restart catch-up. First enable without any
-  success, overdue restart, or a future last-success time on restart triggers
-  at most one immediate catch-up; the next interval starts from that attempt's
-  successful completion, without replaying missed periods.
-- Running deadlines use boottime; forward/backward wall jumps cannot create extra
-  backups or stall them. After a failed attempt retry is delayed at
-  least 60 seconds. Last success changes only after a verified archive and Store
-  checkpoint. Retention errors do not trigger repeated catch-up snapshots.
-- Runs while Kara is hidden in the tray, and with ordinary Settings open. Defers
-  during manual file operations and Restore/Clear confirmation. Store operations
-  are serialized by the application event loop and existing storage lock; there
-  are no concurrent snapshots. No service, daemon or autostart runs after Quit.
-- Uses the same SHA-256-verified portable JSON format as manual backups. Archives
-  stage privately, sync and publish atomically without clobbering existing paths;
-  file contents are verified before catalogue/checkpoint publication. Failed
-  writes do not retire previous good archives or silently advance last success.
-- Retains the latest 10 successful catalogue-owned archives in creation order,
-  independent of filesystem timestamps or wall-clock changes. Only entries with
-  matching recorded file identity (device/inode/change time), regular file type
-  and valid backup contents can be removed. A manual export reusing a removed
-  archive's name is preserved. Unknown files, manual exports, symlinks, recovery
-  snapshots and backups outside this directory are never retention targets.
+Import modes and safeguards
+- A validated selected backup opens Add / Replace / Cancel with a merge preview.
+- Add preserves current preferences and existing records. Missing IDs are added;
+  matching task IDs are skipped, with differing records reported as conflicts
+  resolved in favor of existing data. Counts are shown before and after import.
+- Existing list IDs with different case-insensitive names, or different IDs with
+  the same case-insensitive name, block the entire Add. No task is mapped by list
+  name or silently attached to a different list. Matching names/IDs retain the
+  existing pin/name values and report differences. Invalid references are rejected.
+- Add recomputes and validates its complete plan before writing. Existing task
+  IDs, properties and relative Matrix ordering are preserved. Imported peers keep
+  their relative Matrix order and append within the appropriate completion groups.
+  Existing completed rank numbers can normalize when active tasks are inserted;
+  Tasks document order and its sorting preferences are not changed.
+- Add retains the current navigation context and automatic scheduler deadline.
+- Replace has a second explicit destructive confirmation and retains complete
+  replacement of tasks, lists and persisted preferences, including automatic
+  settings. Cancel makes no document changes.
+- Both mutating modes reuse the checked atomic replacement transaction: stage,
+  sync, read/verify and publish a complete recovery snapshot BEFORE live data is
+  replaced. Failed recovery prevents import; post-publication sync failure uses
+  the existing checked rollback path. External edits/storage corruption block
+  changes rather than overwriting an unrecognized document.
+- Add recovery: kara-before-import-add-<random>.kara-backup in Kara's data root.
+  Replace recovery: kara-before-restore-<random>.kara-backup.
+  A repeated/no-change Add does not write data or create an unnecessary snapshot.
+  To undo an import, use Replace with its pre-import recovery file.
 
-Clear All Data and recovery
-- Separate destructive section. Explains replacement of tasks, lists and persisted
-  preferences, including automatic settings. Exact typed CLEAR and a further
-  button press are required. Cancel/Escape makes no destructive data changes.
-- Uses the existing checked replacement transaction. Before any destructive write
-  a complete recovery backup is staged, synced, read back and validated, then
-  atomically published and directory-synced. Recovery failure aborts the clear.
-- Recovery files are protected in the data root:
-  kara-before-clear-<random>.kara-backup
-  Existing Restore recovery files remain kara-before-restore-<random>.kara-backup.
-- Clears tasks/lists and resets sorting/direction/Show Completed and automatic
-  preferences to defaults in ONE atomic task document. It never recursively
-  deletes directories or removes archive/export/recovery/migration files.
-- UI immediately reflects the Store's actual state, returns to Inbox, resets
-  stale task/list editors, drag state, selected scopes, Calendar selection and
-  scheduler. Automatic backups become disabled, interval PT6H, last success None.
-  Stale editor messages cannot save pre-clear tasks back into the empty Store.
-- Atomic failures before publication preserve live data; post-publication sync
-  failure attempts checked atomic rollback. Recovery remains available if rollback
-  or storage durability fails. Restoring the recovery file recovers all task/list
-  properties and saved preferences, including the former automatic settings.
+Persistence, automatic backups and Clear All Data
+- Storage remains schema-7 JSON; portable backups remain version 2/schema 7.
+  Version-1/schema-6 backups and existing schema migrations remain supported.
+- Retention is an optional automatic preference, defaulting to 10. Serialization
+  omits that default to preserve checksums of existing version-2 backups. An
+  independently generated legacy version-2 fixture verifies compatibility.
+  Older binaries may reject the new nondefault retention field; do not downgrade
+  without an appropriate older backup. No migration safeguards were changed.
+- Data root: $XDG_DATA_HOME/io.github.kordeone.Kara/ or the existing
+  $HOME/.local/share/io.github.kordeone.Kara/ fallback; live document tasks.json.
+- Automatic archives: automatic-backups/auto-<random>.kara-backup, with an owned
+  index.json catalogue. Retention targets only catalogue-owned regular files
+  with matching recorded identity and valid backup contents. Symlinked directories,
+  replaced/damaged archives and invalid catalogues cause visible failures.
+- Manual exports, unknown files, protected recovery snapshots and migration
+  backups are never retention targets. No recursive or broad file cleanup occurs.
+- Scheduling code and semantics remain unchanged: while running, including tray
+  hiding; boottime deadlines handle suspend and wall-clock changes; restart
+  coalesces overdue periods to at most one backup; no daemon after Quit.
+- Clear remains separately confirmed with exact typed CLEAR, verified recovery
+  before destructive writes, atomic reset/rollback and stale-editor protection.
+  It resets retention to 10, automatic backups disabled/PT6H, while preserving
+  manual exports, automatic archives and recovery snapshots.
 
-Compatibility
-- Storage stays JSON, now schema 7 for atomic automatic-preference persistence.
-  Schemas 1–6 still load without a write. First write from schema 6 preserves a
-  byte-exact verified tasks.json.pre-settings-v7.bak. Existing older migration
-  backup names/safeguards remain; conflicts block the write rather than clobber.
-- Portable writer uses backup version 2 / data schema 7, including automatic
-  preferences. Version-1/schema-6 backups still validate their ORIGINAL checksum
-  and upgrade only in memory, defaulting automatic backups to disabled.
-- No new serialization format/database. Backup catalogue is local ownership
-  metadata, not portable data; foreign archive paths/identities are not imported.
-- Older Kara binaries cannot read new schema-7 documents/version-2 exports. The
-  original migration backup and version-1 imports remain available for recovery.
-
-Files changed
-- src/automatic.rs: duration validation, preferences, boottime scheduler,
-  archive ownership/publication/retention and deterministic regression tests.
-- src/backup_ui.rs: native Settings content, interval form and Clear confirmation.
-- src/app.rs: header/drawer integration, runtime scheduling, errors, settings and
-  Clear dispatch, shared-state refresh and UI/controller regressions.
-- src/storage.rs: schema-7 compatibility, atomic settings/checkpoints, protected
-  recovery publication, backup-before-clear and isolated failure/recovery tests.
-- src/backup.rs: version-2 preferences and version-1 checksum compatibility.
-- src/main.rs: registers automatic module.
-- Cargo.toml/Cargo.lock: names already-locked libc 0.2.191 for CLOCK_BOOTTIME;
-  lockfile changes only Kara's dependency list. No dependency version upgrades.
-- report.txt: this consolidated extension report.
+Changed files
+- src/app.rs: Settings header, retention handling, import dispatch/controller tests.
+- src/backup_ui.rs: compact settings form and Add/Replace/Cancel confirmation.
+- src/automatic.rs: bounded retention preference and safe configurable cleanup.
+- src/import.rs: conservative merge planner and focused tests (new).
+- src/storage.rs: Add transaction, configured retention and storage regression tests.
+- src/backup.rs: Import chooser wording and backup compatibility tests.
+- src/main.rs: registers import module.
+- tests/fixtures/backup-v2-default-retention.kara-backup: independent fixture (new).
+- report.txt: consolidated report. Cargo.toml and Cargo.lock unchanged.
 
 Validation — headless Debian
-Required final commands:
+Commands, run with the existing external build cache:
   cargo fmt --check
   cargo check --locked
   cargo clippy --locked --all-targets -- -D warnings
@@ -118,78 +91,71 @@ Required final commands:
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
     -- --ignored --exact --nocapture
-Build cache: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
-- Final results: all commands passed; 143 regular tests, zero failures; 1 normally
-  ignored private D-Bus regression passed separately (144 tests exercised).
-- 17 added tests cover valid/invalid durations; suspend, backward/forward clocks,
-  restart catch-up, retry and disable; owned retention and manual replacements;
-  corrupt/denied writes; preference persistence; old JSON and portable backup
-  compatibility; Clear recovery/rollback/cancellation and stale-edit protection;
-  temporary-XDG sibling/external-file preservation; hidden-window scheduling
-  and manual-operation exclusion. Existing layout coverage includes Settings
-  content, long errors, invalid intervals and Clear/Restore confirmations.
-- All destructive tests use isolated temporary Store/XDG roots. No actual user
-  task data was loaded or changed. No COSMIC graphical verification on Debian.
+Cache: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
+- Results: all commands passed. 157 regular tests passed, zero failed; the one
+  normally ignored private D-Bus test passed separately: 158 tests exercised.
+- 14 new tests cover conservative/nonoverlapping imports, duplicate prevention,
+  ID/list conflicts, Matrix peer ordering, preference preservation, repeated Add,
+  restart persistence, recovery snapshots, denied writes and rollback, custom
+  retention bounds/ownership, legacy version-2 checksum compatibility, import
+  confirmations/cancellation, scheduler preservation and measured header geometry.
+- Existing tests extended for retention form validation/persistence and native
+  drawer/dialog layouts at 300, 400, 640 and 1000px viewport widths.
+- Existing task/list, Calendar, Matrix, migration, Clear and tray regressions pass.
+  Destructive tests use isolated temporary Store/XDG paths, never actual user data.
 
-Limitations and operational notes
-- COSMIC graphical acceptance remains pending. No Flatpak/AppImage testing or
-  packaging changes. Portal export/import needs the desktop file chooser backend.
-- Keep the existing 64 MiB portable backup limit. Backups are plaintext and not
-  authenticated/encrypted; SHA-256 checks accidental damage, not provenance.
-- Export/restore/clear require a loaded Store without unresolved storage errors.
-  Damaged/unrecognized live files remain protected, with no empty-default repair.
-- Corrupt catalogues, replaced/damaged archives, denied deletes or sync errors
-  stop retention visibly and may leave MORE than 10 files. Uncatalogued files
-  left by an interrupted publication are preserved, never swept automatically.
-  Copying/chmod-ing managed archives can invalidate ownership identity; those
-  files are protected rather than silently deleted. No automatic backup cleanup
-  is applied to manual exports, recovery snapshots or legacy migration backups.
-- Local archive/checkpoint I/O is serialized with Store writes and may briefly
-  block UI updates on slow storage/large documents. There is no task-data race
-  or parallel automatic worker. Power loss is not physically tested; protection
-  relies on staging, sync, atomic replacement and preserved recovery files.
+Known limitations
+- No COSMIC graphical, Flatpak or AppImage verification on Debian.
+- Conservative list conflicts require resolving names/IDs or explicitly choosing
+  Replace; the importer never guesses list identity. Only the first eight resolved
+  ID-conflict descriptions are displayed, with a remaining-count summary.
+- Existing 64 MiB backup limit remains. Files are plaintext, not encrypted or
+  authenticated; SHA-256 detects accidental corruption, not trusted provenance.
+- Retention errors can leave more than the selected count. Uncatalogued archives
+  left by interrupted publication are preserved; no unsafe sweeping is performed.
+- File I/O remains serialized on the existing Store path and can briefly block
+  UI updates for large documents/slow disks. Physical power-loss testing was not
+  performed; atomic publication, synchronization and recovery remain the safeguards.
+- Future Flatpak packaging must verify document-portal grants permit staging and
+  atomic publication. Unsupported grants must fail visibly without an unsafe
+  in-place fallback. Automatic/recovery files use runtime XDG sandbox data paths;
+  archive paths/ownership catalogues are not imported. No packaging changes made.
 
 CachyOS acceptance checklist — isolated data only
-1. Transfer FEATURE source using Samba. Fully Quit old Kara through its tray.
-   In the transferred source directory:
+1. Transfer FEATURE source via Samba; fully Quit the old Kara process via tray.
+   From the transferred source:
      cargo build --locked
-     KARA_SETTINGS_TEST_DATA="$(mktemp -d)"
-     XDG_DATA_HOME="$KARA_SETTINGS_TEST_DATA" cargo run --locked
-   Reuse the SAME test directory on restart. Never test Clear on production data.
-2. Verify Settings is immediately right of the sidebar toggle, with native size,
-   hover/focus/tooltip and Tab access. Open its native drawer in light/dark themes,
-   wide/narrow windows. Confirm module switching, Tasks editor/date picker,
-   Calendar, Matrix, About branding and tray controls remain functional.
-3. In Backup & Restore, export to a NEW .kara-backup path. Cancel save/open and
-   restore confirmations; verify unchanged data. Confirm one restore and check
-   all fields/preferences. Recheck corrupt backup rejection before replacement.
-4. Enable automatic backups, enter PT5S and Apply for a short test. Verify first
-   success/last-success display, then periodic valid archives under:
-     $KARA_SETTINGS_TEST_DATA/io.github.kordeone.Kara/automatic-backups/
-   Allow more than ten successes; verify ten owned archives plus index.json.
-   Keep manual/recovery files and confirm none are removed. Do not edit index.json.
-5. Type invalid/zero/negative/month durations; verify inline errors, retained input,
-   disabled Apply and unchanged saved interval. Close/reopen Settings to see the
-   previously saved value. Apply disable and verify backups stop. Re-enable.
-6. Hide Kara by closing the main window; verify archives continue. Tray Open must
-   work. Suspend/resume past PT5S: expect one catch-up then normal periodic saves.
-   Quit fully, wait past the interval, restart with the same XDG directory: one
-   overdue backup, no burst. Do not change system clocks just for this test;
-   backward/forward clock behavior is covered with deterministic injected times.
-7. Keep a manual chooser open across an interval: automatic backup should defer,
-   resume after cancel/completion, and show any file error clearly in Settings.
-8. Populate tasks/lists, priority, dates, notes, completion, pins, Matrix order and
-   sort preferences. Open Clear All Data. Empty/lowercase CLEAR must not enable
-   confirmation; Cancel/Escape preserves data. Type exact CLEAR, confirm, verify
-   empty/default UI and automatic backups disabled. Verify ALL manual/automatic/
-   recovery files remain. Fully Quit/restart and verify the empty state persists.
-9. Restore the displayed kara-before-clear recovery file via Settings. Verify
-   all previous records/preferences return without duplicate IDs. Remember that
-   restoring enabled automatic settings can make one backup due again.
-10. Validate interval and backup errors/long paths, scrolling and keyboard access
-    in small windows. For future Flatpak builds verify user-granted document
-    portal paths permit atomic staging/publication; unsupported grants must fail
-    visibly with no unsafe in-place fallback. Local automatic/recovery files use
-    runtime XDG data paths inside the sandbox, not executable or host home paths.
-    AppImage launch directory must not change storage locations. Do not change
-    sandbox permissions or install packaging during this milestone.
+     KARA_IMPORT_TEST_DATA="$(mktemp -d)"
+     XDG_DATA_HOME="$KARA_IMPORT_TEST_DATA" cargo run --locked
+   Reuse that same directory for restarts. Do not test Clear on production data.
+2. In light/dark themes and wide/narrow windows, verify the 16px Settings glyph
+   matches neighboring controls, keyboard focus and toggle work, and its tooltip
+   appears below without covering its trigger. Confirm compact sections, readable
+   errors, scrolling and all buttons remain accessible with a narrow drawer.
+3. Create tasks/lists with dates, notes, priorities, completions and Matrix order.
+   Export a NEW .kara-backup file. Cancel export/open/import; data must not change.
+   Verify corrupt/unsupported backup selection reports an error before import.
+4. Modify existing task fields, add local records and change sort/automatic
+   preferences. Import the earlier backup: preview skipped IDs and existing-wins
+   differences; choose Add. Local edits/preferences and current module must stay;
+   missing records must appear once. Repeat Add: no duplicates, no data rewrite.
+   Fully Quit/restart with the same XDG directory and verify persistence.
+5. Export from another isolated Kara data directory using a same-name/different-ID
+   list. Import into the first: Add must be blocked with an explanation; Cancel
+   changes nothing. A same-ID/different-name list is also an intentional blocker.
+6. Choose Replace: verify a second explicit confirmation explains replacement.
+   Cancel once; then confirm. Check complete task/list/preference replacement,
+   recovery path and restart persistence. Replace with the pre-import snapshot to
+   verify recovery. Check Add on an empty isolated store restores missing records.
+7. Set Keep last to 2 and interval PT5S; Apply and allow several successes. Check
+   only two owned archives remain plus index.json, while manual/recovery files
+   survive. Try 0, 101 and nonnumeric input: inline error, retained input, no saved
+   change. Reopen/restart to confirm saved settings; test 1 and 100 as boundaries.
+8. Verify hidden/tray automatic backups still run, full Quit stops them, and an
+   overdue restart produces one catch-up rather than a burst. Check Tasks, Calendar,
+   Matrix drag-and-drop, accepted task editor/date picker and branding unchanged.
+9. In isolated data only, verify Clear Cancel and invalid typed text are harmless;
+   exact CLEAR resets data/preferences, including Keep last 10, and leaves all
+   archives/recoveries intact. Replace from its recovery snapshot to undo Clear.
+
+Stop for owner's COSMIC acceptance. Do not merge or push this feature branch.
