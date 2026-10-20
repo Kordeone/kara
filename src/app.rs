@@ -1935,7 +1935,20 @@ impl AppModel {
             let prefs = store.automatic_preferences();
             self.backup.auto_enabled = prefs.enabled;
             self.backup.interval = prefs.interval.clone();
-            self.backup.interval_error = None;
+            match automatic::interval_controls(&prefs.interval) {
+                Ok((amount, unit)) => {
+                    self.backup.amount = amount;
+                    self.backup.unit = unit;
+                }
+                Err(error) => self.backup.interval_error = Some(error),
+            }
+            let destination = self.store.as_ref().unwrap().automatic_directory();
+            let verified = automatic::verify_destination(&destination);
+            self.backup.destination_verified = verified.is_ok();
+            self.backup.destination_error = verified.err();
+            self.backup.destination = Some(destination);
+            self.backup.interval_error =
+                automatic::configuration_interval(&self.backup.amount, self.backup.unit).err();
             self.backup.retention = prefs.retention.to_string();
             self.backup.retention_error = None;
         }
@@ -1983,7 +1996,7 @@ impl AppModel {
             if self.auto_scheduler.due(&prefs, wall, boot)? {
                 let result = store.automatic_backup(wall);
                 self.auto_scheduler.finished(
-                    automatic::interval_seconds(&prefs.interval)?,
+                    automatic::schedule_seconds(&prefs.interval, wall)?,
                     automatic::boot_seconds()?,
                     result.is_ok() || store.automatic_preferences().last_success == Some(wall),
                 );
@@ -2087,27 +2100,104 @@ impl AppModel {
                 }
             }
             Action::AutoEnabled(value) if self.backup.open && !self.backup.busy => {
-                self.backup.auto_enabled = value
+                // Turning off must work even if the staged form/destination is invalid.
+                if !value && let Some(store) = &mut self.store {
+                    let prefs = store.automatic_preferences().clone();
+                    if let Err(error) = store.set_automatic_configuration(
+                        false,
+                        prefs.interval,
+                        prefs.retention,
+                        prefs.destination,
+                    ) {
+                        self.backup.notice = Some(error);
+                        return Task::none();
+                    }
+                    self.auto_scheduler = automatic::Scheduler::default();
+                }
+                self.backup.auto_enabled = value;
             }
-            Action::Interval(value) if self.backup.open && !self.backup.busy => {
-                self.backup.interval_error = automatic::interval_seconds(&value).err();
-                self.backup.interval = value;
+            Action::Amount(value)
+                if self.backup.open && self.backup.auto_enabled && !self.backup.busy =>
+            {
+                self.backup.amount = value;
+                self.backup.interval_error =
+                    automatic::configuration_interval(&self.backup.amount, self.backup.unit).err();
             }
-            Action::Retention(value) if self.backup.open && !self.backup.busy => {
+            Action::Unit(index)
+                if self.backup.open && self.backup.auto_enabled && !self.backup.busy =>
+            {
+                if let Some(unit) = automatic::Unit::ALL.get(index) {
+                    self.backup.unit = *unit;
+                    self.backup.interval_error =
+                        automatic::configuration_interval(&self.backup.amount, self.backup.unit)
+                            .err();
+                }
+            }
+            Action::ChooseFolder
+                if self.backup.open && self.backup.auto_enabled && self.backup_available() =>
+            {
+                self.backup.busy = true;
+                return Task::perform(
+                    async {
+                        let Some(path) = backup::choose_folder().await? else {
+                            return Ok(None);
+                        };
+                        tokio::task::spawn_blocking(move || {
+                            automatic::verify_destination(&path)?;
+                            Ok(Some(path))
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    |result| cosmic::Action::App(Message::Backup(Action::FolderChosen(result))),
+                );
+            }
+            Action::FolderChosen(result) if self.backup.open && self.backup.busy => {
+                self.backup.busy = false;
+                match result {
+                    Ok(Some(path)) => {
+                        self.backup.destination = Some(path);
+                        self.backup.destination_verified = true;
+                        self.backup.destination_error = None;
+                    }
+                    Ok(None) => (),
+                    Err(error) => {
+                        self.backup.destination_verified = false;
+                        self.backup.destination_error = Some(error);
+                    }
+                }
+            }
+            Action::Retention(value)
+                if self.backup.open && self.backup.auto_enabled && !self.backup.busy =>
+            {
                 self.backup.retention_error = automatic::retention_count(&value).err();
                 self.backup.retention = value;
             }
             Action::SaveAutomatic if self.backup.open && self.backup_available() => {
-                if let Err(error) = automatic::interval_seconds(&self.backup.interval) {
+                if let Err(error) =
+                    automatic::configuration_interval(&self.backup.amount, self.backup.unit)
+                {
                     self.backup.interval_error = Some(error);
                 } else if let Err(error) = automatic::retention_count(&self.backup.retention) {
                     self.backup.retention_error = Some(error);
+                } else if !self.backup.auto_enabled || !self.backup.destination_verified {
+                    return Task::none();
                 } else if let Some(store) = &mut self.store {
-                    match store.set_automatic_preferences(
+                    let Some(destination) = self.backup.destination.clone() else {
+                        return Task::none();
+                    };
+                    if let Err(error) = automatic::verify_destination(&destination) {
+                        self.backup.destination_verified = false;
+                        self.backup.destination_error = Some(error);
+                        return Task::none();
+                    }
+                    match store.set_automatic_configuration(
                         self.backup.auto_enabled,
-                        self.backup.interval.clone(),
+                        automatic::configuration_interval(&self.backup.amount, self.backup.unit)
+                            .expect("validated interval"),
                         automatic::retention_count(&self.backup.retention)
                             .expect("validated retention"),
+                        Some(destination),
                     ) {
                         Ok(()) => {
                             self.auto_scheduler = automatic::Scheduler::default();
@@ -3017,6 +3107,74 @@ mod tests {
         assert_eq!(app.store.as_ref().unwrap().lists()[0].name, "Work");
     }
     #[test]
+    fn schedule_folder_cancel_verification_reopen_disable_and_restart_are_safe() {
+        use backup_ui::Action;
+        let root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = root.path().join("tasks.json");
+        let mut app = sidebar_fixture();
+        app.store = Some(Store::open(path.clone()).unwrap());
+        let _ = app.update(Message::Backup(Action::Open));
+        assert!(!app.backup.can_apply(true));
+        let amount = app.backup.amount.clone();
+        let _ = app.update(Message::Backup(Action::Amount("30".into())));
+        assert_eq!(app.backup.amount, amount); // disabled input ignored
+        let _ = app.update(Message::Backup(Action::AutoEnabled(true)));
+        let _ = app.update(Message::Backup(Action::Unit(5)));
+        let _ = app.update(Message::Backup(Action::Amount("1".into())));
+        assert!(!app.backup.can_apply(true));
+        app.backup.busy = true;
+        let previous = app.backup.destination.clone();
+        let _ = app.update(Message::Backup(Action::FolderChosen(Ok(None))));
+        assert_eq!(app.backup.destination, previous);
+        assert!(!app.backup.can_apply(true));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::FolderChosen(Err(
+            "Permission denied".into(),
+        ))));
+        assert!(
+            app.backup
+                .destination_error
+                .as_ref()
+                .unwrap()
+                .contains("Permission denied")
+        );
+        assert!(!app.backup.can_apply(true));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::FolderChosen(Ok(Some(
+            destination.path().into(),
+        )))));
+        assert!(app.backup.can_apply(true));
+        let _ = app.update(Message::Backup(Action::SaveAutomatic));
+        assert_eq!(
+            app.store.as_ref().unwrap().automatic_preferences().interval,
+            "P1M"
+        );
+        let _ = app.update(Message::Backup(Action::Close));
+        let _ = app.update(Message::Backup(Action::Open));
+        assert_eq!(app.backup.amount, "1");
+        assert_eq!(app.backup.unit, automatic::Unit::Months);
+        assert_eq!(app.backup.destination.as_deref(), Some(destination.path()));
+        assert!(app.backup.can_apply(true));
+        // Recheck access at Apply, even if a formerly valid chooser result is cached.
+        let moved = root.path().join("unavailable");
+        std::fs::rename(destination.path(), &moved).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let _ = app.update(Message::Backup(Action::SaveAutomatic));
+        assert!(!app.backup.destination_verified);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = app.update(Message::Backup(Action::Amount("0".into())));
+        let _ = app.update(Message::Backup(Action::AutoEnabled(false)));
+        assert!(!app.store.as_ref().unwrap().automatic_preferences().enabled);
+        assert!(!app.backup.can_apply(true));
+        drop(app.store.take());
+        let reopened = Store::open(path).unwrap();
+        assert!(!reopened.automatic_preferences().enabled);
+        assert_eq!(reopened.automatic_preferences().interval, "P1M");
+        assert_eq!(reopened.automatic_directory(), destination.path());
+        std::fs::rename(moved, destination.path()).unwrap();
+    }
+    #[test]
     fn settings_header_and_interval_validation_preserve_saved_preferences() {
         use backup_ui::Action;
         let dir = tempfile::tempdir().unwrap();
@@ -3033,14 +3191,19 @@ mod tests {
         assert!(app.backup.open && app.core.window.show_context);
         assert_eq!(app.page.module(), Module::Calendar);
         let _ = app.update(Message::Backup(Action::AutoEnabled(true)));
-        let _ = app.update(Message::Backup(Action::Interval("PT30M".into())));
+        let _ = app.update(Message::Backup(Action::Unit(1)));
+        let _ = app.update(Message::Backup(Action::Amount("30".into())));
+        app.backup.busy = true;
+        let _ = app.update(Message::Backup(Action::FolderChosen(Ok(Some(
+            dir.path().to_path_buf(),
+        )))));
         let _ = app.update(Message::Backup(Action::SaveAutomatic));
         assert!(app.store.as_ref().unwrap().automatic_preferences().enabled);
         let before = std::fs::read(&path).unwrap();
-        let _ = app.update(Message::Backup(Action::Interval("P1M".into())));
+        let _ = app.update(Message::Backup(Action::Amount("0".into())));
         let _ = app.update(Message::Backup(Action::SaveAutomatic));
         assert!(app.backup.interval_error.is_some());
-        assert_eq!(app.backup.interval, "P1M");
+        assert_eq!(app.backup.amount, "0");
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(
             app.store.as_ref().unwrap().automatic_preferences().interval,

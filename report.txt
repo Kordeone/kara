@@ -1,88 +1,126 @@
-KARA — Settings refinement and Add/Replace backup import
+KARA — Final Settings layout and automatic backup configuration
 
 Scope
-- Feature worktree: /home/rapper/projects/kara-backup-restore
-- Branch: feat/backup-restore; starting commit: 790cb39.
-- No merge, push, dependency changes, installation or other worktree edits.
-- Headless Debian validation only; COSMIC visual acceptance remains pending.
+- Worktree: /home/rapper/projects/kara-backup-restore
+- Branch: feat/backup-restore; baseline: 3c5985e.
+- Changes confined to Settings and automatic backup configuration, plus related
+  validation/tests. No merge, push, installation, new dependencies or other
+  worktree edits. Tasks, Calendar, Matrix, branding and tray code are preserved.
+- Headless Debian automated validation only. Owner's COSMIC acceptance is pending.
 
-Implementation
-- Backup & Restore now has compact Export Backup and Import Backup buttons with
-  bundled Tabler icons. Existing native portal save/open behavior is retained.
-- Settings uses bundled settings.svg, a neutral native 32x32 button with a 16px
-  glyph matching About, and an explicit bottom tooltip with an 8px gap. Its
-  accessible name, focus behavior and drawer toggle are preserved.
-- Automatic settings use an aligned toggle, ISO interval and Keep last fields,
-  brief examples, inline validation, compact local last-backup time and one Apply.
-- Keep last defaults to 10 and accepts integers 1–100. Invalid input remains
-  visible without changing persisted settings. Apply saves preferences atomically
-  and applies retention; subsequent automatic backups use the saved count.
+Settings layout
+- Removed settings::section cards. Sections now use the drawer's existing surface,
+  consistent native spacing/padding and two subtle theme separators.
+- Export Backup and Import Backup share an equal-width horizontal row, use bundled
+  Tabler icons and native flat text buttons. Folder choice and Apply are also flat.
+- Native drawer header, Close, Settings icon/tooltip, focus and access are retained.
+- Automatic backups has enable toggle, numeric Every field, unit selector, Keep
+  last (1–100), destination/path picker, last-success status and one Apply button.
+- Units: Seconds (s), Minutes (m), Hours (h), Days (d), Weeks (w), Months (M),
+  Years (y). Lowercase m means minutes; uppercase M means calendar months.
+- Schedule, retention, folder and Apply controls are disabled while off. The locked
+  dropdown has no disabled API; when off, its current label uses a disabled native
+  button in the same position. Event guards also reject disabled input messages.
+- Enabling stages the configuration until Apply. Disabling immediately persists
+  the off state, even if staged values or the destination are invalid. Other
+  staged inputs are not saved by disabling. This avoids an invalid form trapping
+  the scheduler in an enabled state.
+- Apply needs valid amount/unit, valid retention, and a verified selected folder.
+  It rechecks writability before persisting; failures leave live preferences intact.
 
-Import modes and safeguards
-- A validated selected backup opens Add / Replace / Cancel with a merge preview.
-- Add preserves current preferences and existing records. Missing IDs are added;
-  matching task IDs are skipped, with differing records reported as conflicts
-  resolved in favor of existing data. Counts are shown before and after import.
-- Existing list IDs with different case-insensitive names, or different IDs with
-  the same case-insensitive name, block the entire Add. No task is mapped by list
-  name or silently attached to a different list. Matching names/IDs retain the
-  existing pin/name values and report differences. Invalid references are rejected.
-- Add recomputes and validates its complete plan before writing. Existing task
-  IDs, properties and relative Matrix ordering are preserved. Imported peers keep
-  their relative Matrix order and append within the appropriate completion groups.
-  Existing completed rank numbers can normalize when active tasks are inserted;
-  Tasks document order and its sorting preferences are not changed.
-- Add retains the current navigation context and automatic scheduler deadline.
-- Replace has a second explicit destructive confirmation and retains complete
-  replacement of tasks, lists and persisted preferences, including automatic
-  settings. Cancel makes no document changes.
-- Both mutating modes reuse the checked atomic replacement transaction: stage,
-  sync, read/verify and publish a complete recovery snapshot BEFORE live data is
-  replaced. Failed recovery prevents import; post-publication sync failure uses
-  the existing checked rollback path. External edits/storage corruption block
-  changes rather than overwriting an unrecognized document.
-- Add recovery: kara-before-import-add-<random>.kara-backup in Kara's data root.
-  Replace recovery: kara-before-restore-<random>.kara-backup.
-  A repeated/no-change Add does not write data or create an unnecessary snapshot.
-  To undo an import, use Replace with its pre-import recovery file.
+Intervals and scheduling
+- Positive whole-number intervals only. New configurations require at least
+  60 seconds, up to 1,000,000 units, with calendar caps of 1,200 months/100 years.
+- Fixed seconds/minutes/hours/days/weeks keep elapsed-time semantics. Days are
+  24 hours and weeks are seven days, preserving previous ISO duration semantics.
+- Months and years use the locked jiff calendar arithmetic in the local system
+  timezone, anchored to last successful backup. Month ends constrain to the last
+  valid date: Jan 31 + one month becomes Feb 28/29; Feb 29 + one year becomes
+  Feb 28. Local wall time is retained across DST transitions when representable;
+  the library resolves DST gaps/folds consistently. These are never approximated
+  by 30-day or 365-day constants.
+- Each next calendar interval is relative to its successful predecessor, not an
+  end-of-month recurrence rule. After a Jan 31 -> Feb 28 backup, the next month
+  is relative to Feb 28. Overdue execution anchors the next interval to actual
+  success, not an unbounded sequence of missed schedule dates.
+- Running deadlines still use Linux CLOCK_BOOTTIME, including suspend and avoiding
+  repeated backups from wall-clock jumps. Restart computes a single remaining
+  interval from persisted last success; overdue/future-timestamp cases catch up
+  at most once. Failed attempts retain a 60-second retry delay. No background
+  daemon runs after full Quit. Manual operations/import/Clear confirmations still
+  defer automatic backups, and Store operations remain serialized.
 
-Persistence, automatic backups and Clear All Data
-- Storage remains schema-7 JSON; portable backups remain version 2/schema 7.
-  Version-1/schema-6 backups and existing schema migrations remain supported.
-- Retention is an optional automatic preference, defaulting to 10. Serialization
-  omits that default to preserve checksums of existing version-2 backups. An
-  independently generated legacy version-2 fixture verifies compatibility.
-  Older binaries may reject the new nondefault retention field; do not downgrade
-  without an appropriate older backup. No migration safeguards were changed.
-- Data root: $XDG_DATA_HOME/io.github.kordeone.Kara/ or the existing
-  $HOME/.local/share/io.github.kordeone.Kara/ fallback; live document tasks.json.
-- Automatic archives: automatic-backups/auto-<random>.kara-backup, with an owned
-  index.json catalogue. Retention targets only catalogue-owned regular files
-  with matching recorded identity and valid backup contents. Symlinked directories,
-  replaced/damaged archives and invalid catalogues cause visible failures.
-- Manual exports, unknown files, protected recovery snapshots and migration
-  backups are never retention targets. No recursive or broad file cleanup occurs.
-- Scheduling code and semantics remain unchanged: while running, including tray
-  hiding; boottime deadlines handle suspend and wall-clock changes; restart
-  coalesces overdue periods to at most one backup; no daemon after Quit.
-- Clear remains separately confirmed with exact typed CLEAR, verified recovery
-  before destructive writes, atomic reset/rollback and stale-editor protection.
-  It resets retention to 10, automatic backups disabled/PT6H, while preserving
-  manual exports, automatic archives and recovery snapshots.
+Old and new backup-directory behavior
+- OLD default (still used when no destination preference exists):
+    $XDG_DATA_HOME/io.github.kordeone.Kara/automatic-backups/
+  Fallback with XDG_DATA_HOME unset:
+    /home/rapper/.local/share/io.github.kordeone.Kara/automatic-backups/
+  XDG_DATA_HOME was unset in this execution environment. This path was established
+  from source/environment; existing real user task/backup files were not inspected
+  or modified for testing.
+- NEW configurations: user chooses an existing folder with libcosmic's native XDG
+  portal folder picker. Archives and index.json are stored directly in that folder.
+  Choose a dedicated folder; an existing foreign/damaged index.json is rejected.
+- Folder verification uses a uniquely named disposable private probe: create,
+  write, sync, read/compare, delete, directory sync and catalogue validation.
+  It never overwrites an existing file or invokes sudo/privilege elevation.
+  Permission errors identify the path and ask for a writable folder.
+- Absolute real directories are required; relative paths, files, final-component
+  symbolic links, unavailable folders and invalid catalogues fail visibly.
+- Verified at choice, reopening Settings, Apply and before automatic publication.
+  A previously selected folder that disappears is NOT silently recreated. Existing
+  archives remain untouched; scheduler errors are visible and retries are bounded.
+- Changing destination does not copy, move or delete the previous folder's files.
+  The saved last-success timestamp is retained; switching destinations is not an
+  instruction to replay earlier backups immediately.
+- Default retention remains 10, configurable 1–100. Pruning targets only the
+  current folder's catalogue-owned automatic archives with matching recorded
+  device/inode/change time, regular file type and valid backup contents. Manual
+  exports, unknown files, protected recovery snapshots and previous destinations
+  are never swept. Retention errors preserve uncertain files and may leave extras.
+
+Compatibility, backup integrity and recovery
+- Existing ISO strings remain the persisted interval representation. Existing
+  fixed/composite/fractional-but-whole-second intervals load into equivalent
+  number/unit controls. There is no eager data rewrite on load.
+- Existing sub-minute intervals remain readable; runtime applies the 60-second
+  safety floor without rewriting their saved text. The form shows a minimum
+  validation error until a valid new interval is selected and Applied.
+- Storage remains JSON schema 7 and portable backups remain version 2/schema 7.
+  A new optional absolute destination field defaults to None and is omitted when
+  absent, preserving existing version-2 checksum compatibility. Old version-1
+  backups and all existing task-data migrations remain supported.
+- Older binaries can reject calendar intervals/new destination fields; do not
+  assume backwards loading in older executables. Migration backups remain protected.
+- Destination is a preference, so Replace restores it and Add keeps the current
+  destination. On another machine, an unavailable restored path fails safely and
+  must be reselected. Foreign archive catalogues/ownership are never imported.
+- Manual export, checksums, Add existing-wins/conflict handling, Replace explicit
+  confirmation, verified pre-import recovery snapshots, atomic replacement and
+  rollback are unchanged. Add no-ops do not rewrite documents or create snapshots.
+- Clear still requires exact typed CLEAR, creates/verifies recovery first, aborts
+  on recovery failure, resets all managed preferences (including destination),
+  prevents stale-editor writes, and preserves manual/automatic/recovery files.
+- Recovery snapshots remain in Kara's XDG data root, not the chosen auto folder:
+    kara-before-import-add-<random>.kara-backup
+    kara-before-restore-<random>.kara-backup
+    kara-before-clear-<random>.kara-backup
+  Restore these using Replace to undo a prior import/clear.
 
 Changed files
-- src/app.rs: Settings header, retention handling, import dispatch/controller tests.
-- src/backup_ui.rs: compact settings form and Add/Replace/Cancel confirmation.
-- src/automatic.rs: bounded retention preference and safe configurable cleanup.
-- src/import.rs: conservative merge planner and focused tests (new).
-- src/storage.rs: Add transaction, configured retention and storage regression tests.
-- src/backup.rs: Import chooser wording and backup compatibility tests.
-- src/main.rs: registers import module.
-- tests/fixtures/backup-v2-default-retention.kara-backup: independent fixture (new).
-- report.txt: consolidated report. Cargo.toml and Cargo.lock unchanged.
+- src/backup_ui.rs: flat drawer sections, numeric/unit/folder form, disabled state,
+  Apply predicate and enabled/disabled small-viewport layout coverage.
+- src/app.rs: form compatibility, folder chooser/verification, safe Apply/disable,
+  scheduler interval calculation and controller regressions.
+- src/automatic.rs: units/validation, calendar duration arithmetic, minimum floor,
+  optional destination, writable-folder probe and scheduling/filesystem tests.
+- src/storage.rs: atomic configuration persistence, effective destination routing,
+  missing-folder protection and restart/archive-isolation/recovery tests.
+- src/backup.rs: native folder chooser; preference fixture/invalid-interval updates.
+- report.txt: this consolidated report. Cargo.toml/Cargo.lock unchanged.
 
 Validation — headless Debian
-Commands, run with the existing external build cache:
+Required commands (all passed):
   cargo fmt --check
   cargo check --locked
   cargo clippy --locked --all-targets -- -D warnings
@@ -92,70 +130,77 @@ Commands, run with the existing external build cache:
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
     -- --ignored --exact --nocapture
 Cache: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
-- Results: all commands passed. 157 regular tests passed, zero failed; the one
-  normally ignored private D-Bus test passed separately: 158 tests exercised.
-- 14 new tests cover conservative/nonoverlapping imports, duplicate prevention,
-  ID/list conflicts, Matrix peer ordering, preference preservation, repeated Add,
-  restart persistence, recovery snapshots, denied writes and rollback, custom
-  retention bounds/ownership, legacy version-2 checksum compatibility, import
-  confirmations/cancellation, scheduler preservation and measured header geometry.
-- Existing tests extended for retention form validation/persistence and native
-  drawer/dialog layouts at 300, 400, 640 and 1000px viewport widths.
-- Existing task/list, Calendar, Matrix, migration, Clear and tray regressions pass.
-  Destructive tests use isolated temporary Store/XDG paths, never actual user data.
+- 164 regular tests passed; zero failed. One normally ignored isolated D-Bus test
+  passed separately: 165 tests exercised.
+- Seven new tests cover numeric/unit bounds, minimum and ISO compatibility,
+  leap/nonleap month ends, year boundaries/DST, calendar restart/clock behavior,
+  disposable writable probes, permission-denied/missing/foreign/symlink folders,
+  Apply/disabled/cancel behavior, destination persistence, unavailable-folder
+  failure and recovery, retention isolation and Clear/Replace destination handling.
+- Existing task/list, Calendar, Matrix, backup Add/Replace, corruption, migration,
+  Clear/rollback and tray regressions pass. Drawer coverage includes enabled form
+  and long portal paths at 300, 400, 640 and 1000px viewport widths.
+- All filesystem/destructive tests use disposable directories, not actual user data.
 
-Known limitations
-- No COSMIC graphical, Flatpak or AppImage verification on Debian.
-- Conservative list conflicts require resolving names/IDs or explicitly choosing
-  Replace; the importer never guesses list identity. Only the first eight resolved
-  ID-conflict descriptions are displayed, with a remaining-count summary.
-- Existing 64 MiB backup limit remains. Files are plaintext, not encrypted or
-  authenticated; SHA-256 detects accidental corruption, not trusted provenance.
-- Retention errors can leave more than the selected count. Uncatalogued archives
-  left by interrupted publication are preserved; no unsafe sweeping is performed.
-- File I/O remains serialized on the existing Store path and can briefly block
-  UI updates for large documents/slow disks. Physical power-loss testing was not
-  performed; atomic publication, synchronization and recovery remain the safeguards.
-- Future Flatpak packaging must verify document-portal grants permit staging and
-  atomic publication. Unsupported grants must fail visibly without an unsafe
-  in-place fallback. Automatic/recovery files use runtime XDG sandbox data paths;
-  archive paths/ownership catalogues are not imported. No packaging changes made.
+Limitations and portal considerations
+- No COSMIC graphical or packaged sandbox verification was performed on Debian.
+- The folder picker uses the locked native portal path/grants and persists its
+  returned path. Kara does not change sandbox permissions or grant itself access.
+  A read-only, revoked, nonpersistent or insufficient portal grant fails the access
+  probe or later backup visibly; reselect the folder through the chooser. Persistent
+  write access across actual Flatpak restarts must be checked when packaging.
+- Portal/FUSE backends must support private staging, directory sync, atomic
+  publication and stable identity for retention. Unsupported access fails safely;
+  identity changes protect archives rather than authorizing deletion. AppImage
+  launch directories do not change configured/XDG paths.
+- A clock/timezone change does not revise an already cached running boottime
+  deadline. The current local timezone is used for subsequent calendar calculations
+  and for restart reconstruction. No fixed timezone/recurrence preference is added.
+- Existing 64 MiB portable limit and plaintext/unencrypted backup format remain.
+  SHA-256 checks accidental damage, not provenance. Local I/O is serialized and
+  may briefly block UI updates on slow storage. Physical power-loss and hot-unplug
+  races are not hardware-tested; existing atomic sync/recovery checks remain.
 
-CachyOS acceptance checklist — isolated data only
-1. Transfer FEATURE source via Samba; fully Quit the old Kara process via tray.
-   From the transferred source:
+CachyOS acceptance — disposable data/destinations only
+1. Transfer feature source via Samba. Fully Quit any old Kara instance via tray.
+   In the transferred source:
      cargo build --locked
-     KARA_IMPORT_TEST_DATA="$(mktemp -d)"
-     XDG_DATA_HOME="$KARA_IMPORT_TEST_DATA" cargo run --locked
-   Reuse that same directory for restarts. Do not test Clear on production data.
-2. In light/dark themes and wide/narrow windows, verify the 16px Settings glyph
-   matches neighboring controls, keyboard focus and toggle work, and its tooltip
-   appears below without covering its trigger. Confirm compact sections, readable
-   errors, scrolling and all buttons remain accessible with a narrow drawer.
-3. Create tasks/lists with dates, notes, priorities, completions and Matrix order.
-   Export a NEW .kara-backup file. Cancel export/open/import; data must not change.
-   Verify corrupt/unsupported backup selection reports an error before import.
-4. Modify existing task fields, add local records and change sort/automatic
-   preferences. Import the earlier backup: preview skipped IDs and existing-wins
-   differences; choose Add. Local edits/preferences and current module must stay;
-   missing records must appear once. Repeat Add: no duplicates, no data rewrite.
-   Fully Quit/restart with the same XDG directory and verify persistence.
-5. Export from another isolated Kara data directory using a same-name/different-ID
-   list. Import into the first: Add must be blocked with an explanation; Cancel
-   changes nothing. A same-ID/different-name list is also an intentional blocker.
-6. Choose Replace: verify a second explicit confirmation explains replacement.
-   Cancel once; then confirm. Check complete task/list/preference replacement,
-   recovery path and restart persistence. Replace with the pre-import snapshot to
-   verify recovery. Check Add on an empty isolated store restores missing records.
-7. Set Keep last to 2 and interval PT5S; Apply and allow several successes. Check
-   only two owned archives remain plus index.json, while manual/recovery files
-   survive. Try 0, 101 and nonnumeric input: inline error, retained input, no saved
-   change. Reopen/restart to confirm saved settings; test 1 and 100 as boundaries.
-8. Verify hidden/tray automatic backups still run, full Quit stops them, and an
-   overdue restart produces one catch-up rather than a burst. Check Tasks, Calendar,
-   Matrix drag-and-drop, accepted task editor/date picker and branding unchanged.
-9. In isolated data only, verify Clear Cancel and invalid typed text are harmless;
-   exact CLEAR resets data/preferences, including Keep last 10, and leaves all
-   archives/recoveries intact. Replace from its recovery snapshot to undo Clear.
+     KARA_SETTINGS_TEST_DATA="$(mktemp -d)"
+     XDG_DATA_HOME="$KARA_SETTINGS_TEST_DATA" cargo run --locked
+   Reuse this same test directory across restarts. Choose separate disposable
+   destination folders A and B. Never exercise Clear against production data.
+2. Test light/dark themes, narrow/wide windows and keyboard focus. Confirm sections
+   have no gray cards, Export/Import are side by side, labels align, native header
+   and Close work, long paths/errors scroll, and controls do not clip.
+3. Off: inputs, unit, folder and Apply must be disabled. Enable: controls activate.
+   Check 60 Seconds, 1 Minute, Hours, Days, Weeks, Months and Years. Invalid/zero/
+   fractional/too-large amounts, <60 seconds and retention 0/101 must block Apply
+   with clear feedback, without substituting different saved values.
+4. Choose folder A with the native picker. Cancel once (no preference change),
+   then choose successfully. Confirm its path and enabled Apply. Apply 1 Minute,
+   Keep last 2. Reopen and fully Quit/restart: saved schedule/folder/count persist.
+5. Let several backups run in A, including with the window closed to tray. Verify
+   only two owned archives plus index remain; manual/recovery files are retained.
+   Full Quit stops backups. Overdue restart produces one catch-up, no burst.
+6. Choose B and Apply; verify subsequent backups are in B while every file in A
+   remains. Make B unavailable by renaming/unmounting the DISPOSABLE destination,
+   or remove write permission. Verify visible errors, no recreated replacement
+   folder and no missing archives. Restore access/reselect, Apply and verify retry.
+   Try a root-owned/inaccessible location in the chooser; no privilege request.
+7. Calendar Months/Years: verify selections persist, no fixed-day approximation
+   is displayed and backup preferences survive restart. Leap/month-end/DST timing
+   is tested deterministically; do not change the system clock to test it.
+8. Export then Add/Replace imports: check previews, existing-wins and collision
+   rejection, cancellation, recovery paths and persistence. Replace restores saved
+   destination; Add preserves the local choice. A foreign-machine path must fail
+   visibly until reselected, without deleting archives elsewhere.
+9. Clear (isolated data only): Cancel/invalid text is harmless. Exact CLEAR creates
+   recovery, empties data/defaults and disables automatic backups, but all A/B and
+   manual/recovery files remain. Replace from recovery restores the destination
+   preference and data. Check accepted Tasks/Calendar/Matrix/tray remain unchanged.
+10. For later Flatpak acceptance, choose a portal-granted folder outside sandbox
+    data, restart fully and verify persistent write/retention access. Revoked grants
+    must fail visibly without privilege escalation or unsafe fallback. Packaging
+    changes are outside this milestone.
 
-Stop for owner's COSMIC acceptance. Do not merge or push this feature branch.
+Stop for owner's COSMIC graphical acceptance. Do not merge or push.

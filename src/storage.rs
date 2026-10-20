@@ -313,17 +313,44 @@ impl Store {
     pub fn automatic_preferences(&self) -> &crate::automatic::Preferences {
         &self.automatic_backups
     }
+    #[cfg(test)]
     pub fn set_automatic_preferences(
         &mut self,
         enabled: bool,
         interval: String,
         retention: u16,
     ) -> Result<(), String> {
+        self.set_automatic_configuration(
+            enabled,
+            interval,
+            retention,
+            self.automatic_backups.destination.clone(),
+        )
+    }
+    pub fn automatic_directory(&self) -> PathBuf {
+        self.automatic_backups
+            .destination
+            .clone()
+            .unwrap_or_else(|| {
+                self.path
+                    .parent()
+                    .expect("storage parent")
+                    .join("automatic-backups")
+            })
+    }
+    pub fn set_automatic_configuration(
+        &mut self,
+        enabled: bool,
+        interval: String,
+        retention: u16,
+        destination: Option<PathBuf>,
+    ) -> Result<(), String> {
         let prefs = crate::automatic::Preferences {
             enabled,
             interval,
-            last_success: self.automatic_backups.last_success,
             retention,
+            destination,
+            last_success: self.automatic_backups.last_success,
         };
         self.commit_full(
             self.tasks.clone(),
@@ -335,11 +362,7 @@ impl Store {
         )
     }
     pub fn apply_retention(&self) -> Result<(), String> {
-        let dir = self
-            .path
-            .parent()
-            .ok_or("Invalid storage path.")?
-            .join("automatic-backups");
+        let dir = self.automatic_directory();
         if !dir.try_exists().map_err(|e| e.to_string())? {
             return Ok(());
         }
@@ -347,11 +370,12 @@ impl Store {
     }
     pub fn automatic_backup(&mut self, now: i64) -> Result<(), String> {
         self.check_storage()?;
-        let dir = self
-            .path
-            .parent()
-            .ok_or("Invalid storage path.")?
-            .join("automatic-backups");
+        let dir = self.automatic_directory();
+        // Never recreate a disappeared user-selected mount/folder. Legacy local
+        // archives retain their existing create-on-first-use behavior.
+        if self.automatic_backups.destination.is_some() {
+            crate::automatic::verify_destination(&dir)?;
+        }
         let bytes = self.backup_bytes()?;
         crate::automatic::publish(&dir, &bytes)?;
         let prefs = crate::automatic::Preferences {
@@ -712,6 +736,77 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
+    fn configured_destinations_survive_restart_and_never_retire_previous_archives() {
+        let root = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let path = root.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Preserved task").unwrap()).unwrap();
+        store
+            .set_automatic_configuration(true, "P1M".into(), 1, Some(first.path().into()))
+            .unwrap();
+        store.automatic_backup(1_700_000_000).unwrap();
+        let old: Vec<_> = fs::read_dir(first.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        store
+            .set_automatic_configuration(true, "P1Y".into(), 1, Some(second.path().into()))
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.automatic_directory(), second.path());
+        assert_eq!(store.automatic_preferences().interval, "P1Y");
+        let manual = second.path().join("manual.kara-backup");
+        crate::backup::export(&manual, &store.backup_bytes().unwrap()).unwrap();
+        let recovery = second
+            .path()
+            .join("kara-before-clear-protected.kara-backup");
+        crate::backup::export(&recovery, &store.backup_bytes().unwrap()).unwrap();
+        for now in 1_700_000_001..1_700_000_004 {
+            store.automatic_backup(now).unwrap();
+        }
+        assert!(old.iter().all(|path| path.exists()));
+        assert!(manual.exists() && recovery.exists());
+        assert_eq!(fs::read_dir(second.path()).unwrap().count(), 4); // index + owned + manual + recovery
+        let prepared = crate::backup::decode(&store.backup_bytes().unwrap()).unwrap();
+        assert_eq!(
+            prepared
+                .data
+                .automatic_backups
+                .as_ref()
+                .unwrap()
+                .destination
+                .as_deref(),
+            Some(second.path())
+        );
+        let before = fs::read(&path).unwrap();
+        let missing = root.path().join("gone");
+        fs::rename(second.path(), &missing).unwrap();
+        assert!(store.automatic_backup(1_700_000_010).is_err());
+        assert!(!second.path().exists()); // must not silently recreate an unavailable mount
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(missing.join("manual.kara-backup").exists());
+        fs::rename(missing, second.path()).unwrap();
+        store.automatic_backup(1_700_000_011).unwrap();
+        assert_eq!(store.tasks().len(), 1);
+        let before = fs::read(&path).unwrap();
+        assert!(
+            store
+                .set_automatic_configuration(true, "P1M".into(), 1, Some("relative".into()))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        // Clear/Replace keep all archives while restoring the saved local destination.
+        store.clear_all_data().unwrap();
+        assert!(store.automatic_preferences().destination.is_none());
+        assert!(manual.exists() && recovery.exists());
+        store.restore_backup(&prepared).unwrap();
+        assert_eq!(store.automatic_directory(), second.path());
+        assert!(manual.exists() && recovery.exists());
+    }
+    #[test]
     fn add_import_preserves_existing_records_preferences_and_recovers_across_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
@@ -897,7 +992,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert!(
             store
-                .set_automatic_preferences(true, "P1M".into(), 10)
+                .set_automatic_preferences(true, "P0M".into(), 10)
                 .is_err()
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);

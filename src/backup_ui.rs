@@ -12,6 +12,11 @@ pub struct State {
     pub notice: Option<String>,
     pub auto_enabled: bool,
     pub interval: String,
+    pub amount: String,
+    pub unit: crate::automatic::Unit,
+    pub destination: Option<PathBuf>,
+    pub destination_verified: bool,
+    pub destination_error: Option<String>,
     pub interval_error: Option<String>,
     pub retention: String,
     pub retention_error: Option<String>,
@@ -33,7 +38,10 @@ pub enum Action {
     AddImport,
     Retention(String),
     AutoEnabled(bool),
-    Interval(String),
+    Amount(String),
+    Unit(usize),
+    ChooseFolder,
+    FolderChosen(Result<Option<PathBuf>, String>),
     SaveAutomatic,
     Clear,
     ClearText(String),
@@ -82,6 +90,15 @@ impl State {
         }
         None
     }
+    pub fn can_apply(&self, available: bool) -> bool {
+        available
+            && self.auto_enabled
+            && !self.busy
+            && crate::automatic::configuration_interval(&self.amount, self.unit).is_ok()
+            && crate::automatic::retention_count(&self.retention).is_ok()
+            && self.destination.is_some()
+            && self.destination_verified
+    }
     pub fn settings_view(
         &self,
         available: bool,
@@ -90,25 +107,45 @@ impl State {
     ) -> Element<'_, Message> {
         let message = |action| Message::Backup(action);
         let spacing = cosmic::theme::spacing();
-        let valid = crate::automatic::interval_seconds(&self.interval).is_ok()
-            && crate::automatic::retention_count(&self.retention).is_ok();
+        let enabled = available && self.auto_enabled && !self.busy;
+        let valid = self.can_apply(available);
+        let mut amount = widget::text_input("6", &self.amount)
+            .label("Every")
+            .width(cosmic::iced::Length::FillPortion(1));
+        let mut retention = widget::text_input("10", &self.retention)
+            .label("Keep last (1–100)")
+            .width(cosmic::iced::Length::FillPortion(1));
+        if enabled {
+            amount = amount.on_input(|value| Message::Backup(Action::Amount(value)));
+            retention = retention.on_input(|value| Message::Backup(Action::Retention(value)));
+        }
+        let unit: Element<'_, Message> = if enabled {
+            widget::dropdown(
+                &crate::automatic::Unit::LABELS[..],
+                Some(self.unit.index()),
+                |index| Message::Backup(Action::Unit(index)),
+            )
+            .width(cosmic::iced::Length::Fill)
+            .into()
+        } else {
+            widget::button::standard(crate::automatic::Unit::LABELS[self.unit.index()])
+                .width(cosmic::iced::Length::Fill)
+                .into()
+        };
         let fields = widget::row::with_capacity(2)
             .spacing(spacing.space_s)
+            .push(amount)
             .push(
-                widget::text_input("PT6H", &self.interval)
-                    .label("ISO 8601 interval")
-                    .on_input(|value| Message::Backup(Action::Interval(value)))
-                    .width(cosmic::iced::Length::Fill),
-            )
-            .push(
-                widget::text_input("10", &self.retention)
-                    .label("Keep last")
-                    .on_input(|value| Message::Backup(Action::Retention(value)))
-                    .width(90),
+                widget::column::with_capacity(2)
+                    .spacing(spacing.space_xxs)
+                    .push(widget::text::caption("Unit"))
+                    .push(unit)
+                    .width(cosmic::iced::Length::FillPortion(2)),
             );
-        let mut automatic = widget::settings::section()
-            .title("Automatic backups")
-            .add(
+        let mut automatic = widget::column::with_capacity(12)
+            .spacing(spacing.space_s)
+            .push(widget::text::title4("Automatic backups"))
+            .push(
                 widget::toggler(self.auto_enabled)
                     .label(String::from("Enable automatic backups"))
                     .width(cosmic::iced::Length::Fill)
@@ -116,15 +153,29 @@ impl State {
                         available.then_some(|value| Message::Backup(Action::AutoEnabled(value))),
                     ),
             )
-            .add(fields)
-            .add(widget::text::caption(
-                "e.g. PT30M, PT6H, P1D, P1W · Keep 1–100",
-            ));
-        if let Some(error) = &self.interval_error {
-            automatic = automatic.add(widget::text::body(error));
-        }
-        if let Some(error) = &self.retention_error {
-            automatic = automatic.add(widget::text::body(error));
+            .push(fields)
+            .push(widget::text::caption("Minimum 1 minute"))
+            .push(retention)
+            .push(widget::text::caption("Destination folder"))
+            .push(widget::text::body(
+                self.destination
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "No folder selected".into()),
+            ))
+            .push(
+                widget::button::text("Choose folder…")
+                    .on_press_maybe(enabled.then_some(message(Action::ChooseFolder))),
+            );
+        for error in [
+            &self.interval_error,
+            &self.retention_error,
+            &self.destination_error,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            automatic = automatic.push(widget::text::body(error));
         }
         let last = preferences
             .last_success
@@ -135,15 +186,15 @@ impl State {
             })
             .unwrap_or_else(|| "Not yet".into());
         automatic = automatic
-            .add(widget::text::caption(format!("Last backup: {last}")))
-            .add(
-                widget::button::suggested("Apply")
-                    .on_press_maybe((available && valid).then_some(message(Action::SaveAutomatic))),
+            .push(widget::text::caption(format!("Last backup: {last}")))
+            .push(
+                widget::button::text("Apply")
+                    .on_press_maybe(valid.then_some(message(Action::SaveAutomatic))),
             );
         if let Some(error) = automatic_error {
-            automatic = automatic.add(widget::text::body(error.to_string()));
+            automatic = automatic.push(widget::text::body(error.to_string()));
         }
-        let export = widget::button::standard("Export Backup")
+        let export = widget::button::text("Export Backup")
             .leading_icon(
                 widget::icon::from_svg_bytes(include_bytes!(
                     "../assets/tabler/database-export.svg"
@@ -151,7 +202,7 @@ impl State {
                 .symbolic(true),
             )
             .on_press_maybe(available.then_some(message(Action::Export)));
-        let import = widget::button::standard("Import Backup")
+        let import = widget::button::text("Import Backup")
             .leading_icon(
                 widget::icon::from_svg_bytes(include_bytes!(
                     "../assets/tabler/database-import.svg"
@@ -159,12 +210,18 @@ impl State {
                 .symbolic(true),
             )
             .on_press_maybe(available.then_some(message(Action::Restore)));
-        let mut content = widget::column::with_capacity(4).spacing(spacing.space_s)
-            .push(widget::settings::section().title("Backup & Restore").add(export).add(import))
+        let content = widget::column::with_capacity(7).spacing(spacing.space_m)
+            .push(widget::text::title4("Backup & Restore"))
+            .push(widget::row::with_capacity(2).spacing(spacing.space_s)
+                .push(export.width(cosmic::iced::Length::FillPortion(1)))
+                .push(import.width(cosmic::iced::Length::FillPortion(1))))
+            .push(widget::divider::horizontal::default())
             .push(automatic)
-            .push(widget::settings::section().title("Clear All Data")
-                .add(widget::text::body("Reset tasks, lists and saved preferences. Backup archives will be preserved."))
-                .add(widget::button::destructive("Clear all data…").on_press_maybe(available.then_some(message(Action::Clear)))));
+            .push(widget::divider::horizontal::default())
+            .push(widget::column::with_capacity(3).spacing(spacing.space_s)
+                .push(widget::text::title4("Clear All Data"))
+                .push(widget::text::body("Reset tasks, lists and saved preferences. Backup archives will be preserved."))
+                .push(widget::button::destructive("Clear all data…").on_press_maybe(available.then_some(message(Action::Clear)))));
         let mut status = widget::column::with_capacity(3).spacing(cosmic::theme::spacing().space_s);
         if self.busy {
             status = status.push(widget::text::body(
@@ -174,13 +231,13 @@ impl State {
         if let Some(notice) = &self.notice {
             status = status.push(widget::text::body(notice));
         }
-        content = status.push(content);
+        let mut content = status.push(content);
         if !available && !self.busy {
             content = content.push(widget::text::body(
                 "Close any task dialog and resolve storage errors to use backup actions.",
             ));
         }
-        widget::scrollable(content)
+        widget::scrollable(content.padding(spacing.space_xxs))
             .height(cosmic::iced::Length::Fill)
             .into()
     }
@@ -189,6 +246,35 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn apply_requires_enabled_valid_form_and_verified_destination() {
+        let mut state = State {
+            amount: "6".into(),
+            unit: crate::automatic::Unit::Hours,
+            retention: "10".into(),
+            destination: Some("/example".into()),
+            destination_verified: true,
+            ..State::default()
+        };
+        assert!(!state.can_apply(true));
+        state.auto_enabled = true;
+        assert!(state.can_apply(true));
+        assert!(!state.can_apply(false));
+        state.busy = true;
+        assert!(!state.can_apply(true));
+        state.busy = false;
+        state.destination_verified = false;
+        assert!(!state.can_apply(true));
+        state.destination_verified = true;
+        state.destination = None;
+        assert!(!state.can_apply(true));
+        state.destination = Some("/example".into());
+        state.amount = "0".into();
+        assert!(!state.can_apply(true));
+        state.amount = "6".into();
+        state.retention = "101".into();
+        assert!(!state.can_apply(true));
+    }
     #[tokio::test]
     async fn native_panels_keep_footer_actions_inside_small_viewports() {
         use cosmic::iced::{
@@ -204,6 +290,18 @@ mod tests {
         );
         for (width, height) in [(300., 480.), (400., 480.), (640., 560.), (1000., 700.)] {
             for state in [
+                State {
+                    open: true,
+                    auto_enabled: true,
+                    amount: "6".into(),
+                    unit: crate::automatic::Unit::Months,
+                    retention: "10".into(),
+                    destination: Some(
+                        "/run/user/1000/doc/long-document-portal-id/backup-folder/long-name".into(),
+                    ),
+                    destination_verified: true,
+                    ..State::default()
+                },
                 State {
                     open: true,
                     ..State::default()

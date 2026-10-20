@@ -153,7 +153,9 @@ pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("Backup was written, but durability could not be confirmed: {e}"))
 }
 
-fn dialog_error(error: cosmic::dialog::file_chooser::Error) -> Result<Option<PathBuf>, String> {
+pub(crate) fn dialog_error(
+    error: cosmic::dialog::file_chooser::Error,
+) -> Result<Option<PathBuf>, String> {
     use cosmic::dialog::{ashpd, file_chooser::Error};
     match error {
         Error::Cancelled
@@ -201,6 +203,19 @@ pub async fn choose(exporting: bool) -> Result<Option<PathBuf>, String> {
                 .map_err(|()| "Select a local backup file.".into()),
             Err(error) => dialog_error(error),
         }
+    }
+}
+
+pub async fn choose_folder() -> Result<Option<PathBuf>, String> {
+    match cosmic::dialog::file_chooser::open::Dialog::new()
+        .title("Automatic backup destination")
+        .open_folder()
+        .await
+    {
+        Ok(response) => response.url().to_file_path().map(Some).map_err(|()| {
+            "Select a local folder or a folder granted by the document portal.".into()
+        }),
+        Err(error) => dialog_error(error),
     }
 }
 
@@ -257,13 +272,14 @@ mod tests {
             interval: "P1W".into(),
             last_success: Some(1000),
             retention: crate::automatic::RETENTION,
+            destination: None,
         });
         let bytes = encode(data.clone()).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["backup_version"], 2);
         assert_eq!(json["data"]["version"], 7);
         assert_eq!(decode(&bytes).unwrap().data, data);
-        data.automatic_backups.as_mut().unwrap().interval = "P1M".into();
+        data.automatic_backups.as_mut().unwrap().interval = "P0M".into();
         assert!(encode(data).is_err());
         let mut bad = json;
         bad["data"]["automatic_backups"]["last_success"] = (-1).into();
