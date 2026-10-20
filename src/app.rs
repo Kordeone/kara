@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
-    date_entry,
+    calendar_month, calendar_view, date_entry,
     lifecycle::{Effect, Lifecycle, State},
     matrix, matrix_drag, matrix_view,
     storage::{self, Store},
@@ -44,17 +44,25 @@ const POMODORO_HISTORY_ICON: &[u8] = include_bytes!("../assets/tabler/history.sv
 const POMODORO_STATISTICS_ICON: &[u8] = include_bytes!("../assets/tabler/chart-bar.svg");
 const POMODORO_SETTINGS_ICON: &[u8] = include_bytes!("../assets/tabler/settings.svg");
 
+const MODULE_COUNT: usize = 5;
+const MODULES: [(Module, &str); MODULE_COUNT] = [
+    (Module::Tasks, "Tasks"),
+    (Module::Calendar, "Calendar"),
+    (Module::Board, "Board View"),
+    (Module::Matrix, "Eisenhower Matrix"),
+    (Module::Pomodoro, "Pomodoro"),
+];
 const MODULE_CELL_HEIGHT: f32 = 36.;
 const SIDEBAR_MAX_WIDTH: f32 = 280.;
 
-// Preserve the selector's previous intrinsic minimum while its cells become
-// fluid. The spacer gives a shrink sidebar a measurable width before Fill cells.
+// Retain the accepted sidebar minimum; five cells share the existing width.
+// The spacer keeps native shrink layout measurable before the responsive row.
 fn module_selector_min_width(gap: u16, padding: u16) -> f32 {
     4. * 40. + 3. * f32::from(gap) + 2. * f32::from(padding)
 }
 
 fn module_cell_width(allocated: f32, gap: u16) -> f32 {
-    ((allocated - 5. * f32::from(gap)).max(0.)) / 4.
+    ((allocated - (MODULE_COUNT + 1) as f32 * f32::from(gap)).max(0.)) / MODULE_COUNT as f32
 }
 
 fn module_selector(
@@ -63,16 +71,11 @@ fn module_selector(
     active: Module,
 ) -> Element<'static, cosmic::Action<Message>> {
     let cell_width = module_cell_width(allocated, gap);
-    let mut row = widget::row::with_capacity(4)
+    let mut row = widget::row::with_capacity(MODULE_COUNT)
         .width((allocated - 2. * f32::from(gap)).max(0.))
         .height(MODULE_CELL_HEIGHT)
         .spacing(gap);
-    for (module, label) in [
-        (Module::Tasks, "Tasks"),
-        (Module::Board, "Board View"),
-        (Module::Matrix, "Eisenhower Matrix"),
-        (Module::Pomodoro, "Pomodoro"),
-    ] {
+    for (module, label) in MODULES {
         let selected = active == module;
         let cell = widget::button::custom(
             widget::container(widget::icon(module_icon(module)).size(16))
@@ -182,6 +185,7 @@ pub struct AppModel {
     list_editor: Option<ListEditor>,
     delete_list_id: Option<String>,
     today: jiff::civil::Date,
+    month_view: calendar_month::State,
     task_sort: tasks::TaskSort,
     task_sort_ascending: bool,
     show_completed: bool,
@@ -217,6 +221,7 @@ pub enum Message {
 
     SelectModule(Module),
     Matrix(matrix_view::Action),
+    Month(calendar_view::Action),
     NavContext(NavMenuAction),
     Add,
     AddList,
@@ -259,6 +264,8 @@ pub enum Page {
     Inbox,
     Today,
     Calendar,
+    CalendarInbox,
+    CalendarList(String),
     Lists,
     List(String),
     Board,
@@ -274,6 +281,7 @@ pub enum Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Module {
     Tasks,
+    Calendar,
     Board,
     Matrix,
     Pomodoro,
@@ -282,6 +290,7 @@ pub enum Module {
 struct ModuleNavigation {
     active: Module,
     tasks: Page,
+    calendar: Page,
     board: Page,
     matrix: Page,
     pomodoro: Page,
@@ -291,6 +300,7 @@ impl Default for ModuleNavigation {
         Self {
             active: Module::Tasks,
             tasks: Page::Inbox,
+            calendar: Page::Calendar,
             board: Page::Board,
             matrix: Page::Matrix,
             pomodoro: Page::Pomodoro,
@@ -301,6 +311,7 @@ impl ModuleNavigation {
     fn remembered(&self, module: Module) -> &Page {
         match module {
             Module::Tasks => &self.tasks,
+            Module::Calendar => &self.calendar,
             Module::Board => &self.board,
             Module::Matrix => &self.matrix,
             Module::Pomodoro => &self.pomodoro,
@@ -310,6 +321,7 @@ impl ModuleNavigation {
     fn remember(&mut self, page: Page) {
         match page.module() {
             Module::Tasks => self.tasks = page,
+            Module::Calendar => self.calendar = page,
             Module::Board => self.board = page,
             Module::Matrix => self.matrix = page,
             Module::Pomodoro => self.pomodoro = page,
@@ -325,15 +337,25 @@ impl ModuleNavigation {
 impl Page {
     fn module(&self) -> Module {
         match self {
-            Self::Inbox | Self::Today | Self::Calendar | Self::Lists | Self::List(_) => {
-                Module::Tasks
-            }
+            Self::Inbox | Self::Today | Self::Lists | Self::List(_) => Module::Tasks,
+            Self::Calendar | Self::CalendarInbox | Self::CalendarList(_) => Module::Calendar,
             Self::Board | Self::BoardLists => Module::Board,
             Self::Matrix | Self::MatrixLists | Self::MatrixList(_) => Module::Matrix,
             Self::Pomodoro
             | Self::PomodoroHistory
             | Self::PomodoroStatistics
             | Self::PomodoroSettings => Module::Pomodoro,
+        }
+    }
+
+    fn is_calendar(&self) -> bool {
+        self.module() == Module::Calendar
+    }
+    fn calendar_filter(&self) -> calendar_month::Filter<'_> {
+        match self {
+            Self::CalendarInbox => calendar_month::Filter::Inbox,
+            Self::CalendarList(id) => calendar_month::Filter::List(id),
+            _ => calendar_month::Filter::All,
         }
     }
 
@@ -346,11 +368,11 @@ impl Page {
             Module::Tasks => match self {
                 Self::Inbox => "Inbox",
                 Self::Today => "Today",
-                Self::Calendar => "Calendar",
                 Self::Lists => "Lists",
                 Self::List(_) => "List",
                 _ => unreachable!(),
             },
+            Module::Calendar => "Calendar",
             Module::Board => "Board View",
             Module::Matrix => "Eisenhower Matrix",
             Module::Pomodoro => match self {
@@ -433,6 +455,7 @@ impl cosmic::Application for AppModel {
             list_editor: None,
             delete_list_id: None,
             today: jiff::Zoned::now().date(),
+            month_view: calendar_month::State::new(jiff::Zoned::now().date()),
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
@@ -851,6 +874,14 @@ impl cosmic::Application for AppModel {
                     .height(Length::Fill)
                     .width(Length::Fill),
             );
+        } else if page.is_calendar() {
+            content = content.push(calendar_view::view(
+                self.store.as_ref(),
+                &self.month_view,
+                self.today,
+                self.page.calendar_filter(),
+                self.can_write(),
+            ));
         } else if page.is_matrix() {
             content = content.push(matrix_view::view(
                 self.store.as_ref(),
@@ -920,7 +951,6 @@ impl cosmic::Application for AppModel {
             content = content.push(widget::scrollable(lists).height(Length::Fill));
         } else {
             content = content.push(widget::text::body(match page {
-                Page::Calendar => "Calendar view is coming later.",
                 Page::Board | Page::BoardLists => "Board View is coming later.",
                 Page::Pomodoro => "Focus Timer is coming later.",
                 Page::PomodoroHistory => "Pomodoro history is coming later.",
@@ -1253,6 +1283,19 @@ impl cosmic::Application for AppModel {
     }
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Month(action) if self.page.is_calendar() => match action {
+                calendar_view::Action::Previous => self.month_view.navigate(-1),
+                calendar_view::Action::Next => self.month_view.navigate(1),
+                calendar_view::Action::Select(date) => self.month_view.select(date),
+                calendar_view::Action::Today => {
+                    self.today = jiff::Zoned::now().date();
+                    self.month_view.today(self.today);
+                }
+                calendar_view::Action::Add if self.can_write() => {
+                    return self.update(Message::Add);
+                }
+                _ => {}
+            },
             Message::SelectModule(module) => {
                 self.page = self.navigation.switch(module, &self.page);
                 self.matrix_priority_task = None;
@@ -1594,7 +1637,11 @@ impl cosmic::Application for AppModel {
                     }
                 }
             }
-            Message::Add if self.can_write() => match self.page.draft_task() {
+            Message::Add if self.can_write() => match if self.page.is_calendar() {
+                calendar_month::draft(self.month_view.selected, self.page.calendar_filter())
+            } else {
+                self.page.draft_task()
+            } {
                 Ok(task) => {
                     self.open_editor(task, true);
                     return widget::text_input::focus(self.title_input.clone());
@@ -1854,6 +1901,16 @@ impl AppModel {
         self.store.is_some() && self.storage_error.is_none()
     }
     fn rebuild_nav(&mut self) {
+        if let Some(store) = &self.store {
+            if matches!(&self.page, Page::CalendarList(id) if !store.lists().iter().any(|list| &list.id == id))
+            {
+                self.page = Page::Calendar;
+            }
+            if matches!(&self.navigation.calendar, Page::CalendarList(id) if !store.lists().iter().any(|list| &list.id == id))
+            {
+                self.navigation.calendar = Page::Calendar;
+            }
+        }
         self.navigation.active = self.page.module();
         self.navigation.remember(self.page.clone());
         self.nav = build_nav(
@@ -1985,6 +2042,7 @@ fn list_icon() -> icon::Handle {
 fn module_icon(module: Module) -> icon::Handle {
     let asset = match module {
         Module::Tasks => MODULE_TASKS_ICON,
+        Module::Calendar => CALENDAR_ICON,
         Module::Board => MODULE_BOARD_ICON,
         Module::Matrix => MODULE_MATRIX_ICON,
         Module::Pomodoro => MODULE_POMODORO_ICON,
@@ -2083,7 +2141,6 @@ fn build_nav(
             for (page, label, nav_icon) in [
                 (Page::Inbox, "Inbox", icon::icon(inbox_icon())),
                 (Page::Today, "Today", icon::icon(today_icon())),
-                (Page::Calendar, "Calendar", icon::icon(calendar_icon())),
             ] {
                 add(&mut nav, page, label, nav_icon);
             }
@@ -2105,6 +2162,42 @@ fn build_nav(
                 insert_list_rows(&mut nav, lists, Module::Tasks, true);
             } else {
                 insert_list_rows(&mut nav, lists, Module::Tasks, false);
+            }
+        }
+        Module::Calendar => {
+            add(
+                &mut nav,
+                Page::Calendar,
+                "Month",
+                icon::icon(calendar_icon()),
+            );
+            let heading = nav
+                .insert()
+                .text("Lists")
+                .icon(icon::icon(list_icon()))
+                .id();
+            nav.enable(heading, false);
+            let inbox = add(
+                &mut nav,
+                Page::CalendarInbox,
+                "Inbox",
+                icon::icon(inbox_icon()),
+            );
+            nav.indent_set(inbox, 1);
+            let mut ordered: Vec<_> = lists.iter().collect();
+            ordered.sort_by_key(|list| !list.pinned);
+            for list in ordered {
+                let row = nav
+                    .insert()
+                    .text(list.name.clone())
+                    .data(Page::CalendarList(list.id.clone()))
+                    .icon(icon::icon(if list.pinned {
+                        pinned_list_icon()
+                    } else {
+                        list_icon()
+                    }))
+                    .id();
+                nav.indent_set(row, 1);
             }
         }
         Module::Board => {
@@ -2235,6 +2328,7 @@ fn matrix_scope_after_page(page: &Page, current: Option<String>) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmic::Application;
 
     // No init/load: exercise the actual navigation tree without opening task data.
     fn sidebar_fixture() -> AppModel {
@@ -2258,6 +2352,7 @@ mod tests {
             list_editor: None,
             delete_list_id: None,
             today: "2026-10-19".parse().unwrap(),
+            month_view: calendar_month::State::new("2026-10-19".parse().unwrap()),
             task_sort: tasks::TaskSort::default(),
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
@@ -2298,7 +2393,7 @@ mod tests {
                 assert_eq!(container.size().width, width);
                 assert_eq!(row.size().width, width - 2. * f32::from(gap));
                 let expected_cell = module_cell_width(width, gap);
-                assert_eq!(row.children().len(), 4);
+                assert_eq!(row.children().len(), MODULE_COUNT);
                 for (index, cell) in row.children().iter().enumerate() {
                     assert!((cell.size().width - expected_cell).abs() < 0.01);
                     assert_eq!(cell.size().height, MODULE_CELL_HEIGHT);
@@ -2322,7 +2417,13 @@ mod tests {
                 }
                 let last = row.children().last().unwrap();
                 assert!((last.bounds().x + last.size().width - row.size().width).abs() < 0.01);
-                assert!((4. * expected_cell + 3. * f32::from(gap) - row.size().width).abs() < 0.01);
+                assert!(
+                    (MODULE_COUNT as f32 * expected_cell
+                        + (MODULE_COUNT - 1) as f32 * f32::from(gap)
+                        - row.size().width)
+                        .abs()
+                        < 0.01
+                );
                 return Some(width);
             }
             None
@@ -2330,11 +2431,13 @@ mod tests {
         fn find(node: &Node, gap: u16) -> Option<f32> {
             check(node, gap).or_else(|| node.children().iter().find_map(|child| find(child, gap)))
         }
-        for module in [Module::Tasks, Module::Matrix] {
+        for module in [Module::Tasks, Module::Calendar, Module::Matrix] {
             let mut app = sidebar_fixture();
             app.navigation.active = module;
             app.page = if module == Module::Tasks {
                 Page::Inbox
+            } else if module == Module::Calendar {
+                Page::Calendar
             } else {
                 Page::Matrix
             };
@@ -2373,12 +2476,210 @@ mod tests {
                     find(&layout, gap).expect("full native frame must contain the selector");
                 assert_eq!(width, SIDEBAR_MAX_WIDTH);
                 println!(
-                    "frame={viewport} sidebar={width} inner={} four_cells_plus_gaps={}",
+                    "frame={viewport} sidebar={width} inner={} five_cells_plus_gaps={}",
                     width - 2. * f32::from(gap),
-                    4. * module_cell_width(width, gap) + 3. * f32::from(gap)
+                    MODULE_COUNT as f32 * module_cell_width(width, gap)
+                        + (MODULE_COUNT - 1) as f32 * f32::from(gap)
                 );
             }
         }
+    }
+
+    #[test]
+    fn calendar_module_navigation_uses_shared_lists_and_leaves_tasks_without_calendar() {
+        assert_eq!(
+            MODULES.map(|(module, _)| module),
+            [
+                Module::Tasks,
+                Module::Calendar,
+                Module::Board,
+                Module::Matrix,
+                Module::Pomodoro
+            ]
+        );
+        assert!(module_icon(Module::Calendar).symbolic);
+        assert!(
+            std::str::from_utf8(CALENDAR_ICON)
+                .unwrap()
+                .contains("icon-tabler-calendar-month")
+        );
+        let list = TaskList::new("Work").unwrap();
+        let tasks = build_nav(
+            std::slice::from_ref(&list),
+            &Page::Inbox,
+            Module::Tasks,
+            true,
+            true,
+        );
+        assert!(
+            !tasks
+                .iter()
+                .any(|id| tasks.data::<Page>(id).is_some_and(Page::is_calendar))
+        );
+        let selected = Page::CalendarList(list.id.clone());
+        let nav = build_nav(
+            std::slice::from_ref(&list),
+            &selected,
+            Module::Calendar,
+            true,
+            true,
+        );
+        let pages: Vec<_> = nav
+            .iter()
+            .filter_map(|id| nav.data::<Page>(id).cloned())
+            .collect();
+        assert_eq!(
+            pages,
+            vec![Page::Calendar, Page::CalendarInbox, selected.clone()]
+        );
+        assert_eq!(nav.active_data::<Page>(), Some(&selected));
+        let headings: Vec<_> = nav
+            .iter()
+            .filter(|id| nav.data::<Page>(*id).is_none())
+            .collect();
+        assert_eq!(headings.len(), 1);
+        assert!(!nav.is_enabled(headings[0]));
+        let mut navigation = ModuleNavigation::default();
+        assert_eq!(
+            navigation.switch(Module::Calendar, &Page::Today),
+            Page::Calendar
+        );
+        navigation.remember(selected.clone());
+        assert_eq!(navigation.switch(Module::Tasks, &selected), Page::Today);
+        assert_eq!(navigation.switch(Module::Calendar, &Page::Today), selected);
+    }
+
+    #[test]
+    fn calendar_editor_completion_and_restart_share_one_record_with_tasks_and_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let list = TaskList::new("Work").unwrap();
+        store.upsert_list(list.clone()).unwrap();
+        store
+            .set_preferences(tasks::TaskSort::Name, false, false)
+            .unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        app.page = Page::CalendarList(list.id.clone());
+        app.rebuild_nav();
+        let date: Date = "2024-02-29".parse().unwrap();
+        let _ = app.update(Message::Month(calendar_view::Action::Select(date)));
+        let _ = app.update(Message::Month(calendar_view::Action::Add));
+        let editor = app.editor.as_ref().unwrap();
+        let id = editor.task.id.clone();
+        assert_eq!(editor.due, "2024-02-29");
+        assert_eq!(editor.task.list_id.as_deref(), Some(list.id.as_str()));
+        assert_eq!(editor.task.priority, Priority::P0);
+        let _ = app.update(Message::Title("Created in Calendar".into()));
+        let _ = app.update(Message::Save);
+        assert!(app.editor.is_none());
+        assert_eq!(app.store.as_ref().unwrap().tasks().len(), 1);
+        let _ = app.update(Message::Edit(id.clone()));
+        let _ = app.update(Message::Title("Edited shared task".into()));
+        let _ = app.update(Message::Due("2024-03-01".into()));
+        let _ = app.update(Message::Priority(3));
+        let _ = app.update(Message::Save);
+        let next: Date = "2024-03-01".parse().unwrap();
+        let store = app.store.as_ref().unwrap();
+        assert!(
+            calendar_month::on_date(store.tasks(), date, calendar_month::Filter::All).is_empty()
+        );
+        assert_eq!(
+            calendar_month::on_date(store.tasks(), next, calendar_month::Filter::List(&list.id))[0]
+                .id,
+            id
+        );
+        assert_eq!(
+            matrix::ordered(
+                store.tasks(),
+                Some(&list.id),
+                tasks::Quadrant::ImportantUrgent
+            )[0]
+            .id,
+            id
+        );
+        assert_eq!(
+            tasks::visible_tasks(store.tasks(), TaskView::List(&list.id), next)[0].title,
+            "Edited shared task"
+        );
+        let _ = app.update(Message::Toggle(id.clone()));
+        assert!(
+            calendar_month::on_date(
+                app.store.as_ref().unwrap().tasks(),
+                next,
+                calendar_month::Filter::All
+            )[0]
+            .completed
+        );
+        drop(app.store.take());
+        let restored = Store::open(path.clone()).unwrap();
+        assert_eq!(restored.tasks().len(), 1);
+        assert_eq!(restored.tasks()[0].id, id);
+        assert!(restored.tasks()[0].completed);
+        assert_eq!(restored.sort_mode(), tasks::TaskSort::Name);
+        assert!(!restored.sort_ascending());
+        assert!(!restored.show_completed());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["version"],
+            6
+        );
+    }
+
+    #[test]
+    fn calendar_filters_recover_when_a_shared_list_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("tasks.json")).unwrap();
+        let list = TaskList::new("Work").unwrap();
+        store.upsert_list(list.clone()).unwrap();
+        let mut task = calendar_month::draft(
+            "2026-10-19".parse().unwrap(),
+            calendar_month::Filter::List(&list.id),
+        )
+        .unwrap();
+        task.title = "Keep me".into();
+        let id = task.id.clone();
+        store.upsert(task).unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        app.page = Page::CalendarList(list.id.clone());
+        app.rebuild_nav();
+        // Deletion through existing Tasks list management must also invalidate a remembered Calendar filter.
+        let _ = app.update(Message::SelectModule(Module::Tasks));
+        let _ = app.update(Message::DeleteList(list.id));
+        let _ = app.update(Message::ConfirmDeleteList);
+        let _ = app.update(Message::SelectModule(Module::Calendar));
+        assert_eq!(app.page, Page::Calendar);
+        let store = app.store.as_ref().unwrap();
+        assert_eq!(store.tasks()[0].id, id);
+        assert!(store.tasks()[0].list_id.is_none());
+        assert_eq!(
+            calendar_month::on_date(
+                store.tasks(),
+                "2026-10-19".parse().unwrap(),
+                calendar_month::Filter::Inbox
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn calendar_save_failure_keeps_the_editor_and_original_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let store = Store::open(path.clone()).unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        app.page = Page::Calendar;
+        let _ = app.update(Message::Month(calendar_view::Action::Add));
+        let _ = app.update(Message::Title("Do not discard".into()));
+        std::fs::write(&path, b"external damaged data").unwrap();
+        let _ = app.update(Message::Save);
+        assert!(app.storage_error.is_some());
+        assert!(app.editor.is_some());
+        assert!(app.store.as_ref().unwrap().tasks().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"external damaged data");
     }
 
     #[test]
@@ -2396,7 +2697,7 @@ mod tests {
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .spacing(gap);
-                    for _ in 0..4 {
+                    for _ in 0..MODULE_COUNT {
                         let cell = Button::new(
                             Container::new(Space::new().width(16).height(16))
                                 .center_x(Length::Fill)
@@ -2449,8 +2750,10 @@ mod tests {
                     let selector = &children[0];
                     let row = &selector.children()[0];
                     assert_eq!(row.size().width, expected - 2. * f32::from(padding));
-                    let cell_width = (row.size().width - 3. * f32::from(gap)) / 4.;
-                    assert_eq!(row.children().len(), 4);
+                    let cell_width = (row.size().width
+                        - (MODULE_COUNT - 1) as f32 * f32::from(gap))
+                        / MODULE_COUNT as f32;
+                    assert_eq!(row.children().len(), MODULE_COUNT);
                     for (index, cell) in row.children().iter().enumerate() {
                         assert!((cell.size().width - cell_width).abs() < 0.01);
                         assert!(
@@ -2723,7 +3026,6 @@ mod tests {
             vec![
                 Page::Inbox,
                 Page::Today,
-                Page::Calendar,
                 Page::List(pinned_first.id.clone()),
                 Page::List(pinned_second.id.clone()),
                 Page::Lists,
@@ -2756,7 +3058,6 @@ mod tests {
             vec![
                 Page::Inbox,
                 Page::Today,
-                Page::Calendar,
                 Page::List(pinned_first.id.clone()),
                 Page::List(pinned_second.id.clone()),
                 Page::Lists,

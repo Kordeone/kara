@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
+mod calendar_month;
+mod calendar_view;
 mod date_entry;
 mod i18n;
 mod lifecycle;

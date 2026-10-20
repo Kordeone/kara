@@ -1,381 +1,135 @@
-Kara — Measured four-module selector width and selection
+KARA — Calendar Stage 1: Functional Month View
 
-Candidate and scope
-- Worktree: /tmp/kara-matrix-integration
-- Branch: integration/matrix-feedback
-- Baseline: 910d3cc; contains the complete Matrix integration and prior sidebar fix.
-- Changed files: src/app.rs and report.txt only.
-- The owner has previously confirmed sidebar visibility and Matrix operation.
-  This selector update still requires CachyOS graphical acceptance.
-
-Diagnosis and limits of the evidence
-- The former layout regression used an iced button substitute and did not test
-  AppModel::nav_bar() inside the real COSMIC frame. It was insufficient evidence
-  for claiming the owner-visible layout was correct.
-- Before changing production code, measured 910d3cc's actual COSMIC widget tree
-  with the locked software renderer. Both standalone sidebar and full frame
-  measured: sidebar 280, header 280, inner row 264, four 60px cells, three 8px gaps.
-  The reported large unused right area was not reproduced on headless Debian.
-- Consequently the precise cause of the CachyOS discrepancy is unconfirmed.
-  A runtime/backend difference or a different running binary remains possible;
-  neither is asserted as fact. The owner declined further runtime observations.
-- The update removes reliance on inferred FillPortion cell allocation and makes
-  the header and each cell explicitly match the width allocated by native layout.
-  It does not claim that automated measurements prove CachyOS visual approval.
+Integration and scope
+- Clean main was fast-forwarded from 7259a39 to accepted UI commit 716cf96.
+  Baseline formatting, check, strict Clippy, tests, build and private D-Bus
+  regression passed (101 regular tests plus 1 separately exercised bus test).
+- Calendar development is isolated in /home/rapper/projects/kara-calendar on
+  feat/calendar-month, based on 716cf96. No Calendar merge or push was performed.
+- Original rescue checkout, other worktrees, branches and backups are preserved.
 
 Implementation
-- Native responsive widget receives the sidebar's final bounded allocation.
-  Header width is exactly that allocation. With native spacing p used for both
-  padding and gaps: inner width = allocation - 2p, cell = (allocation - 5p) / 4.
-- Four fixed measured cell widths plus three gaps span the entire inner row.
-  Icons remain centered horizontally/vertically and each cell is a button.
-- The sidebar retains its existing intrinsic minimum spacer and 280px desktop
-  maximum. No forced wider sidebar, new navigation structure or pointer tracking.
-- Selected cells use an opaque blend of the native primary surface and accent
-  (22% accent at rest, 30% hovered, 36% pressed), a restrained 1px accent border
-  and native small rounded corners. Native keyboard outline remains distinct.
-  Icons use the theme foreground; tests require 4.5:1 contrast for selected,
-  hovered and pressed fills in light/dark/high-contrast themes.
-- Tooltips remain below the cells; selected accessibility state, module messages,
-  contextual subsections and remembered navigation state are retained.
-- All other AppModel implementation/handlers/dialogs match 910d3cc byte-for-byte
-  after excluding nav_bar() and its new rendering helpers/tests.
-- Matrix, neutral drag preview, sorting, task/list CRUD, ordering, persistence,
-  tray and single-instance implementation files are unchanged.
-
-Exact measurements from the production widget tree (logical pixels)
-Native theme padding/gap p = 8:
-  Sidebar/header 200 | inner row 184 | cells 40 each | x = 0,48,96,144
-  Sidebar/header 240 | inner row 224 | cells 50 each | x = 0,58,116,174
-  Sidebar/header 280 | inner row 264 | cells 60 each | x = 0,68,136,204
-Cell positions are relative to the inner row; add 8px for sidebar-relative x.
-Cell height is 36; symbols are 16x16 and centered. Last cell ends exactly at
-inner-row right edge. Header outer height is 52 including vertical padding.
-Full native frame widths 640/800/1024/1440 each measured sidebar 280 and inner
-selector 264. This proves the panel was not widened to distribute the cells.
-
-Regression coverage and validation — headless Debian
-- Tests now instantiate the actual AppModel navigation and full native frame
-  using the locked tiny-skia software renderer, without Application::init/load,
-  task storage, a compositor, a GPU request or a Wayland/X11 display.
-- Verify header/container/row widths, every button width/x position, last right
-  edge, summed cells/gaps and icon centers. Covers Tasks/Matrix, long list names,
-  sidebar constraints 200/240/280/640/1024, repeated layout on one tree and full
-  frame widths 640/800/1024/1440. Retains the former collapse/geometry tests.
-- cargo fmt --check: PASSED
-- cargo check --locked: PASSED
-- cargo clippy --locked --all-targets -- -D warnings: PASSED
-- cargo test --locked: PASSED, 96 passed, 0 failed, 1 ignored private-bus test
-- cargo build --locked: PASSED
-- Isolated D-Bus tray regression: PASSED, 1 test; all 97 tests exercised:
-  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-- Build output uses /var/tmp/kara-matrix-integration-target; protected worktrees
-  receive no build-output writes. No COSMIC graphical verification on Debian.
-
-CachyOS acceptance instructions
-1. Quit Kara through tray Quit, then transfer this exact candidate's source and
-   Cargo.lock to a separate CachyOS folder using Samba. Build and launch with
-   disposable data (an existing process otherwise receives single-instance Open):
-     cargo build --locked
-     KARA_SELECTOR_DATA=$(mktemp -d)
-     XDG_DATA_HOME="$KARA_SELECTOR_DATA" ./target/debug/kara
-2. In a wide window, compare the sidebar edges with the selector: only normal
-   padding and three even gaps should remain. The fourth cell must reach the
-   right inner edge; no large blank right area. Check long named lists too.
-3. Click each cell near both edges, not just the icon. Confirm full-cell hit areas,
-   centered glyphs, correct module and unchanged contextual navigation/state.
-4. Selected cell must show a clear, restrained rounded rectangular fill over its
-   entire area. Hover it and other cells; verify hover differs from selection.
-   Tab/Shift+Tab must show an additional focus outline, with keyboard activation.
-5. Check bottom tooltips, wide/narrow windows, maximization, sidebar hide/show,
-   condensed navigation, light/dark themes and display/app scaling. Confirm no
-   header obstruction, collapse, clipped controls or wider sidebar.
-6. Smoke-test Matrix list selection, neutral drag badge, destination highlight,
-   exact insertion, cancellation, completed movement and keyboard fallback.
-   Quit/relaunch with the same data directory to verify saved priority/order.
-7. If the unused-right-area symptom remains, capture the whole window and running
-   build identity/scaling. Automated layout passing cannot resolve that runtime
-   discrepancy without observation; do not promote based on these tests alone.
-
-Delivery boundary
-- Commit only on integration/matrix-feedback. No merge into main and no push.
-- Shared main, Luna's worktree and the original Matrix branch are preserved.
-
-
-Kara Tasks UI polish — Lists sidebar and sorting toolbar
-
-Implementation
-- Pinned lists now appear first within expanded Tasks and Matrix Lists navigation; each pinned/unpinned group retains its prior relative order. Collapsing either Lists group hides every list. Pin state and task/list storage remain unchanged.
-- Added libcosmic's native divider above Tasks Lists, immediately after Calendar.
-- Replaced the sort-mode popover and separate direction button with four compact controls for creation date, due date, priority, and name. The selected control shows a small direction glyph at the upper-right and uses COSMIC selected, hover, and focus states. Clicking the active mode reverses direction; selecting another mode restores that mode's existing default. Show Completed remains at the toolbar's far right.
-- Added bundled symbolic SVG assets for creation date, due date, and alphabetical sorting; the existing bundled priority flag and direction icons are reused.
-- No storage schema or Matrix classification/order behavior changed. Matrix list navigation uses the same pinned-first and collapse rules.
-
-Files changed
-- src/app.rs
-- src/tasks.rs
-- resources/icons/hicolor/scalable/actions/sort-created-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-due-symbolic.svg
-- resources/icons/hicolor/scalable/actions/sort-name-symbolic.svg
-- report.txt
-
-Validation on headless Debian
-- cargo fmt --check: PASSED
-- cargo check --locked: PASSED
-- cargo clippy --locked --all-targets -- -D warnings: PASSED
-- cargo test --locked: PASSED
-- cargo build --locked: PASSED
-- Isolated D-Bus tray regression: PASSED
-  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture
-- No COSMIC graphical testing was performed.
-
-CachyOS COSMIC graphical acceptance
-1. In light and dark themes, expand Tasks > Lists and confirm pinned lists lead, both groups retain their existing order, and the divider sits between Calendar and Lists. Collapse Lists and confirm all named lists disappear; expand it and verify pin/unpin changes persist and reorder immediately.
-2. Repeat list ordering, collapse/expand, pinning and selection under Matrix > Lists. Confirm selecting a named list changes Matrix scope as before and no duplicate list selector appears in Matrix content.
-3. In Inbox, Today, and a named list, verify four compact icons: creation date, due date, priority flag, and alphabetical name. Confirm only one has selected styling and its small direction indicator sits at the icon's upper-right.
-4. Click an unselected mode and confirm it becomes selected with that mode's established default direction. Click it again and confirm direction reverses. Restart Kara and confirm mode/direction preferences persist.
-5. Use mouse hover and keyboard Tab/activation. Confirm native COSMIC hover and selected states are clear, keyboard focus remains visually distinct, tooltips/accessibility labels identify mode and direction, and Show Completed stays aligned at the far right.
-6. Check the toolbar and sidebar at normal and narrow window widths for clipping or overlap.
-
-Kara — Owner Tabler SVG collection and pinned-list shortcuts
-
-Source and copy verification
-- Owner source directory: /home/rapper/projects/svgs
-- Application-owned destination: assets/tabler/
-- SVGs copied: 67 of 67, retaining all original filenames. Originals were copied
-  only; the source directory was not modified.
-- SHA-256: all 67 destination files matched their source counterparts exactly.
-  Each source and destination SVG also parsed as XML. Every icon uses the
-  theme-tintable currentColor stroke. The requested alarm.svg, flag-3.svg and
-  sort-a-z.svg were present and copied.
-- Added assets/tabler/LICENSE.txt with the Tabler Icons MIT license and
-  attribution (Paweł Kuna, 2020–2026; see github.com/tabler/tabler-icons).
-- The owner's KARA application logo remains separate and unchanged.
-- Only assets directly referenced by Rust include_bytes! are compiled into the
-  binary; the complete 67-file collection remains available under assets/tabler.
-
-Icon mapping and implementation
-- Four-module selector: existing module symbols -> list-check.svg (Tasks),
-  layout-kanban.svg (Board), columns-3.svg (Eisenhower Matrix), and
-  stopwatch.svg (Pomodoro).
-- Task navigation: inbox-tray -> inbox.svg; Today keeps its calendar-check
-  meaning via calendar-check.svg; Calendar uses calendar-month.svg. List rows
-  use list.svg, with pinned rows and shortcuts using pinned.svg.
-- Pin actions: theme pin glyphs -> pin.svg when unpinned and pinned-off.svg for
-  the unpin action. Context menus and the Lists page use the same state-aware
-  assets. Pinning remains the existing persisted list property.
-- Sort toolbar: creation -> calendar-plus.svg; due -> calendar-due.svg;
-  priority -> flag-3.svg; name -> sort-a-z.svg; ascending/descending ->
-  arrow-up.svg / arrow-down.svg. Selection, direction indicator, persistence,
-  tooltips and sorting logic are unchanged.
-- Task actions: edit -> pencil.svg; delete -> trash.svg; About -> info-circle.svg.
-  The task date-picker action uses calendar-month.svg.
-- Matrix actions: priority -> flag-3.svg; add -> plus.svg; drag handle ->
-  grip-vertical.svg; neutral drag badge -> list-check.svg; Move Up/Down ->
-  arrow-up.svg / arrow-down.svg. Matrix classification, ordering and drag logic
-  are unchanged.
-- Existing Pomodoro placeholder navigation now uses alarm.svg, history.svg,
-  chart-bar.svg and settings.svg. This adds no Pomodoro functionality.
-- Native COSMIC checkbox controls, theme styling and window decorations remain.
-
-Pinned-list behavior
-- Pinned lists appear as persistent shortcuts above Tasks > Lists and Matrix >
-  Lists. In an expanded Lists section, the same list appears again at the top
-  of the internal list rows; both navigation entries reference the same
-  existing list ID and task data.
-- Collapsing Lists hides every internal entry, including pinned entries, while
-  the pinned shortcuts remain visible and usable. Pinned items stay ahead of
-  unpinned items inside the expanded section; relative order within either
-  group is retained.
-- The Tasks divider is placed immediately after Calendar, before the shortcuts
-  and Lists section. Pin/collapse storage and schemas are unchanged.
+- Five top modules: Tasks, Calendar, Board View, Eisenhower Matrix, Pomodoro.
+  Calendar uses the owner's existing bundled Tabler calendar-month.svg. The
+  accepted selector, selected-cell background, hover, focus and tooltips remain.
+  Five cells share the measured inner sidebar width without widening the panel.
+- Calendar is removed from the Tasks sidebar. Inbox, Today, Lists, sorting and
+  pinned-list behavior remain. Calendar has Month (all lists), a Lists heading,
+  Inbox and the existing named lists as mutually exclusive calendar filters.
+  Week and Day entries are deferred rather than displaying fake views.
+- Native month grid with Monday–Sunday columns and complete 4/5/6-week rows,
+  adjacent-month dates, month/year heading, previous/next and Today controls.
+  Current day has an accent border; selected day has an accent border and theme
+  surface. Day buttons expose full dates, task counts and state in their names.
+- Date cells show up to two compact task previews, priority flags and +N more.
+  Selected-day details show every matching task in a scrollable list, including
+  reversible completion and access to the accepted task editor. Completed tasks
+  are muted/struck through and follow active tasks, without reordering records.
+- Add task preselects the selected civil date, selected named list (or Inbox for
+  Month/all lists and Inbox), and normal P0 defaults. Generic Add uses the same
+  handler. Editing, completion and saving use existing task IDs and Store APIs.
+- Wide content (at least 950px) places selected-day details beside the grid;
+  narrower content places details below it. Overall scrolling keeps dates and
+  details accessible in short windows; details also scroll independently.
+- Calendar filters, month and selection are session state. Switching modules
+  remembers Calendar context; deleting a shared list safely resets its filter.
+- Civil dates use Jiff Date throughout. Today uses the local timezone; no UTC
+  conversion is applied to due dates. Undated tasks appear on no calendar date.
 
 Changed files
-- src/app.rs
-- src/matrix_view.rs
-- src/priority_style.rs
-- report.txt
-- assets/tabler/LICENSE.txt and the 67 copied SVGs retaining their source names
+- src/calendar_month.rs: civil-date state, complete-week calculations, shared
+  task filtering and creation draft defaults, with focused unit tests.
+- src/calendar_view.rs: native calendar grid, controls, selected-day details,
+  theme styling, responsive scrolling and real-widget layout regression.
+- src/app.rs: fifth module, contextual navigation, shared editor dispatch,
+  deleted-filter recovery, application regressions and five-cell geometry tests.
+- src/main.rs: registers the two Calendar modules.
+- report.txt: this consolidated milestone report.
+
+Compatibility and preserved behavior
+- No new schema, migration, dependencies, database or separate task records.
+  JSON remains version 6 with existing atomic writes and corruption protection.
+- Cargo.toml/Cargo.lock, task/storage modules, Matrix/DnD modules, tray/lifecycle,
+  branding and icon assets are unchanged. The accepted dialog implementation
+  matches main byte for byte; its date picker, validation and layout are intact.
+- Tests use temporary data only. Existing user task data was not opened or changed.
+- Tasks sort preferences and Show Completed setting are not modified by Calendar;
+  Calendar deliberately displays completed dated tasks with reversible controls.
 
 Validation — headless Debian
-- cargo fmt --check: PASSED
-- cargo check --locked: PASSED
-- cargo clippy --locked --all-targets -- -D warnings: PASSED
-- cargo test --locked: PASSED, 98 passed, 0 failed, 1 ignored private-bus test
-- cargo build --locked: PASSED
-- Isolated D-Bus tray/single-instance regression: PASSED, 1 test:
+All final commands passed from the Calendar worktree:
+  cargo fmt --check
+  cargo check --locked
+  cargo clippy --locked --all-targets -- -D warnings
+  cargo test --locked
+  cargo build --locked
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
-  tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
-  -- --ignored --exact --nocapture
-- Source-to-copy SHA-256 check: PASSED, 67/67 exact matches; source XML and all
-  copied XML parsed; all SVGs were currentColor stroke assets.
-- App and Matrix resource tests: PASSED; resolved handles are embedded symbolic
-  SVGs. No COSMIC graphical session was available on Debian.
+    tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
+    -- --ignored --exact --nocapture
+Existing cache used: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
+- Regular suite: 111 passed, 0 failed, 1 intentionally ignored bus test.
+- Private D-Bus regression: 1 passed, 0 failed (112 tests exercised in total).
+- Ten new tests cover year/month/leap boundaries, Date range limits, complete
+  Monday weeks, task placement, undated exclusion, list filtering, creation date
+  and list defaults, shared editing/completion/restart identity across Tasks and
+  Matrix, retained sort preferences, deleted-list recovery, failed saves, module
+  navigation, and populated native layout at 400x350, 680x600 and 1200x700.
+- Existing real-widget selector tests now verify five widths, positions, icon
+  centering and total occupied width in Tasks, Calendar and Matrix. Tested sidebar
+  constraints: 200/240/280/640/1024px; full frames: 640/800/1024/1440px wide.
+  At native 8px padding/gaps, measured sidebar 280px -> inner 264px -> five 46.4px
+  cells + four 8px gaps = 264px. At 240px: inner 224px, five 38.4px cells; at
+  200px: inner 184px, five 30.4px cells. Sidebar remains capped at 280px.
+- Populated layout uses 40 tasks on one date, six equal seven-cell week rows,
+  finite geometry and viewport-bound roots. An initial test counted the vertical
+  grid container as a row; the final test distinguishes horizontal full-height
+  cells and passes. Software geometry testing is not COSMIC visual acceptance.
 
-CachyOS COSMIC graphical acceptance checklist
-1. In light and dark themes, inspect the four-module selector and all subsection
-   rows. Confirm centered recognizable Tabler symbols, native alignment, selected
-   states and no regressions in keyboard focus or hover. Check normal and narrow
-   window widths.
-2. In Tasks, confirm Inbox, Today and Calendar icons; verify the divider sits
-   immediately below Calendar. Pin two lists and confirm shortcuts appear above
-   Lists in pin order, then appear again first inside expanded Lists.
-3. Collapse Lists: confirm all internal list rows disappear while pinned
-   shortcuts remain visible and open the same list. Expand again; pin/unpin a
-   list from its shortcut context menu and from the Lists page, confirming both
-   representations update immediately and the setting survives restart.
-4. Repeat list selection, pinned shortcuts, expanded/collapsed behavior and
-   Matrix scope selection under Eisenhower Matrix > Lists. Verify Matrix task
-   classifications and order remain unchanged.
-5. In Inbox, Today and a named list, check creation, due, priority and A–Z sort
-   symbols, the selected-mode direction marker, arrow direction, tooltips,
-   keyboard access and preference persistence.
-6. Verify Edit/Delete task actions, task dialog calendar button, About icon, and
-   Matrix priority/add/drag/move controls. Exercise Matrix drag movement and
-   confirm actions still apply to the intended task.
-7. Repeat the visual check at display scaling and a narrow window; confirm no
-   clipped or overlapping sidebar controls. Restart Kara and verify existing
-   tasks, lists, pinning and sort preferences are preserved.
+Known limitations
+- No graphical verification was performed on Debian. CachyOS acceptance pending.
+- Month/day labels are currently English; weeks always start Monday. There is no
+  existing reliable locale week-start preference in this application to reuse.
+- Week/Day layouts, external calendars, recurrence, scheduling times, Calendar
+  drag-and-drop, Backup/Restore, Board and Pomodoro functionality are out of scope.
+- Selection/filter/month are not persisted. Month defaults to the local current
+  date on a new process. Long preview titles are compact; full titles are in the
+  selected-day details/editor. Narrow/short windows may require vertical scrolling.
 
-About Kara — Tabler open-source credit follow-up
-- Appended a native COSMIC settings section titled “Open Source Credits” to
-  the existing About context drawer. Its clickable Tabler Icons row identifies
-  the contribution as “Interface icons · License: MIT” and opens the official
-  Tabler GitHub repository through Kara's existing URL-launch handler.
-- The existing Kara name, logo, version, project links and MPL-2.0 application
-  license remain intact. The custom KARA 5100 logo is separate artwork and is
-  not attributed to Tabler. assets/tabler/LICENSE.txt remains bundled.
-- Added a regression assertion for the official credit URL and extended the
-  existing icon-resource test to resolve the external-link SVG.
-- Validation: cargo fmt --check, cargo check --locked, strict all-target
-  Clippy, cargo test --locked (99 passed, 0 failed, 1 ignored), and
-  cargo build --locked all passed. No graphical testing was performed.
-
-CachyOS About acceptance addition
-- Open About Kara and confirm “Open Source Credits” appears in native COSMIC
-  styling after the existing application information. Verify the row reads
-  “Tabler Icons” and “Interface icons · License: MIT”, and clicking it opens
-  https://github.com/tabler/tabler-icons. Confirm the Kara logo and the
-  application’s MPL-2.0 license remain represented as Kara's own information.
-
-Kara — Official Logo and About Button Polish
-
-Implementation
-- Identified the owner's only direct-child project PNG as
-  `/home/rapper/projects/Kara Master Logo -Pixel-Art K Logo with Vertical 5100.png`.
-  Visual inspection confirmed the pixel-art K with vertical 5100 mark.
-- Preserved the source and copied it byte-for-byte to
-  `resources/branding/kara-logo.png` for the About view. Source and copy SHA-256:
-  `db0bed059faf2cd3091b85019448381a5db696c1d0185c4a0ae06c16a00e71f3`.
-- Derived a 512x512 PNG launcher icon at
-  `resources/icons/hicolor/512x512/apps/io.github.kordeone.Kara.png` using
-  gdk-pixbuf-thumbnailer. The derivative retains the artwork and transparency;
-  the application ID remains `io.github.kordeone.Kara`.
-- About now uses libcosmic's raster icon handle for the bundled original logo.
-  Updated `justfile` install/uninstall paths and AppStream's remote icon reference
-  so desktop integration installs and publishes the correctly named 512px icon.
-- Changed the titlebar About button to libcosmic's `HeaderBar` button class with
-  the native 16px icon and 8px padding, plus an explicit accessible name. Its
-  About action and tooltip are retained; the bundled Tabler `info-circle.svg`
-  remains theme-symbolic.
-- Inspected the About drawer Close control. It is generated by libcosmic and uses
-  the native Close button with a trailing `go-next-symbolic` icon. No app-level
-  misalignment was found; it remains unchanged to preserve the standard drawer.
-  The owner can assess this native treatment during graphical review.
-- Added a unit test checking the embedded logo PNG signature/dimensions and that
-  libcosmic receives it as a raster icon. Tabler attribution/license and the
-  separate KARA 5100 artwork are unchanged and remain distinct.
-
-Files changed
-- `src/app.rs`
-- `resources/branding/kara-logo.png`
-- `resources/icons/hicolor/512x512/apps/io.github.kordeone.Kara.png`
-- `resources/app.metainfo.xml`
-- `justfile`
-- `report.txt`
-
-Validation on headless Debian
-- `cargo fmt --check`: PASSED
-- `cargo check --locked`: PASSED
-- `cargo clippy --locked --all-targets -- -D warnings`: PASSED
-- `cargo test --locked`: PASSED, 100 passed, 0 failed, 1 ignored D-Bus test
-- `cargo build --locked`: PASSED
-- Isolated D-Bus tray/single-instance regression: PASSED, 1 test
-  (`KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture`)
-- Confirmed About logo copy matches source hash; launcher derivative is a valid
-  512x512 RGBA PNG and was visually inspected. The focused unit test confirms the
-  About resource resolves to libcosmic's raster icon type.
-- Build artifacts were written only to the dedicated worktree's `target/`.
-  No COSMIC graphical runtime validation was performed.
-
-CachyOS COSMIC graphical acceptance
-1. Install/build this branch, refresh the desktop icon cache if needed, and
-   confirm Kara's launcher/menu icon shows the KARA 5100 pixel-art mark.
-2. Open About Kara. Confirm its logo matches the launcher artwork, is fully
-   visible, and does not appear distorted at the About view's displayed size.
-3. In light and dark themes, inspect the titlebar info icon while idle, hovered,
-   keyboard-focused, and with About open. It should align and size like adjacent
-   titlebar controls without a bright green inactive tint; tooltip, keyboard
-   activation, accessible name, and About opening/closing should work.
-4. Check the About drawer's native Close label/chevron alignment and dismissal.
-   The chevron is supplied by libcosmic and was not altered here.
-5. Confirm the desktop entry keeps `io.github.kordeone.Kara` and the installed
-   hicolor icon resolves at 512px and is scaled appropriately by the desktop.
-
-Kara — Stage 1 Final UI Polish
-
-Visual changes
-- About titlebar control now uses COSMIC's standard neutral Icon button class;
-  its selected state follows whether the About drawer is open. Its Tabler
-  `info-circle.svg` is explicitly 16px inside a centered 32px target with 8px
-  padding. The accessible name, tooltip, keyboard operation, and About action
-  remain intact. The previous HeaderBar class can use the accent foreground for
-  selected controls; the updated control is neutral while inactive.
-- Replaced the Matrix module's `columns-3.svg` with the supplied Tabler
-  `layout-grid.svg`, which depicts four quadrants. Kept the module selector
-  geometry unchanged. A regression test checks the four SVG paths, 24px source
-  viewBox, symbolic handle, and the native selector test checks the displayed
-  icon is centered at 16x16 logical pixels.
-- Shared Inbox, Today, and named-list task rows now use libcosmic's native Card
-  surface, rounded corners, and consistent horizontal/vertical theme spacing.
-  Existing row width constraints, checkbox, priority/title/due-date alignment,
-  right-side actions, task ordering, and completed strikethrough/muted style are
-  preserved. Native checkbox/action hover and keyboard-focus states remain.
-- Matrix task rows, drag-and-drop, the task dialog, sorting, pinned lists, logo,
-  About contents/credits, persistence, and tray behavior were not changed.
-
-Files changed
-- `src/app.rs`
-- `report.txt`
-
-Validation on headless Debian
-- `cargo fmt --check`: PASSED
-- `cargo check --locked`: PASSED
-- `cargo clippy --locked --all-targets -- -D warnings`: PASSED
-- `cargo test --locked`: PASSED, 101 passed, 0 failed, 1 ignored D-Bus test
-- `cargo build --locked`: PASSED
-- Isolated D-Bus tray/single-instance regression: PASSED, 1 test
-  (`KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture`)
-- Matrix icon is bundled, parses as symbolic SVG, and is verified as a four-cell
-  grid; actual native selector layout test verifies 16x16 logical-pixel bounds.
-- No COSMIC graphical validation was performed.
-
-CachyOS COSMIC graphical acceptance
-1. In light and dark themes, inspect the titlebar info button beside window
-   controls. Confirm it is centered at the same visual scale, neutral when About
-   is closed, uses a clear native hover/focus indication, and shows its tooltip.
-   Activate with mouse and keyboard; verify About opens and the selected state
-   tracks the drawer.
-2. Inspect the four module buttons at normal scale. Confirm the Matrix button
-   shows a clear four-quadrant grid at the same apparent size and stroke weight
-   as Tasks, Board, and Pomodoro. Check hover, focus, and selected states and
-   confirm module/subsection navigation is unchanged.
-3. In Inbox, Today, and named lists, confirm each task sits on a subtle rounded
-   COSMIC surface with a small even gap. Check checkbox, priority marker, title,
-   due date, and Edit/Delete alignment at normal and narrow window widths.
-4. Verify row surfaces and text remain readable in both themes. Hover task
-   action controls and keyboard-focus the checkbox/Edit/Delete controls; confirm
-   native states remain distinct. Confirm completed rows remain muted, checked,
-   and struck through, and sorting/filtering behavior is unchanged.
-5. Open Eisenhower Matrix and confirm its task-row layout and drag-and-drop are
-   unchanged.
+CachyOS launch and acceptance checklist
+1. Transfer the Calendar feature source using the established Samba workflow.
+   Fully Quit any existing Kara via its tray before launching this build, so
+   single-instance activation cannot restore an older binary. In that source
+   directory run cargo build --locked, then cargo run --locked. No installation.
+   For isolated graphical test data, first choose a fresh directory, e.g.
+     KARA_CALENDAR_DATA="$(mktemp -d)"
+     XDG_DATA_HOME="$KARA_CALENDAR_DATA" cargo run --locked
+   Reuse that same directory for restart checks; do not delete real Kara data.
+2. In light and dark COSMIC themes, verify five evenly distributed icons, full
+   selected cells, hover, keyboard focus and tooltips. Confirm Tasks has Inbox,
+   Today and Lists only; named/pinned lists and sorting retain accepted behavior.
+3. Open Calendar. Verify local month/year, Monday-first alignment, correct current
+   day border and clear selected day. Navigate December/January, February 2024
+   (29 days), February 2025 (28 days), and months requiring six complete weeks.
+   Click adjacent-month dates; verify displayed month and selected date change.
+   Today must return to the local current date without timezone shifts.
+4. Select Month for all lists, Inbox and multiple named lists. Create tasks from
+   dates in each filter. Verify the accepted dialog's date/list defaults and P0,
+   date picker, shortcuts and validation. Cancel once and confirm no new record.
+   Add an undated task in Tasks: it must not appear on arbitrary Calendar dates.
+5. Put many tasks on one date. Verify two previews and +N more, full scrollable
+   selected-day list, correct titles/flags and no lost or duplicate tasks. Edit a
+   title, date, priority and list using the shared editor; check immediate changes
+   in the grid, Tasks and Matrix. Complete and uncomplete a task from Calendar;
+   confirm muted strikethrough, retained identity/list and Matrix classification.
+6. Test maximized, normal, narrow and short windows, including 640x560 application
+   size. Check equal date columns, readable controls, selected-day details moving
+   below the grid, and all dates/tasks/Add reachable by scrolling. Check month
+   controls and keyboard navigation with both empty and heavily populated dates.
+7. Rename/delete a filtered list in Tasks. Calendar must show the updated name or
+   return safely to Month/all lists; deleted-list tasks remain in Inbox. Switch
+   modules and confirm Calendar date/filter remain during the session.
+8. Quit/relaunch with the same test-data directory. Confirm dates, priorities,
+   IDs, completion and list assignments persist. Recheck Matrix drag/drop and its
+   keyboard fallback, Tasks sorting/pins, About/branding, tray close/open, panel
+   recovery and single-instance activation. No graphical acceptance is claimed
+   until these CachyOS checks are completed by the owner.
