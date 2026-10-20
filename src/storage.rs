@@ -25,6 +25,8 @@ struct Document {
     sort_ascending: Option<bool>,
     #[serde(default = "default_show_completed")]
     show_completed: bool,
+    #[serde(default)]
+    automatic_backups: Option<crate::automatic::Preferences>,
 }
 fn default_show_completed() -> bool {
     true
@@ -67,7 +69,16 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
     }
     let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     match header.version {
-        4..=6 => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
+        4..=7 => {
+            let doc: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            if doc.version == 7 && doc.automatic_backups.is_none() {
+                return Err("Missing automatic backup preferences in schema 7.".into());
+            }
+            if let Some(prefs) = &doc.automatic_backups {
+                prefs.validate()?;
+            }
+            Ok(doc)
+        }
         1..=3 => {
             let old: LegacyDocument = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             let mut converted = Vec::with_capacity(old.tasks.len());
@@ -99,6 +110,7 @@ fn decode_document(bytes: &[u8]) -> Result<Document, String> {
                 sort_mode: TaskSort::default(),
                 sort_ascending: None,
                 show_completed: true,
+                automatic_backups: None,
             })
         }
         other => Err(format!("Unsupported task data version {other}.")),
@@ -171,6 +183,7 @@ pub struct Store {
     sort_mode: TaskSort,
     sort_ascending: bool,
     show_completed: bool,
+    automatic_backups: crate::automatic::Preferences,
 }
 
 pub fn data_path() -> Result<PathBuf, String> {
@@ -218,57 +231,61 @@ impl Store {
         })?;
         let snapshot = read(&path)?;
         let mut migration_version = None;
-        let (tasks, lists, sort_mode, sort_ascending, show_completed) = match &snapshot {
-            None => (
-                Vec::new(),
-                Vec::new(),
-                TaskSort::default(),
-                TaskSort::default().default_ascending(),
-                true,
-            ),
-            Some(bytes) => {
-                let mut doc = decode_document(bytes).map_err(|e| {
-                    format!(
-                        "Invalid task data in {}: {e}. The file has been preserved.",
-                        path.display()
-                    )
-                })?;
-                migration_version = (doc.version < 6).then_some(doc.version);
-                if doc.version == 1 {
-                    // Stage 1 allowed reserved list IDs without list definitions. Recover
-                    // those definitions without changing a task or writing on load.
-                    for task in &doc.tasks {
-                        if let Some(id) = &task.list_id
-                            && !doc.lists.iter().any(|list| &list.id == id)
-                        {
-                            let mut name = format!("Recovered list {id}");
-                            while tasks::validate_list_name(&name, &doc.lists, None).is_err() {
-                                name.push(' ');
-                                name.push('•');
+        let (tasks, lists, sort_mode, sort_ascending, show_completed, automatic_backups) =
+            match &snapshot {
+                None => (
+                    Vec::new(),
+                    Vec::new(),
+                    TaskSort::default(),
+                    TaskSort::default().default_ascending(),
+                    true,
+                    crate::automatic::Preferences::default(),
+                ),
+                Some(bytes) => {
+                    let mut doc = decode_document(bytes).map_err(|e| {
+                        format!(
+                            "Invalid task data in {}: {e}. The file has been preserved.",
+                            path.display()
+                        )
+                    })?;
+                    migration_version = (doc.version < 7).then_some(doc.version);
+                    if doc.version == 1 {
+                        // Stage 1 allowed reserved list IDs without list definitions. Recover
+                        // those definitions without changing a task or writing on load.
+                        for task in &doc.tasks {
+                            if let Some(id) = &task.list_id
+                                && !doc.lists.iter().any(|list| &list.id == id)
+                            {
+                                let mut name = format!("Recovered list {id}");
+                                while tasks::validate_list_name(&name, &doc.lists, None).is_err() {
+                                    name.push(' ');
+                                    name.push('•');
+                                }
+                                doc.lists.push(TaskList {
+                                    id: id.clone(),
+                                    name,
+                                    pinned: false,
+                                });
                             }
-                            doc.lists.push(TaskList {
-                                id: id.clone(),
-                                name,
-                                pinned: false,
-                            });
                         }
                     }
+                    tasks::validate_document(&doc.tasks, &doc.lists).map_err(|e| {
+                        format!("Invalid task data: {e} The file has been preserved.")
+                    })?;
+                    matrix::normalize(&mut doc.tasks);
+                    let ascending = doc
+                        .sort_ascending
+                        .unwrap_or_else(|| doc.sort_mode.default_ascending());
+                    (
+                        doc.tasks,
+                        doc.lists,
+                        doc.sort_mode,
+                        ascending,
+                        doc.show_completed,
+                        doc.automatic_backups.unwrap_or_default(),
+                    )
                 }
-                tasks::validate_document(&doc.tasks, &doc.lists)
-                    .map_err(|e| format!("Invalid task data: {e} The file has been preserved."))?;
-                matrix::normalize(&mut doc.tasks);
-                let ascending = doc
-                    .sort_ascending
-                    .unwrap_or_else(|| doc.sort_mode.default_ascending());
-                (
-                    doc.tasks,
-                    doc.lists,
-                    doc.sort_mode,
-                    ascending,
-                    doc.show_completed,
-                )
-            }
-        };
+            };
         Ok(Self {
             path,
             _lock: lock,
@@ -279,17 +296,78 @@ impl Store {
             sort_mode,
             sort_ascending,
             show_completed,
+            automatic_backups,
         })
     }
     fn backup_data(&self) -> crate::backup::Data {
         crate::backup::Data {
-            version: 6,
+            version: 7,
             tasks: self.tasks.clone(),
             lists: self.lists.clone(),
             sort_mode: self.sort_mode,
             sort_ascending: self.sort_ascending,
             show_completed: self.show_completed,
+            automatic_backups: Some(self.automatic_backups.clone()),
         }
+    }
+    pub fn automatic_preferences(&self) -> &crate::automatic::Preferences {
+        &self.automatic_backups
+    }
+    pub fn set_automatic_preferences(
+        &mut self,
+        enabled: bool,
+        interval: String,
+    ) -> Result<(), String> {
+        let prefs = crate::automatic::Preferences {
+            enabled,
+            interval,
+            last_success: self.automatic_backups.last_success,
+        };
+        self.commit_full(
+            self.tasks.clone(),
+            self.lists.clone(),
+            self.sort_mode,
+            self.sort_ascending,
+            self.show_completed,
+            prefs,
+        )
+    }
+    pub fn automatic_backup(&mut self, now: i64) -> Result<(), String> {
+        self.check_storage()?;
+        let dir = self
+            .path
+            .parent()
+            .ok_or("Invalid storage path.")?
+            .join("automatic-backups");
+        let bytes = self.backup_bytes()?;
+        crate::automatic::publish(&dir, &bytes)?;
+        let prefs = crate::automatic::Preferences {
+            last_success: Some(now),
+            ..self.automatic_backups.clone()
+        };
+        self.commit_full(
+            self.tasks.clone(),
+            self.lists.clone(),
+            self.sort_mode,
+            self.sort_ascending,
+            self.show_completed,
+            prefs,
+        )?;
+        crate::automatic::retain(&dir)
+            .map_err(|e| format!("Automatic backup saved, but retention failed: {e}"))
+    }
+    pub fn clear_all_data(&mut self) -> Result<PathBuf, String> {
+        let defaults = crate::backup::Data {
+            version: 7,
+            tasks: Vec::new(),
+            lists: Vec::new(),
+            sort_mode: TaskSort::default(),
+            sort_ascending: TaskSort::default().default_ascending(),
+            show_completed: true,
+            automatic_backups: Some(crate::automatic::Preferences::default()),
+        };
+        let prepared = crate::backup::decode(&crate::backup::encode(defaults)?)?;
+        self.replace_from_backup(&prepared, "kara-before-clear-")
     }
     pub fn backup_bytes(&self) -> Result<Vec<u8>, String> {
         self.check_storage()?;
@@ -298,6 +376,18 @@ impl Store {
     /// The recovery file is portable and verified/durable before any live write.
     /// Normal legacy migration still makes its own byte-exact original backup.
     pub fn restore_backup(&mut self, backup: &crate::backup::Prepared) -> Result<PathBuf, String> {
+        self.replace_from_backup(backup, "kara-before-restore-")
+    }
+    fn replace_from_backup(
+        &mut self,
+        backup: &crate::backup::Prepared,
+        prefix: &str,
+    ) -> Result<PathBuf, String> {
+        let operation = if prefix == "kara-before-clear-" {
+            "Clear"
+        } else {
+            "Restore"
+        };
         crate::backup::encode(backup.data.clone())?;
         self.check_storage()?;
         let previous = self.backup_data();
@@ -305,47 +395,53 @@ impl Store {
         let bytes = self.backup_bytes()?;
         let dir = self.path.parent().ok_or("Invalid storage path.")?;
         let mut recovery = tempfile::Builder::new()
-            .prefix("kara-before-restore-")
-            .suffix(".kara-backup")
+            .prefix(&format!(".{prefix}"))
+            .suffix(".partial")
             .tempfile_in(dir)
-            .map_err(|e| format!("Cannot create recovery snapshot; nothing restored: {e}"))?;
+            .map_err(|e| format!("Cannot create recovery snapshot; nothing replaced: {e}"))?;
         recovery
             .write_all(&bytes)
             .and_then(|()| recovery.as_file().sync_all())
-            .map_err(|e| format!("Cannot write recovery snapshot; nothing restored: {e}"))?;
-        let (file, path) = recovery.keep().map_err(|e| e.to_string())?;
-        drop(file);
-        if fs::read(&path).map_err(|e| e.to_string())? != bytes {
-            return Err(format!(
-                "Recovery snapshot verification failed: {}. Nothing restored.",
-                path.display()
-            ));
+            .map_err(|e| format!("Cannot write recovery snapshot; nothing replaced: {e}"))?;
+        if fs::read(recovery.path()).map_err(|e| e.to_string())? != bytes {
+            return Err("Recovery snapshot verification failed; nothing replaced.".into());
         }
-        crate::backup::read(&path)?;
+        crate::backup::read(recovery.path())?;
+        let stem = recovery
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("Invalid recovery filename.")?;
+        let path = dir.join(format!("{}.kara-backup", stem.trim_start_matches('.')));
+        recovery
+            .persist_noclobber(&path)
+            .map_err(|e| format!("Cannot publish recovery snapshot; nothing replaced: {e}"))?;
         File::open(dir).and_then(|f| f.sync_all()).map_err(|e| {
             format!(
-                "Cannot sync recovery snapshot {}; nothing restored: {e}",
+                "Cannot sync recovery snapshot {}; nothing replaced: {e}",
                 path.display()
             )
         })?;
         let data = &backup.data;
-        let result = self.commit_with_preferences(
+        let result = self.commit_full(
             data.tasks.clone(),
             data.lists.clone(),
             data.sort_mode,
             data.sort_ascending,
             data.show_completed,
+            data.automatic_backups.clone().unwrap_or_default(),
         );
         if let Err(error) = result {
             if self.snapshot != before {
                 // Publication succeeded but directory durability failed. Roll back
                 // through the same checked atomic path, never overwrite a later edit.
-                let rollback = self.commit_with_preferences(
+                let rollback = self.commit_full(
                     previous.tasks.clone(),
                     previous.lists.clone(),
                     previous.sort_mode,
                     previous.sort_ascending,
                     previous.show_completed,
+                    previous.automatic_backups.clone().unwrap_or_default(),
                 );
                 let state = if self.backup_data() == previous {
                     "Previous data is active again."
@@ -353,13 +449,13 @@ impl Store {
                     "Restored data is currently active; automatic rollback could not finish."
                 };
                 return Err(format!(
-                    "Restore durability failure: {error}. {state} Rollback: {} Recovery snapshot: {}",
+                    "{operation} durability failure: {error}. {state} Rollback: {} Recovery snapshot: {}",
                     rollback.err().unwrap_or_else(|| "completed".into()),
                     path.display()
                 ));
             }
             return Err(format!(
-                "Restore failed before replacement: {error}. Previous data remains active. Recovery snapshot: {}",
+                "{operation} failed before replacement: {error}. Previous data remains active. Recovery snapshot: {}",
                 path.display()
             ));
         }
@@ -442,24 +538,45 @@ impl Store {
     }
     fn commit_with_preferences(
         &mut self,
-        mut tasks: Vec<Task>,
+        tasks: Vec<Task>,
         lists: Vec<TaskList>,
         sort_mode: TaskSort,
         sort_ascending: bool,
         show_completed: bool,
     ) -> Result<(), String> {
+        self.commit_full(
+            tasks,
+            lists,
+            sort_mode,
+            sort_ascending,
+            show_completed,
+            self.automatic_backups.clone(),
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // One complete atomic document, including all preferences.
+    fn commit_full(
+        &mut self,
+        mut tasks: Vec<Task>,
+        lists: Vec<TaskList>,
+        sort_mode: TaskSort,
+        sort_ascending: bool,
+        show_completed: bool,
+        automatic_backups: crate::automatic::Preferences,
+    ) -> Result<(), String> {
+        automatic_backups.validate()?;
         tasks::validate_document(&tasks, &lists)?;
         matrix::normalize(&mut tasks);
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Changes were not saved. Restart Kara to reload the file.".into());
         }
         let bytes = serde_json::to_vec_pretty(&Document {
-            version: 6,
+            version: 7,
             tasks: tasks.clone(),
             lists: lists.clone(),
             sort_mode,
             sort_ascending: Some(sort_ascending),
             show_completed,
+            automatic_backups: Some(automatic_backups.clone()),
         })
         .map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or("Invalid storage path.")?;
@@ -471,8 +588,10 @@ impl Store {
         if let Some(version) = self.migration_version {
             let backup_suffix = if version < 4 {
                 "json.pre-priority-v4.bak"
-            } else {
+            } else if version < 6 {
                 "json.pre-tasks-v6.bak"
+            } else {
+                "json.pre-settings-v7.bak"
             };
             ensure_migration_backup(
                 &self.path,
@@ -494,6 +613,7 @@ impl Store {
         self.sort_mode = sort_mode;
         self.sort_ascending = sort_ascending;
         self.show_completed = show_completed;
+        self.automatic_backups = automatic_backups;
         self.snapshot = Some(bytes);
         self.migration_version = None;
         sync_committed_directory(dir)
@@ -559,6 +679,217 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_schema_six_upgrade_and_invalid_intervals_preserve_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../tests/fixtures/backup-v1.kara-backup"))
+                .unwrap();
+        let bytes = serde_json::to_vec_pretty(&original["data"]).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(
+            store.automatic_preferences(),
+            &crate::automatic::Preferences::default()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(store.set_automatic_preferences(true, "P1M".into()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!path.with_extension("json.pre-settings-v7.bak").exists());
+        store
+            .set_automatic_preferences(true, "PT30M".into())
+            .unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-settings-v7.bak")).unwrap(),
+            bytes
+        );
+        let expected = store.backup_data();
+        drop(store);
+        let reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.backup_data(), expected);
+        drop(reopened);
+        let mut damaged: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        damaged["automatic_backups"]["interval"] = "invalid".into();
+        let bytes = serde_json::to_vec(&damaged).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(Store::open(path.clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn automatic_archives_checkpoint_last_success_and_round_trip_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into())
+            .unwrap();
+        let manual = dir.path().join("manual.kara-backup");
+        crate::backup::export(&manual, &store.backup_bytes().unwrap()).unwrap();
+        let tasks = store.tasks().to_vec();
+        for time in 1000..1012 {
+            store.automatic_backup(time).unwrap();
+        }
+        assert_eq!(store.automatic_preferences().last_success, Some(1011));
+        let archive_dir = dir.path().join("automatic-backups");
+        let archives: Vec<_> = fs::read_dir(&archive_dir)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|s| s == "kara-backup"))
+            .collect();
+        assert_eq!(archives.len(), 10);
+        for archive in archives {
+            assert_eq!(crate::backup::read(&archive).unwrap().data.tasks, tasks);
+        }
+        assert!(manual.exists());
+        let exported = store.backup_bytes().unwrap();
+        let data = store.backup_data();
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), data);
+        let destination = tempfile::tempdir().unwrap();
+        let mut other = Store::open(destination.path().join("tasks.json")).unwrap();
+        other
+            .restore_backup(&crate::backup::decode(&exported).unwrap())
+            .unwrap();
+        assert_eq!(other.backup_data(), data);
+        assert!(!destination.path().join("automatic-backups").exists()); // archives aren't machine-specific backup data
+    }
+    #[test]
+    fn unsuccessful_automatic_writes_never_checkpoint_or_replace_live_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        store
+            .set_automatic_preferences(true, "PT1S".into())
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let auto = dir.path().join("automatic-backups");
+        fs::create_dir(&auto).unwrap();
+        fs::write(auto.join("index.json"), b"damaged").unwrap();
+        assert!(store.automatic_backup(1000).is_err());
+        assert_eq!(store.automatic_preferences().last_success, None);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(&auto).unwrap().count(), 1);
+    }
+    #[test]
+    fn clear_keeps_all_archive_files_and_recovery_restores_the_complete_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store.set_automatic_preferences(true, "P1D".into()).unwrap();
+        store.automatic_backup(1000).unwrap();
+        let manual = dir.path().join("manual.kara-backup");
+        let bytes = store.backup_bytes().unwrap();
+        crate::backup::export(&manual, &bytes).unwrap();
+        let auto = dir.path().join("automatic-backups");
+        let archives: Vec<_> = fs::read_dir(&auto)
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let b = fs::read(&p).unwrap();
+                (p, b)
+            })
+            .collect();
+        let old = store.backup_data();
+        let recovery = store.clear_all_data().unwrap();
+        assert!(
+            recovery
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("kara-before-clear-")
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        assert!(store.tasks().is_empty() && store.lists().is_empty());
+        assert_eq!(store.sort_mode(), TaskSort::default());
+        assert_eq!(
+            store.sort_ascending(),
+            TaskSort::default().default_ascending()
+        );
+        assert!(store.show_completed());
+        assert_eq!(
+            store.automatic_preferences(),
+            &crate::automatic::Preferences::default()
+        );
+        assert_eq!(fs::read(&manual).unwrap(), bytes);
+        for (p, b) in archives {
+            assert_eq!(fs::read(p).unwrap(), b);
+        }
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert!(store.tasks().is_empty());
+        assert!(!store.automatic_preferences().enabled);
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+    }
+    #[test]
+    fn clear_in_temporary_xdg_layout_never_touches_other_apps_or_external_exports() {
+        let xdg = tempfile::tempdir().unwrap();
+        let path = xdg.path().join(APP_ID).join("tasks.json");
+        let unrelated = xdg.path().join("other-application");
+        fs::create_dir(&unrelated).unwrap();
+        let sentinel = unrelated.join("keep.json");
+        fs::write(&sentinel, b"unrelated data").unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let export = external.path().join("manual.kara-backup");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        let before = store.backup_bytes().unwrap();
+        crate::backup::export(&export, &before).unwrap();
+        let recovery = store.clear_all_data().unwrap();
+        assert!(recovery.starts_with(xdg.path().join(APP_ID)));
+        assert_eq!(fs::read(sentinel).unwrap(), b"unrelated data");
+        assert_eq!(fs::read(export).unwrap(), before);
+        assert!(store.tasks().is_empty());
+        drop(store);
+        assert!(Store::open(path).unwrap().tasks().is_empty());
+    }
+    #[test]
+    fn clear_aborts_if_recovery_cannot_be_written_and_rolls_back_sync_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into())
+            .unwrap();
+        let old = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.clear_all_data();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        assert!(
+            store
+                .clear_all_data()
+                .unwrap_err()
+                .contains("Previous data is active again")
+        );
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), old);
+    }
     const PORTABLE: &[u8] = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
     #[test]
     fn portable_restore_round_trips_all_fields_preferences_and_recovery_across_roots() {
@@ -895,7 +1226,7 @@ mod tests {
         );
         let bytes = fs::read(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(saved["version"], 6);
+        assert_eq!(saved["version"], 7);
         assert_eq!(saved["lists"], original["lists"]);
         for task in saved["tasks"].as_array().unwrap() {
             assert!(task["priority"].as_u64().is_some_and(|p| p <= 3));
@@ -932,7 +1263,7 @@ mod tests {
         assert!(store.sort_ascending());
         assert!(!store.show_completed());
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 6);
+        assert_eq!(saved["version"], 7);
         assert_eq!(saved["sort_mode"], "Priority");
         assert_eq!(saved["sort_ascending"], true);
         assert_eq!(saved["show_completed"], false);
@@ -1317,7 +1648,7 @@ mod tests {
         assert!(store.tasks()[0].completed);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 6);
+        assert_eq!(saved["version"], 7);
         let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         saved["tasks"][0]
             .as_object_mut()
@@ -1352,6 +1683,7 @@ mod tests {
             sort_mode: TaskSort::default(),
             sort_ascending: None,
             show_completed: true,
+            automatic_backups: None,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -1561,7 +1893,7 @@ mod tests {
         assert_eq!(store.lists().len(), 1);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 6);
+        assert_eq!(saved["version"], 7);
         let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         for tasks in [&mut saved["tasks"], &mut legacy["tasks"]] {
             for task in tasks.as_array_mut().unwrap() {
@@ -1619,6 +1951,7 @@ mod tests {
                 sort_mode: TaskSort::default(),
                 sort_ascending: None,
                 show_completed: true,
+                automatic_backups: None,
             })
             .unwrap();
             fs::write(&path, &bytes).unwrap();
@@ -1634,6 +1967,7 @@ mod tests {
             sort_mode: TaskSort::default(),
             sort_ascending: None,
             show_completed: true,
+            automatic_backups: None,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -1812,6 +2146,7 @@ mod tests {
                 sort_mode: TaskSort::default(),
                 sort_ascending: None,
                 show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
@@ -1821,6 +2156,7 @@ mod tests {
                 sort_mode: TaskSort::default(),
                 sort_ascending: None,
                 show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
@@ -1830,6 +2166,7 @@ mod tests {
                 sort_mode: TaskSort::default(),
                 sort_ascending: None,
                 show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             br#"{"version":1,"tasks":[],"future_field":true}"#.to_vec(),

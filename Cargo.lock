@@ -2640,6 +2640,7 @@ dependencies = [
  "i18n-embed-fl",
  "iced_accessibility",
  "jiff",
+ "libc",
  "libcosmic",
  "open",
  "rust-embed",

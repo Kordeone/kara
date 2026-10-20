@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
-    backup, backup_ui, calendar_month, calendar_view, date_entry,
+    automatic, backup, backup_ui, calendar_month, calendar_view, date_entry,
     lifecycle::{Effect, Lifecycle, State},
     matrix, matrix_drag, matrix_view,
     storage::{self, Store},
@@ -190,6 +190,8 @@ pub struct AppModel {
     task_sort_ascending: bool,
     show_completed: bool,
     backup: backup_ui::State,
+    auto_scheduler: automatic::Scheduler,
+    auto_error: Option<String>,
     about: About,
     title_input: cosmic::iced::widget::Id,
 }
@@ -213,6 +215,7 @@ struct ListEditor {
 #[derive(Debug, Clone)]
 pub enum Message {
     Backup(backup_ui::Action),
+    AutomaticTick,
     Tray(tray::Event),
     CloseMain,
     WindowCloseRequested(cosmic::iced::window::Id),
@@ -462,6 +465,8 @@ impl cosmic::Application for AppModel {
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
             backup: backup_ui::State::default(),
+            auto_scheduler: automatic::Scheduler::default(),
+            auto_error: None,
             about,
             title_input: cosmic::iced::widget::Id::unique(),
         };
@@ -594,19 +599,18 @@ impl cosmic::Application for AppModel {
             children,
         ))
     }
-    fn header_end(&self) -> Vec<Element<'_, Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Message>> {
+        // libcosmic inserts its native navigation toggle immediately before this.
         vec![
             widget::button::icon(
-                icon::from_svg_bytes(include_bytes!("../assets/tabler/database-export.svg"))
+                icon::from_svg_bytes(include_bytes!("../assets/tabler/settings.svg"))
                     .symbolic(true),
             )
-            .icon_size(16)
-            .width(32)
-            .height(32)
-            .padding(8)
+            .padding([8, 16])
             .class(cosmic::theme::Button::Icon)
-            .name("Backup and Restore")
-            .tooltip("Backup and Restore")
+            .selected(self.backup.open)
+            .name("Settings")
+            .tooltip("Settings")
             .on_press_maybe(
                 (self.editor.is_none()
                     && self.list_editor.is_none()
@@ -616,6 +620,10 @@ impl cosmic::Application for AppModel {
                     .then_some(Message::Backup(backup_ui::Action::Open)),
             )
             .into(),
+        ]
+    }
+    fn header_end(&self) -> Vec<Element<'_, Message>> {
+        vec![
             widget::button::icon(icon::from_svg_bytes(INFO_ICON).symbolic(true))
                 .icon_size(16)
                 .width(Length::Fixed(32.0))
@@ -630,6 +638,25 @@ impl cosmic::Application for AppModel {
         ]
     }
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
+        if self.backup.open {
+            let prefs = self
+                .store
+                .as_ref()
+                .map(|s| s.automatic_preferences())
+                .cloned()
+                .unwrap_or_default();
+            return Some(
+                context_drawer::context_drawer(
+                    self.backup.settings_view(
+                        self.backup_available(),
+                        &prefs,
+                        self.auto_error.as_deref(),
+                    ),
+                    Message::Backup(backup_ui::Action::Close),
+                )
+                .title("Settings"),
+            );
+        }
         self.core.window.show_context.then(|| {
             let mut drawer = context_drawer::about(
                 &self.about,
@@ -681,6 +708,9 @@ impl cosmic::Application for AppModel {
                     .add(widget::text::body(error))
                     .add(widget::button::standard("Retry storage").on_press(Message::RetryStorage)),
             );
+        }
+        if let Some(error) = &self.auto_error {
+            content = content.push(widget::text::body(error));
         }
         let mut header = widget::row::with_capacity(3)
             .align_y(Alignment::Center)
@@ -1000,7 +1030,7 @@ impl cosmic::Application for AppModel {
             .into()
     }
     fn dialog(&self) -> Option<Element<'_, Message>> {
-        if self.backup.open {
+        if self.backup.open && (self.backup.pending.is_some() || self.backup.clear_open) {
             let (tasks, lists) = self
                 .store
                 .as_ref()
@@ -1224,6 +1254,7 @@ impl cosmic::Application for AppModel {
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             cosmic::iced::time::every(Duration::from_secs(30)).map(|_| Message::DateTick),
+            cosmic::iced::time::every(Duration::from_secs(1)).map(|_| Message::AutomaticTick),
             cosmic::iced::window::close_requests().map(Message::WindowCloseRequested),
         ];
         if let Some(conn) = &self.tray_connection {
@@ -1304,9 +1335,22 @@ impl cosmic::Application for AppModel {
         self.window_effect(effect)
     }
     fn on_escape(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.backup.open
+            && (self.editor.is_some()
+                || self.list_editor.is_some()
+                || self.delete_id.is_some()
+                || self.delete_list_id.is_some())
+        {
+            self.editor = None;
+            self.list_editor = None;
+            self.delete_id = None;
+            self.delete_list_id = None;
+            return Task::none();
+        }
         if self.backup.open {
             if !self.backup.busy {
                 self.backup = backup_ui::State::default();
+                self.core.window.show_context = false;
             }
             return Task::none();
         }
@@ -1320,6 +1364,7 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::Backup(action) => return self.update_backup(action),
+            Message::AutomaticTick => self.automatic_tick(),
             Message::Month(action) if self.page.is_calendar() => match action {
                 calendar_view::Action::Previous => self.month_view.navigate(-1),
                 calendar_view::Action::Next => self.month_view.navigate(1),
@@ -1855,7 +1900,14 @@ impl cosmic::Application for AppModel {
             Message::ShowCompleted(show) if self.can_write() => {
                 self.save_task_preferences(self.task_sort, self.task_sort_ascending, show);
             }
-            Message::About => self.core.window.show_context = !self.core.window.show_context,
+            Message::About if !self.backup.busy => {
+                if self.backup.open {
+                    self.backup = backup_ui::State::default();
+                    self.core.window.show_context = true;
+                } else {
+                    self.core.window.show_context = !self.core.window.show_context;
+                }
+            }
             Message::LaunchUrl(url) => {
                 if let Err(e) = open::that_detached(url) {
                     eprintln!("Cannot open repository link: {e}");
@@ -1867,6 +1919,70 @@ impl cosmic::Application for AppModel {
     }
 }
 impl AppModel {
+    fn sync_automatic_form(&mut self) {
+        if let Some(store) = &self.store {
+            let prefs = store.automatic_preferences();
+            self.backup.auto_enabled = prefs.enabled;
+            self.backup.interval = prefs.interval.clone();
+            self.backup.interval_error = None;
+        }
+    }
+    fn refresh_after_replacement(&mut self) {
+        if let Some(store) = &self.store {
+            self.task_sort = store.sort_mode();
+            self.task_sort_ascending = store.sort_ascending();
+            self.show_completed = store.show_completed();
+            self.storage_error = store.check_storage().err();
+        }
+        self.editor = None;
+        self.list_editor = None;
+        self.delete_id = None;
+        self.delete_list_id = None;
+        self.page = Page::Inbox;
+        self.navigation = ModuleNavigation::default();
+        self.matrix_list = None;
+        self.matrix_drag = matrix_drag::State::default();
+        self.matrix_priority_task = None;
+        self.auto_scheduler = automatic::Scheduler::default();
+        self.auto_error = None;
+        self.sync_automatic_form();
+        self.rebuild_nav();
+    }
+    fn automatic_tick(&mut self) {
+        // Store operations are serialized on the app event loop. Never overlap a
+        // manual operation or the confirmation modal with an automatic snapshot.
+        if self.backup.busy
+            || self.backup.pending.is_some()
+            || self.backup.clear_open
+            || self.storage_error.is_some()
+        {
+            return;
+        }
+        let Some(store) = &mut self.store else {
+            return;
+        };
+        let prefs = store.automatic_preferences().clone();
+        if !prefs.enabled {
+            return;
+        }
+        let wall = jiff::Timestamp::now().as_second();
+        let result = automatic::boot_seconds().and_then(|boot| {
+            if self.auto_scheduler.due(&prefs, wall, boot)? {
+                let result = store.automatic_backup(wall);
+                self.auto_scheduler.finished(
+                    automatic::interval_seconds(&prefs.interval)?,
+                    automatic::boot_seconds()?,
+                    result.is_ok() || store.automatic_preferences().last_success == Some(wall),
+                );
+                result?;
+                self.auto_error = None;
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            self.auto_error = Some(format!("Automatic backup failed: {error}"));
+        }
+    }
     fn update_backup(&mut self, action: backup_ui::Action) -> Task<cosmic::Action<Message>> {
         use backup_ui::Action;
         match action {
@@ -1880,8 +1996,13 @@ impl AppModel {
                 self.matrix_drag.cancel();
                 self.matrix_priority_task = None;
                 self.backup.open = true;
+                self.core.window.show_context = true;
+                self.sync_automatic_form();
             }
-            Action::Close if !self.backup.busy => self.backup = backup_ui::State::default(),
+            Action::Close if !self.backup.busy => {
+                self.backup = backup_ui::State::default();
+                self.core.window.show_context = false;
+            }
             Action::Export
                 if self.backup.open && self.backup_available() && self.backup.pending.is_none() =>
             {
@@ -1943,16 +2064,58 @@ impl AppModel {
                     Err(error) => self.backup.notice = Some(error),
                 }
             }
+            Action::AutoEnabled(value) if self.backup.open && !self.backup.busy => {
+                self.backup.auto_enabled = value
+            }
+            Action::Interval(value) if self.backup.open && !self.backup.busy => {
+                self.backup.interval_error = automatic::interval_seconds(&value).err();
+                self.backup.interval = value;
+            }
+            Action::SaveAutomatic if self.backup.open && self.backup_available() => {
+                if let Err(error) = automatic::interval_seconds(&self.backup.interval) {
+                    self.backup.interval_error = Some(error);
+                } else if let Some(store) = &mut self.store {
+                    match store.set_automatic_preferences(
+                        self.backup.auto_enabled,
+                        self.backup.interval.clone(),
+                    ) {
+                        Ok(()) => {
+                            self.auto_scheduler = automatic::Scheduler::default();
+                            self.auto_error = None;
+                            self.backup.notice = Some("Automatic backup settings saved. Backups run while Kara is running; none run while fully quit.".into());
+                        }
+                        Err(error) => self.backup.notice = Some(error),
+                    }
+                }
+            }
+            Action::Clear
+                if self.backup.open && self.backup_available() && self.backup.pending.is_none() =>
+            {
+                self.backup.clear_open = true;
+                self.backup.clear_text.clear();
+            }
+            Action::ClearText(value) if self.backup.clear_open => self.backup.clear_text = value,
+            Action::ConfirmClear
+                if self.backup.open
+                    && self.backup_available()
+                    && self.backup.clear_open
+                    && self.backup.clear_text == "CLEAR" =>
+            {
+                let result = self.store.as_mut().unwrap().clear_all_data();
+                self.backup.clear_open = false;
+                self.backup.clear_text.clear();
+                self.backup.notice = Some(match result {
+                    Ok(path) => format!("Data cleared. Recovery backup: {}", path.display()),
+                    Err(error) => format!("Clear could not complete: {error}"),
+                });
+                self.month_view = calendar_month::State::new(jiff::Zoned::now().date());
+                self.refresh_after_replacement();
+                return self.update_title();
+            }
             Action::Confirm if self.backup.open && self.backup_available() => {
                 if let Some(prepared) = self.backup.pending.take() {
                     let store = self.store.as_mut().unwrap();
                     let result = store.restore_backup(&prepared);
-                    // A failed post-publication rollback can still leave data active;
-                    // always reflect the Store's actual state/preferences in the UI.
-                    self.task_sort = store.sort_mode();
-                    self.task_sort_ascending = store.sort_ascending();
-                    self.show_completed = store.show_completed();
-                    self.storage_error = store.check_storage().err();
                     self.backup.notice = Some(match result {
                         Ok(path) => format!(
                             "Backup restored. Previous data recovery file: {}",
@@ -1960,12 +2123,7 @@ impl AppModel {
                         ),
                         Err(error) => error,
                     });
-                    self.page = Page::Inbox;
-                    self.navigation = ModuleNavigation::default();
-                    self.matrix_list = None;
-                    self.matrix_drag = matrix_drag::State::default();
-                    self.matrix_priority_task = None;
-                    self.rebuild_nav();
+                    self.refresh_after_replacement();
                     return self.update_title();
                 }
             }
@@ -2041,10 +2199,20 @@ impl AppModel {
         self.page.title().into()
     }
     fn can_write(&self) -> bool {
-        self.store.is_some() && self.storage_error.is_none() && !self.backup.open
+        self.store.is_some()
+            && self.storage_error.is_none()
+            && !self.backup.busy
+            && self.backup.pending.is_none()
+            && !self.backup.clear_open
     }
     fn backup_available(&self) -> bool {
-        self.store.is_some() && self.storage_error.is_none() && !self.backup.busy
+        self.store.is_some()
+            && self.storage_error.is_none()
+            && !self.backup.busy
+            && self.editor.is_none()
+            && self.list_editor.is_none()
+            && self.delete_id.is_none()
+            && self.delete_list_id.is_none()
     }
     fn rebuild_nav(&mut self) {
         if let Some(store) = &self.store {
@@ -2503,6 +2671,8 @@ mod tests {
             task_sort_ascending: tasks::TaskSort::default().default_ascending(),
             show_completed: true,
             backup: backup_ui::State::default(),
+            auto_scheduler: automatic::Scheduler::default(),
+            auto_error: None,
             about: About::default(),
             title_input: cosmic::iced::widget::Id::unique(),
         }
@@ -2633,6 +2803,123 @@ mod tests {
     }
 
     #[test]
+    fn settings_header_and_interval_validation_preserve_saved_preferences() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut app = sidebar_fixture();
+        app.store = Some(Store::open(path.clone()).unwrap());
+        assert_eq!(app.header_start().len(), 1);
+        assert_eq!(app.header_end().len(), 1);
+        let _ = app.update(Message::Backup(Action::Open));
+        assert_eq!(app.backup.interval, "PT6H");
+        assert!(app.context_drawer().is_some());
+        assert!(app.dialog().is_none());
+        let _ = app.update(Message::SelectModule(Module::Calendar));
+        assert!(app.backup.open && app.core.window.show_context);
+        assert_eq!(app.page.module(), Module::Calendar);
+        let _ = app.update(Message::Backup(Action::AutoEnabled(true)));
+        let _ = app.update(Message::Backup(Action::Interval("PT30M".into())));
+        let _ = app.update(Message::Backup(Action::SaveAutomatic));
+        assert!(app.store.as_ref().unwrap().automatic_preferences().enabled);
+        let before = std::fs::read(&path).unwrap();
+        let _ = app.update(Message::Backup(Action::Interval("P1M".into())));
+        let _ = app.update(Message::Backup(Action::SaveAutomatic));
+        assert!(app.backup.interval_error.is_some());
+        assert_eq!(app.backup.interval, "P1M");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            app.store.as_ref().unwrap().automatic_preferences().interval,
+            "PT30M"
+        );
+        let _ = app.update(Message::Backup(Action::Close));
+        let _ = app.update(Message::Backup(Action::Open));
+        assert_eq!(app.backup.interval, "PT30M");
+    }
+    #[test]
+    fn typed_clear_confirmation_cancel_and_stale_editor_messages_are_safe() {
+        use backup_ui::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(
+                &backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
+            )
+            .unwrap();
+        store.set_automatic_preferences(true, "P1D".into()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let count = std::fs::read_dir(dir.path()).unwrap().count();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        let _ = app.update(Message::Backup(Action::Open));
+        let _ = app.update(Message::Backup(Action::Clear));
+        for value in ["", "clear", "CLEAR "] {
+            let _ = app.update(Message::Backup(Action::ClearText(value.into())));
+            let _ = app.update(Message::Backup(Action::ConfirmClear));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        let _ = app.on_escape();
+        assert!(!app.backup.open);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), count);
+        let _ = app.update(Message::Backup(Action::Open));
+        let _ = app.update(Message::Backup(Action::Clear));
+        let _ = app.update(Message::Backup(Action::ClearText("CLEAR".into())));
+        let _ = app.update(Message::Backup(Action::ConfirmClear));
+        assert!(app.backup.notice.as_ref().unwrap().contains("Data cleared"));
+        assert!(app.store.as_ref().unwrap().tasks().is_empty());
+        assert!(app.store.as_ref().unwrap().lists().is_empty());
+        assert!(!app.backup.auto_enabled);
+        assert_eq!(app.backup.interval, "PT6H");
+        assert_eq!(app.page, Page::Inbox);
+        assert!(app.editor.is_none());
+        let _ = app.update(Message::Backup(Action::Close));
+        let _ = app.update(Message::Title("Stale edit".into()));
+        let _ = app.update(Message::Save);
+        assert!(app.store.as_ref().unwrap().tasks().is_empty());
+        drop(app.store.take());
+        assert!(Store::open(path).unwrap().tasks().is_empty());
+    }
+    #[test]
+    fn automatic_tick_runs_without_a_window_and_avoids_overlapping_manual_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("tasks.json")).unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into())
+            .unwrap();
+        let mut app = sidebar_fixture();
+        app.store = Some(store);
+        app.core.set_main_window_id(None);
+        app.backup.open = true; // Ordinary Settings visibility must not pause automatic backups.
+        app.backup.busy = true;
+        app.automatic_tick();
+        assert!(!dir.path().join("automatic-backups").exists());
+        app.backup.busy = false;
+        app.backup.clear_open = true;
+        app.automatic_tick();
+        assert!(!dir.path().join("automatic-backups").exists());
+        app.backup.clear_open = false;
+        app.automatic_tick();
+        assert!(
+            app.store
+                .as_ref()
+                .unwrap()
+                .automatic_preferences()
+                .last_success
+                .is_some()
+        );
+        let count = std::fs::read_dir(dir.path().join("automatic-backups"))
+            .unwrap()
+            .count();
+        app.automatic_tick();
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("automatic-backups"))
+                .unwrap()
+                .count(),
+            count
+        );
+    }
+    #[test]
     fn backup_restore_requires_confirmation_and_cancel_never_changes_tasks() {
         use backup_ui::Action;
         let dir = tempfile::tempdir().unwrap();
@@ -2646,11 +2933,14 @@ mod tests {
         app.store = Some(store);
         let _ = app.update(Message::Backup(Action::Open));
         assert!(app.backup.open);
-        assert!(!app.can_write());
+        assert!(app.can_write());
         let _ = app.update(Message::Backup(Action::Confirm));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let _ = app.update(Message::Add);
-        assert!(app.editor.is_none());
+        assert!(app.editor.is_some());
+        assert!(app.dialog().is_some());
+        let _ = app.on_escape();
+        assert!(app.backup.open && app.core.window.show_context);
         let prepared = std::sync::Arc::new(
             backup::decode(include_bytes!("../tests/fixtures/backup-v1.kara-backup")).unwrap(),
         );
@@ -2887,7 +3177,7 @@ mod tests {
         assert!(!restored.show_completed());
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["version"],
-            6
+            7
         );
     }
 

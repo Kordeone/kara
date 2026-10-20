@@ -10,7 +10,7 @@ use std::{
 };
 
 const FORMAT: &str = "io.github.kordeone.Kara.backup";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,11 +22,19 @@ pub(crate) struct Data {
     pub sort_mode: TaskSort,
     pub sort_ascending: bool,
     pub show_completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_backups: Option<crate::automatic::Preferences>,
 }
 impl Data {
     fn validate(&self) -> Result<(), String> {
-        if self.version != 6 {
+        if !matches!(
+            (self.version, &self.automatic_backups),
+            (6, None) | (7, Some(_))
+        ) {
             return Err(format!("Unsupported backup task schema {}.", self.version));
+        }
+        if let Some(prefs) = &self.automatic_backups {
+            prefs.validate()?;
         }
         tasks::validate_document(&self.tasks, &self.lists)
     }
@@ -63,8 +71,12 @@ fn checksum(data: &Data) -> Result<String, String> {
         .map(|byte| format!("{byte:02x}"))
         .collect())
 }
-pub(crate) fn encode(data: Data) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(mut data: Data) -> Result<Vec<u8>, String> {
     data.validate()?;
+    if data.version == 6 {
+        data.version = 7;
+        data.automatic_backups = Some(crate::automatic::Preferences::default());
+    }
     let bytes = serde_json::to_vec_pretty(&Envelope {
         format: FORMAT.into(),
         backup_version: VERSION,
@@ -83,18 +95,28 @@ pub fn decode(bytes: &[u8]) -> Result<Prepared, String> {
     }
     let envelope: Envelope =
         serde_json::from_slice(bytes).map_err(|e| format!("Invalid backup JSON: {e}"))?;
-    if envelope.format != FORMAT || envelope.backup_version != VERSION {
+    if envelope.format != FORMAT || !matches!(envelope.backup_version, 1 | 2) {
         return Err("Unsupported Kara backup format or version.".into());
     }
-    let data: Data = serde_json::from_value(envelope.data.clone())
+    let mut data: Data = serde_json::from_value(envelope.data.clone())
         .map_err(|e| format!("Incomplete or invalid backup: {e}"))?;
     // Reject omitted fields that serde might otherwise default, and unknown data.
     if serde_json::to_value(&data).map_err(|e| e.to_string())? != envelope.data {
         return Err("Backup contains missing or noncanonical data fields.".into());
     }
     data.validate()?;
+    if (envelope.backup_version == 1 && data.version != 6)
+        || (envelope.backup_version == 2 && data.version != 7)
+    {
+        return Err("Backup version does not match its data schema.".into());
+    }
     if envelope.sha256 != checksum(&data)? {
         return Err("Backup integrity check failed (SHA-256).".into());
+    }
+    // Upgrade only the validated in-memory import. Original input is untouched.
+    if data.version == 6 {
+        data.version = 7;
+        data.automatic_backups = Some(crate::automatic::Preferences::default());
     }
     Ok(Prepared { data })
 }
@@ -206,6 +228,25 @@ mod tests {
     }
     pub const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
     #[test]
+    fn version_two_backups_include_settings_and_reject_invalid_settings() {
+        let mut data = decode(FIXTURE).unwrap().data;
+        data.automatic_backups = Some(crate::automatic::Preferences {
+            enabled: true,
+            interval: "P1W".into(),
+            last_success: Some(1000),
+        });
+        let bytes = encode(data.clone()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["backup_version"], 2);
+        assert_eq!(json["data"]["version"], 7);
+        assert_eq!(decode(&bytes).unwrap().data, data);
+        data.automatic_backups.as_mut().unwrap().interval = "P1M".into();
+        assert!(encode(data).is_err());
+        let mut bad = json;
+        bad["data"]["automatic_backups"]["last_success"] = (-1).into();
+        assert!(decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+    }
+    #[test]
     fn independently_generated_v1_fixture_and_json_reformatting_are_compatible() {
         let prepared = decode(FIXTURE).unwrap();
         assert_eq!(prepared.task_count(), 2);
@@ -276,10 +317,10 @@ mod tests {
                 .contains("integrity")
         );
         let mut json = original.clone();
-        json["backup_version"] = 2.into();
+        json["backup_version"] = 3.into();
         assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
         let mut json = original.clone();
-        json["data"]["version"] = 7.into();
+        json["data"]["version"] = 8.into();
         assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
         let mut json = original.clone();
         json["unexpected"] = true.into();
