@@ -321,3 +321,61 @@ CachyOS COSMIC graphical acceptance
    The chevron is supplied by libcosmic and was not altered here.
 5. Confirm the desktop entry keeps `io.github.kordeone.Kara` and the installed
    hicolor icon resolves at 512px and is scaled appropriately by the desktop.
+
+Kara — Stage 1 Final UI Polish
+
+Visual changes
+- About titlebar control now uses COSMIC's standard neutral Icon button class;
+  its selected state follows whether the About drawer is open. Its Tabler
+  `info-circle.svg` is explicitly 16px inside a centered 32px target with 8px
+  padding. The accessible name, tooltip, keyboard operation, and About action
+  remain intact. The previous HeaderBar class can use the accent foreground for
+  selected controls; the updated control is neutral while inactive.
+- Replaced the Matrix module's `columns-3.svg` with the supplied Tabler
+  `layout-grid.svg`, which depicts four quadrants. Kept the module selector
+  geometry unchanged. A regression test checks the four SVG paths, 24px source
+  viewBox, symbolic handle, and the native selector test checks the displayed
+  icon is centered at 16x16 logical pixels.
+- Shared Inbox, Today, and named-list task rows now use libcosmic's native Card
+  surface, rounded corners, and consistent horizontal/vertical theme spacing.
+  Existing row width constraints, checkbox, priority/title/due-date alignment,
+  right-side actions, task ordering, and completed strikethrough/muted style are
+  preserved. Native checkbox/action hover and keyboard-focus states remain.
+- Matrix task rows, drag-and-drop, the task dialog, sorting, pinned lists, logo,
+  About contents/credits, persistence, and tray behavior were not changed.
+
+Files changed
+- `src/app.rs`
+- `report.txt`
+
+Validation on headless Debian
+- `cargo fmt --check`: PASSED
+- `cargo check --locked`: PASSED
+- `cargo clippy --locked --all-targets -- -D warnings`: PASSED
+- `cargo test --locked`: PASSED, 101 passed, 0 failed, 1 ignored D-Bus test
+- `cargo build --locked`: PASSED
+- Isolated D-Bus tray/single-instance regression: PASSED, 1 test
+  (`KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport -- --ignored --exact --nocapture`)
+- Matrix icon is bundled, parses as symbolic SVG, and is verified as a four-cell
+  grid; actual native selector layout test verifies 16x16 logical-pixel bounds.
+- No COSMIC graphical validation was performed.
+
+CachyOS COSMIC graphical acceptance
+1. In light and dark themes, inspect the titlebar info button beside window
+   controls. Confirm it is centered at the same visual scale, neutral when About
+   is closed, uses a clear native hover/focus indication, and shows its tooltip.
+   Activate with mouse and keyboard; verify About opens and the selected state
+   tracks the drawer.
+2. Inspect the four module buttons at normal scale. Confirm the Matrix button
+   shows a clear four-quadrant grid at the same apparent size and stroke weight
+   as Tasks, Board, and Pomodoro. Check hover, focus, and selected states and
+   confirm module/subsection navigation is unchanged.
+3. In Inbox, Today, and named lists, confirm each task sits on a subtle rounded
+   COSMIC surface with a small even gap. Check checkbox, priority marker, title,
+   due date, and Edit/Delete alignment at normal and narrow window widths.
+4. Verify row surfaces and text remain readable in both themes. Hover task
+   action controls and keyboard-focus the checkbox/Edit/Delete controls; confirm
+   native states remain distinct. Confirm completed rows remain muted, checked,
+   and struck through, and sorting/filtering behavior is unchanged.
+5. Open Eisenhower Matrix and confirm its task-row layout and drag-and-drop are
+   unchanged.

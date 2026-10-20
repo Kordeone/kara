@@ -37,7 +37,7 @@ const SORT_ASCENDING_ICON: &[u8] = include_bytes!("../assets/tabler/arrow-up.svg
 const SORT_DESCENDING_ICON: &[u8] = include_bytes!("../assets/tabler/arrow-down.svg");
 const MODULE_TASKS_ICON: &[u8] = include_bytes!("../assets/tabler/list-check.svg");
 const MODULE_BOARD_ICON: &[u8] = include_bytes!("../assets/tabler/layout-kanban.svg");
-const MODULE_MATRIX_ICON: &[u8] = include_bytes!("../assets/tabler/columns-3.svg");
+const MODULE_MATRIX_ICON: &[u8] = include_bytes!("../assets/tabler/layout-grid.svg");
 const MODULE_POMODORO_ICON: &[u8] = include_bytes!("../assets/tabler/stopwatch.svg");
 const POMODORO_TIMER_ICON: &[u8] = include_bytes!("../assets/tabler/alarm.svg");
 const POMODORO_HISTORY_ICON: &[u8] = include_bytes!("../assets/tabler/history.svg");
@@ -572,8 +572,11 @@ impl cosmic::Application for AppModel {
         vec![
             widget::button::icon(icon::from_svg_bytes(INFO_ICON).symbolic(true))
                 .icon_size(16)
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
                 .padding(8)
-                .class(cosmic::theme::Button::HeaderBar)
+                .class(cosmic::theme::Button::Icon)
+                .selected(self.core.window.show_context)
                 .name("About Kara")
                 .tooltip("About Kara")
                 .on_press(Message::About)
@@ -817,9 +820,10 @@ impl cosmic::Application for AppModel {
                         .push(actions);
                     rows = rows.push(
                         widget::container(row)
-                            .padding(spacing.space_xxs)
+                            .padding([spacing.space_xs, spacing.space_s])
                             .width(Length::Fill)
-                            .max_width(880),
+                            .max_width(880)
+                            .class(cosmic::theme::Container::Card),
                     );
                 }
             }
@@ -2304,6 +2308,8 @@ mod tests {
                     );
                     let center = &cell.children()[0];
                     let icon = &center.children()[0];
+                    assert_eq!(icon.size().width, 16.);
+                    assert_eq!(icon.size().height, 16.);
                     assert!(
                         (center.bounds().x + icon.bounds().center_x() - expected_cell / 2.).abs()
                             < 0.01
@@ -2605,6 +2611,18 @@ mod tests {
     #[test]
     fn tabler_credit_targets_the_official_collection() {
         assert_eq!(TABLER_ICONS_URL, "https://github.com/tabler/tabler-icons");
+    }
+
+    #[test]
+    fn matrix_module_icon_is_the_bundled_four_quadrant_layout_grid() {
+        let svg = std::str::from_utf8(MODULE_MATRIX_ICON).unwrap();
+        assert!(svg.contains("icon-tabler-layout-grid"));
+        assert!(svg.contains("viewBox=\"0 0 24 24\""));
+        assert_eq!(svg.matches("<path d=").count(), 4);
+
+        let handle = module_icon(Module::Matrix);
+        assert!(handle.symbolic);
+        assert!(matches!(handle.data, icon::Data::Svg(_)));
     }
 
     #[test]
