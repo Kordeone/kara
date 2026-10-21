@@ -1,278 +1,156 @@
-KARA — Stage 4: Local Flatpak and AppImage Packaging
+KARA — GitHub Actions AppImage CI
 
-Delivery status: PARTIAL — AppImage built; Flatpak blocked by build-host isolation.
-These are unsigned local testing artifacts, not a production/public release.
-Branch: feat/release-packaging
-Worktree: /home/rapper/projects/kara-packaging
-Base/main preserved at 7514dfc460e0d00bb0fba1e321d55115e990f3b1.
-No merge, push, publication, production deployment or host software installation.
-All existing worktrees, rescue files, backups and main remain preserved.
+Branch: feat/appimage-ci
+Worktree: /home/rapper/projects/kara-ci
+Base: 199d69ec717eaac996950ebc2140f326088efbd1 (feat/release-packaging).
+Main remains 7514dfc; packaging worktree, rescue data and other worktrees preserved.
+No merge, push, tag, GitHub Release, publication or host package installation.
+GitHub-hosted execution has NOT occurred. COSMIC graphical acceptance is NOT claimed.
 
-1. Implemented packaging changes
-- Corrected AppStream description, developer/homepage/bugtracker, provides/binary,
-  categories and installed metadata path. Removed the template application ID.
-- Desktop entry now uses Exec=kara, no unsupported %F or empty MimeType;
-  Office/ProjectManagement categories. Application ID remains exactly
-  io.github.kordeone.Kara everywhere. No new D-Bus activation service is claimed.
-- Retained accepted KARA 5100 icon unchanged at 512px; added 32, 48, 64, 128 and
-  256px packaging copies. No blank template SVG is installed.
-- Added full Kara MPL-2.0 license text, Tabler MIT attribution, exact locked
-  workspace/dependency/font notices and Rust standard-library notices.
-  Supplementary texts have revision URLs and SHA256 provenance. Staging produces
-  481 dependency inventory records from the Linux-resolved graph (a conservative
-  superset including build/additional target metadata, not all necessarily linked).
-- Pinned Rust 1.99.1. Cargo.lock and Cargo.toml are unchanged. No dependency update.
-- build.rs uses OUT_DIR/xdgen and explicit rerun inputs; no source-tree target/xdgen
-  output. packaging/build.py obtains actual binary/generated metadata paths from
-  Cargo JSON and validates installed payload metadata. Just install uses this
-  contract; its syntax/staged destination were checked by dry-run, not installed.
-- Added rootless Ubuntu 22.04 Containerfile, offline preparation/validation helpers,
-  a minimal Flatpak source manifest and verified AppImage assembly/tool download.
-- No src/ application module, task schema, UI/dialog, identity, tray, data migration
-  or automatic-backup behavior changed. No new notification/reminder feature added.
+IMPLEMENTATION
+- .github/workflows/appimage.yml: pull requests targeting main, pushes to main and
+  manual dispatch; read-only contents permission; SHA-pinned official checkout
+  v7.0.1/upload-artifact v7.0.2; credentials not persisted; 90-minute timeout;
+  superseded same-ref runs canceled; seven-day testing artifact retention.
+- Ubuntu 22.04 hosted runner builds a digest-pinned Ubuntu 22.04 tools container.
+  Signed Ubuntu snapshot 20261020T000000Z freezes apt dependencies. A SHA-256-pinned
+  Ubuntu ca-certificates package bootstraps HTTPS without disabling TLS/signatures.
+  Only historical snapshot validity timestamps are exempted from expiry checks.
+- Exact dated official Rust 1.99.1 compiler/Cargo/std/rustfmt/Clippy archives and
+  actionlint 1.7.12 verified by SHA-256. AppImage tools retain existing lock file.
+- build-appimage.sh reuses packaging/validate.sh, packaging/build.py and existing
+  AppImage fetch/build helpers. It fetches locked sources, then builds offline.
+  No external prebuilt Kara, hardcoded developer path or shared CI Cargo cache.
+  CI dev/test debug symbols and incremental caches are disabled to bound disk
+  use on standard hosted runners; release settings are unchanged.
+- New verifier extracts the actual type-2 x86_64 AppImage without FUSE and checks
+  official icons, desktop/AppStream metadata, licenses, runtime allowlist,
+  resolved dependencies, executable AppRun and maximum GLIBC_2.35 requirements.
+  Extracted symbol maxima and package bytes/hash must match assembly evidence.
+- ShellCheck required explicit empty CDPATH quoting in the existing generated
+  AppRun; launcher behavior is unchanged.
+- SHA-256 is generated and checked. Job summary and uploaded evidence record
+  actual bytes/MiB, source SHA/epoch, tool versions and complete dpkg inventory.
+- Builder includes snapshot-pinned timezone data and Noto/DejaVu fonts. Runs as
+  an unprivileged UID so permission-denial regressions remain meaningful.
+- No application src/, Cargo.lock, dependencies, task schema or UI changes.
 
-2. Artifact: AppImage
-Path:
-  /home/rapper/projects/kara-packaging/dist/Kara-0.1.0-testing-x86_64.AppImage
-Bytes: 14,223,864 (13.56 MiB).
-SHA256:
-  57fb8bdc29a36acaca88889230ec01e1203bed80708449795b57f35da23950ca
-Sidecars: dist/SHA256SUMS and the .AppImage.json file.
-Artifacts are intentionally ignored by Git; source/recipes/evidence are committed.
+ARTIFACT CONVENTIONS
+GitHub artifact: Kara-AppImage-x86_64-<full github.sha>-<run_attempt>.
+Payload: Kara-<Cargo version>-testing-<12-character source SHA>-x86_64.AppImage.
+Checksum: same basename plus .sha256 (standard basename-only sha256sum format).
+Also upload assembly/validation JSON, build-environment.txt and summary.md.
+Artifacts expire after 7 days; no extra ZIP compression. Downloaded executable
+mode may require chmod +x. GitHub artifact ZIP digest differs from AppImage hash.
+PR source SHA is normally the synthetic merge commit. Reference 13.56 MiB is not
+assumed for CI; hosted size will be measured only after an actual hosted run.
 
-Build/link baseline: x86_64 Ubuntu 22.04, glibc 2.35, Rust 1.99.1.
-Container base pinned to:
-  ubuntu:22.04@sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04
-Unstripped Ubuntu release ELF: 49,350,088 bytes (47.06 MiB).
-Stripped payload ELF: 35,786,568 bytes (34.13 MiB).
-Debian validation ELF sizes: debug 742,593,368; release 49,362,680 bytes.
-These are actual files, not installed/Flatpak download/idle-memory estimates.
+CHANGED FILES
+.github/workflows/appimage.yml
+packaging/README.md
+packaging/appimage/build.py
+packaging/ci/Containerfile
+packaging/ci/README.md
+packaging/ci/build-appimage.sh
+packaging/ci/install-tools.py
+packaging/ci/test_ci.py
+packaging/ci/tools.lock.json
+packaging/ci/verify-appimage.py
+report.txt
 
-Bundled only Ubuntu libxkbcommon.so.0, with notices. libgcc_s.so.1 remains
-host-provided, following upstream AppImage host-library exclusion guidance.
-Payload maximum referenced GLIBC versions: Kara 2.35, libxkbcommon 2.33.
-Compiler runtime, libc, ELF loader and hardware-specific graphics drivers are not
-bundled. Ubuntu 20.04/older glibc and ARM are not supported by this candidate.
-Host graphics libraries/compositor, session D-Bus and FUSE or extract-and-run
-are still required. The runtime is static; the application payload uses glibc.
-
-appimagetool 1.9.1 and runtime 20251108 are checksum-pinned against upstream
-asset digests; no mutable continuous runtime is used. SOURCE_DATE_EPOCH is the
-accepted baseline commit time 1792542388. Two final assemblies have identical
-SHA256. This proves repeat assembly of the same payload here, NOT independently
-reproducible clean compiles across distributions/toolchains.
-
-Actual artifact validation:
-- Type-2 ELF header, executable mode, x86_64 and SquashFS extraction passed.
-- Actual extracted desktop/metainfo/icons/license payload checked.
-- ldd on Ubuntu 22.04 resolves every directly required library; bundled libraries
-  resolve from the extracted payload; libgcc_s/libc/libm/loader from the baseline host.
-- Extract-and-run reaches application entry under private D-Bus and disposable
-  XDG data. Exit 101 is EXPECTED without a display:
-  Create event loop: NotSupported(NotSupportedError { reason: "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set." })
-  This is not successful GUI launch, renderer, portal, tray or notification proof.
-- appimagetool emits a legacy *.appdata.xml filename warning even though valid
-  *.metainfo.xml is installed and separately validated. No duplicate metadata or
-  disabled validator was introduced to hide it.
-
-3. Flatpak: prepared, but NO .flatpak artifact
-Source manifest:
-  packaging/flatpak/io.github.kordeone.Kara.json
-Supported runtime/SDK: org.freedesktop.Platform and org.freedesktop.Sdk, 25.08.
-Installed privately in the rootless container, not on the Debian host.
-Exact tested runtime commit:
-  b7aba340fd291e08bf26442d43a0e4adb6733da5a06d47ff4296a964af40cc8a
-Exact SDK commit:
-  18fa1be304b09e42dd3606f6d933e2d6a27513dd3aeee1203b2b58d59ad3db71
-Rust extension was inspected/installed privately, but the generated source-build
-manifest supplies verified exact Rust 1.99.1 via --toolchain /opt/rust instead
-of relying on a rolling extension version. No compiler is in the final payload.
-
-Permissions:
-- Wayland socket and dri GPU device.
-- org.kde.StatusNotifierWatcher.
-- Exact com.system76.CosmicSettingsDaemon and .Config watcher services.
-- Read-only xdg-config/cosmic subdirectories: com.system76.CosmicTk and
-  com.system76.CosmicTheme.Mode, .Dark, .Light. Locked libcosmic directly reads
-  these and subscribes to the settings daemon; no shared configuration writes.
-No unrestricted home/host filesystem, network, X11, system bus or full session
-bus access. Portals and own application-ID names use standard filtered-bus access.
-Automatic destinations remain explicitly selected/granted by the user.
-
-Completed checks:
-- Manifest parsed by flatpak-builder; all locked sources successfully vendored.
-- Standard build-init/build-finish created a correct staged application.
-- Finished metadata was parsed and checked against the exact permission allowlist.
-- A verified Ubuntu prebuilt-payload route was also attempted using standard export.
-  Its stripped executable SHA256 equals the AppImage executable exactly.
-- Freedesktop 25.08's own loader resolves ALL required libraries from its runtime.
-  This is ABI/loader readiness, not application execution inside the sandbox.
-
-Genuine environment blocker — do not bypass:
-Native flatpak-builder module execution fails BEFORE compilation:
-  bwrap: Creating new namespace failed: Operation not permitted
-Standard build-export also fails because its sandboxed icon validator cannot run:
-  error: /work/flatpak-export-build/export/share/icons/hicolor/32x32/apps/io.github.kordeone.Kara.png is not a valid icon: bwrap: Creating new namespace failed: Operation not permitted
-The latter is a namespace failure, not evidence that the PNG is corrupt. Actual
-PNG dimensions/content were independently checked. Simple nested user-namespace
-bwrap succeeds, but the full Flatpak sandbox does not; no claim is made about
-which exact additional namespace/seccomp policy is responsible.
-
-No privileged container, unconfined policy, disabled sandbox, skipped icon check,
-manual OSTree bypass or host kernel/configuration change was used. Flatpak export
-experiments stopped after the normal paths demonstrated the blocker.
-NO locally installable .flatpak was created. Flatpak install, sandbox launch,
-portal persistence, notifications and tray filtering were NOT validated.
-Run the documented build on a host with functional Flatpak namespace sandboxes.
-Debian host flatpak/flatpak-builder are absent; installing host tools or changing
-host isolation would require separate owner approval.
-
-4. Validation results
-All final application regressions passed with disposable temporary XDG_DATA_HOME,
-XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR and TMPDIR:
+VALIDATION
+Local reproduction of the exact CI entry point on Ubuntu 22.04, unprivileged UID:
   cargo fmt --check                                  PASS
   cargo check --locked                               PASS
   cargo clippy --locked --all-targets -- -D warnings   PASS
-  cargo test --locked                                PASS: 176, 0 failed, 1 ignored
+  cargo test --locked                                PASS: 176; 0 failed; 1 ignored
   cargo build --locked                               PASS
   cargo build --release --locked                     PASS
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
-    -- --ignored --exact --nocapture                  PASS: 1, 0 failed
+    -- --ignored --exact --nocapture                  PASS: 1
   python3 packaging/test_packaging.py                 PASS: 9
-  Python helper syntax, sh syntax, Just install dry-run PASS
-  AppStream 1.0.5 / desktop-file-validate 0.28          PASS
-  Actual staged metadata, AppStream 0.15.2             PASS
+  python3 packaging/ci/test_ci.py                     PASS: 5
+  actionlint 1.7.12 / ShellCheck 0.8.0                 PASS
+  Python syntax, sh/bash syntax and generated AppRun   PASS
+  Desktop entry / AppStream / actual extracted bundle PASS
+  SHA-256 generation and verification                 PASS
+  Network-disabled repeat AppImage assembly           PASS: byte-identical
+  Git whitespace checks                              PASS
 
-AppStream pedantic notices remain intentionally: uppercase preserved application
-ID and no public release history. Ubuntu's older validator reports informational
-unknown developer tag; no warning/error remains. No fabricated release/screenshots.
+An initial container-root trial exposed 11 permission-denial test failures;
+missing timezone data and fonts caused two further failures. Fixed builder/user
+prerequisites, not application code or assertions. All 176 tests then passed.
+The final entry point rejects root. No test was skipped to work around failures.
+Final dev/test profile excludes debug symbols/incremental cache; release unchanged.
+Measured Ubuntu target directory: 3.9 GiB; Cargo cache: 1.4 GiB. These are local
+measurements, not a promise about hosted runner timings/storage or full cold CI.
 
-Read-only source + network-disabled container cached build passed:
-  cargo build --release --frozen --offline
-Final native delivery validation uses the private target directory
-/var/tmp/kara-packaging-build/debian-target. It is a non-hardlinked copy of a
-warm cache; earlier native checks reused the external cache before this final
-isolated pass. Package build targets were private throughout.
-Final staging helper also passed with read-only source, network disabled and a
-fresh output directory. Rust notice evidence is bundled/verified, so a minimal
-Rust install need not install the large rust-docs component just to stage licenses.
-Initial cold Ubuntu release compile: 17m 36s, jobs=2; cached release repeat: 1.99s.
-These host/load-specific values are not a clean reproducibility guarantee.
-Two final AppImage assemblies were byte-identical. Flatpak sandbox/export tests
-FAILED for the environment reason above; do not summarize every check as passed.
+Local pre-commit CI candidate (application sources at base 199d69e plus reviewed
+uncommitted CI/launcher changes):
+  /var/tmp/kara-appimage-ci-build/candidate-unprivileged/artifacts/
+  Kara-0.1.0-testing-199d69ec717e-x86_64.AppImage
+  Actual bytes: 14,223,864 (13.56 MiB), measured, not copied from reference metadata.
+  SHA256: 92f60f58a69c88e3ba3ff088e0a44f35bf996dd6dc8bad74761050c32a440bc4
+  Extracted maximum GLIBC: Kara 2.35; libxkbcommon.so.0 2.33.
+  Executable/type-2/x86_64, icon/desktop/license/runtime and loader checks passed.
 
-Evidence:
-  packaging/build-evidence.json
-  packaging/appimage/tools.lock.json
-  packaging/licenses/{sources.json,runtime-sources.json,rust-notices.json}
-Raw logs, builders, caches and vendored sources retained under:
-  /var/tmp/kara-packaging-build
-  /var/tmp/kara-packaging-podman
-  /var/tmp/kara-packaging-podman-run
-The newly created builder container was stopped after all jobs completed; build
-inputs and caches remain available. Verbatim upstream license texts retain their
-original whitespace/CRLF for checksum provenance; implementation whitespace
-checks exclude those legal copies.
-No real user task data was used or changed by tests. No COSMIC installation on
-Debian and no graphical acceptance claim. No host packages/services configured.
+Raw logs and private caches: /var/tmp/kara-appimage-ci-build/.
+Full source entry-point log: container-validation-unprivileged.log.
+Builder image logs: image-build-complete.log and image-build.log.
+Native companion log: native-validation.log.
+Debian companion validation also COMPLETE: formatting, locked check, strict
+Clippy, 176 tests (1 ignored), debug/release builds, isolated D-Bus (1 pass),
+9 packaging tests and source metadata checks all passed. Native release rebuild
+was 20m 56s with two jobs; this is not a hosted CI timing measurement.
+AppStream retains two accepted pedantic notices (uppercase preserved ID and no
+public release history); Ubuntu's older validator reports an informational
+modern developer-tag notice. No required validation failure remains.
+Native toolchain: installed stable alias verified as exact rustc 1.99.1; the
+workflow itself installs checksum-pinned 1.99.1 and never selects rolling stable.
+Independent syntax/lint log: tool-validation.log.
+Artifact bytes/cache outputs are not committed. No real user data was used.
+Hosted workflow, upload/download and COSMIC acceptance remain NOT RUN.
 
-5. Changed files
-- build.rs, justfile, .gitignore, rust-toolchain.toml.
-- resources/app.desktop, resources/app.metainfo.xml, five additional PNG sizes.
-- LICENSE, THIRD_PARTY_NOTICES.md; packaging license/provenance evidence.
-- packaging/Containerfile, build.py, validate.sh, test_packaging.py, README.md.
-- packaging/flatpak/{io.github.kordeone.Kara.json,prepare.py,assemble.py}.
-- packaging/appimage/{build.py,fetch-tools.py,tools.lock.json}.
-- packaging/build-evidence.json and this consolidated report.
-No src/ files, Cargo.toml or Cargo.lock changed. Binaries/caches are not committed.
+OWNER FIRST RUN / GRAPHICAL ACCEPTANCE
+1. Review and push/open a PR targeting main manually. This agent does not push.
+   Manual dispatch requires the workflow to exist on the default branch first.
+2. Confirm the pinned action SHAs, read-only permissions, source SHA and complete
+   validation/build job. Approve a first-time fork workflow if GitHub requires it.
+3. Download within seven days; inspect actual bytes/hash and build environment.
+   Run sha256sum --check against the .sha256 from the download directory.
+4. Completely Quit existing Kara via tray before switching builds. Prefer a
+   disposable account/dataset; never clear real user data merely to test a build.
+5. On CachyOS COSMIC and an x86_64 Ubuntu 22.04/glibc 2.35 test environment, verify
+   regular FUSE and extract-and-run launch, icon, themes, Tasks/Calendar/Matrix,
+   selector, Matrix drag/drop, tray lifecycle and single-instance activation.
+6. Verify native backup chooser, Add/Replace imports, recovery/clear safeguards,
+   automatic backup destination access and persistence across restart.
+7. Keep job logs, package inventory and checksums with acceptance results.
 
-6. Exact owner install/launch/uninstall commands
-AppImage, from the transferred dist directory:
-  sha256sum -c SHA256SUMS
-  chmod +x ./Kara-0.1.0-testing-x86_64.AppImage
-  ./Kara-0.1.0-testing-x86_64.AppImage
-If FUSE is unavailable:
-  APPIMAGE_EXTRACT_AND_RUN=1 ./Kara-0.1.0-testing-x86_64.AppImage
-Uninstall only that artifact (after Quit):
-  rm -- ./Kara-0.1.0-testing-x86_64.AppImage
-Do not delete ~/.local/share/io.github.kordeone.Kara or any backup archive.
+RELEASE AND FLATPAK READINESS
+- Normal CI runs only create testing artifacts. An owner-approved exact version,
+  commit and tag, graphical/license/security acceptance and a separate reviewed
+  protected release workflow are required before any future public release.
+  No public-release workflow or tag trigger was added.
+- Flatpak manifest inspected: Freedesktop 25.08, offline vendoring, minimal
+  Wayland/GPU/tray/COSMIC settings allowlist. No broad home/network/bus access.
+- Smallest follow-up: native disposable Ubuntu GitHub VM, temporary user Flatpak
+  installation, normal namespace preflight, signed runtime/SDK 25.08 (record/pin
+  commits), existing prepare.py with verified exact Rust toolchain, ordinary
+  sandboxed flatpak-builder/build-bundle, metadata/permissions and checksum/upload.
+  Detailed steps in packaging/ci/README.md. No Flatpak workflow enabled yet.
+- Debian's existing full Flatpak sandbox blocker remains:
+  bwrap: Creating new namespace failed: Operation not permitted
+  No bypass, privileged container, disabled icon validation or host change.
+- Hosted Flatpak source build/export, portal grants after restart, notifications,
+  tray filtering and COSMIC behavior remain unverified. Flathub/public release also
+  needs screenshots/release metadata, dependency/security review, drm-fourcc full
+  MIT notice clarification and runtime source/relink obligation review.
+- Snapshot/tool hosting and GitHub runners remain external dependencies. Pinning
+  is a repeatable recipe, not proof of clean-build byte identity or endless archive
+  availability. Update frozen tools/snapshot deliberately for security fixes.
 
-Flatpak commands are CONDITIONAL: first build the absent bundle on a supported
-host using packaging/README.md. Then, in a disposable COSMIC test account:
-  flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-  flatpak --user install --bundle ./Kara-0.1.0-testing-x86_64.flatpak
-  flatpak info --user --show-permissions io.github.kordeone.Kara
-  flatpak run io.github.kordeone.Kara
-  flatpak --user uninstall io.github.kordeone.Kara
-Never add --delete-data. Normal sandbox tasks live at
-~/.var/app/io.github.kordeone.Kara/data/io.github.kordeone.Kara/tasks.json.
-No silent native-to-Flatpak migration; use deliberate backup import if desired.
-These install/uninstall commands were NOT run against the host or production data.
-
-7. CachyOS COSMIC acceptance checklist
-1. Use a dedicated test account/disposable task data. Fully Quit older Kara through
-   tray first: all formats intentionally use the SAME single-instance bus name.
-   Verify SHA256 and commit/source before switching packages.
-2. AppImage: normal FUSE launch AND extract-and-run. Confirm official KARA 5100
-   icon/About branding, light/dark/accent theme, keyboard focus and five modules.
-   Test a real Ubuntu 22.04 desktop (or equivalent documented glibc 2.35 baseline)
-   before claiming that baseline graphically supported. Check host GPU/software
-   renderer paths and missing-portal/tray behavior; no unresolved-library errors.
-3. Flatpak, AFTER building on a namespace-capable host: install as user, inspect
-   permissions/desktop launcher icon, launch from menu, verify private persisted
-   data across full Quit/restart. No broad permissions should be added casually.
-4. CRUD/list assignments, Calendar month/date/selected-day creation, priority icons
-   and Matrix pages/order/DnD/cancellation must match accepted main. Complete/uncomplete
-   and restart; IDs/order/notes/dates must survive without duplicate records.
-5. Export/import Add and Replace with disposable records. Check chooser modality,
-   permission errors, recovery snapshots, verified rollback and responsive busy
-   feedback. Clear All Data only in disposable account; require CLEAR and verified
-   recovery. Manual/recovery archives must remain intact.
-6. Select an external writable automatic-backup folder through the actual portal.
-   Apply interval/retention; hide to tray and trigger backup. Fully Quit/restart
-   and test overdue behavior, persistent grants, revocation/unavailable folder,
-   atomic writes/sync and retention isolation. Keep prior/manual/recovery archives.
-   A portal that cannot support the required safe operation must show an error;
-   do not broaden home/filesystem access or weaken sync to hide it.
-7. Tray Open/Quit, close-to-tray, second launch, panel restart and registration loss.
-   Test while a worker is busy and confirm deferred Quit finishes transactions.
-   Use flatpak run --log-session-bus io.github.kordeone.Kara for exact denied calls;
-   report them before changing permissions. Confirm live COSMIC theme updates.
-8. Notification CAPABILITY check for a future completed Flatpak (gdbus exists in
-   the selected runtime):
-   flatpak run --command=gdbus io.github.kordeone.Kara call --session \
-     --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop \
-     --method org.freedesktop.portal.Notification.AddNotification kara-package-test \
-     "{'title': <'Kara packaging test'>, 'body': <'Portal delivery test'>}"
-   Verify COSMIC displays it, then remove it:
-   flatpak run --command=gdbus io.github.kordeone.Kara call --session \
-     --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop \
-     --method org.freedesktop.portal.Notification.RemoveNotification kara-package-test
-   This probes portal delivery only. Kara currently emits no desktop notification
-   events, so application notification behavior is not established by this task.
-9. Uninstall only test artifact/application. Confirm task data/backups remain.
-   Record package hash, OS/glibc/GPU/COSMIC version, theme/scaling and results.
-
-8. Remaining release blockers / limitations
-- Flatpak bundle creation and install/launch acceptance blocked here by namespaces.
-- Actual GUI/portal/tray/notification/clean-host graphics acceptance remains pending.
-- drm-fourcc 2.2.0 has an MIT declaration/authors but no complete license text at
-  its locked revision. Original evidence is retained and inventory flags review;
-  no copyright notice was invented. Resolve before public distribution.
-- AppImage runtime third-party licenses are included. Exact corresponding-source/
-  relink obligations and the prior dependency advisory/license decisions still
-  require review before public distribution. No legal/security clearance claimed.
-- Apt repositories and runtime branches can advance; base digest/compiler/tools/
-  Cargo revisions and actual runtime commits are recorded, but independent clean
-  bit-for-bit compilation has not been proved. Preserve builder/cache/source inputs.
-- No public release history, screenshots, signatures, updates, Flathub submission,
-  auto desktop integration, autostart or packaging publication implemented.
-
-Stop for owner acceptance. Do not merge or push automatically.
-
-Primary packaging references:
-https://docs.flatpak.org/en/latest/manifests.html
-https://docs.flatpak.org/en/latest/sandbox-permissions.html
-https://docs.appimage.org/reference/best-practices.html
-https://raw.githubusercontent.com/AppImageCommunity/pkg2appimage/master/excludelist
+Exact local commands, artifact conventions, sources and future release approval
+procedure: packaging/ci/README.md. Existing package installation/uninstall guidance:
+packaging/README.md. Do not use --delete-data on Flatpak uninstall.

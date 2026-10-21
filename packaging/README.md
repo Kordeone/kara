@@ -170,3 +170,9 @@ omit them. drm-fourcc 2.2.0 has an MIT declaration but no full upstream text at
 its locked revision; clarify that notice and complete runtime source/relink and
 security review before any public distribution. These local artifacts do not
 constitute a legal or dependency-security clearance.
+
+## GitHub Actions testing builds
+
+See [CI build, artifact, release approval and Flatpak readiness instructions](ci/README.md).
+The CI builder additionally freezes the Ubuntu archive snapshot and verifies
+exact Rust/tool downloads. The original local Containerfile remains available.
