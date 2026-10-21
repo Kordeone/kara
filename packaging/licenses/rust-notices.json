@@ -1,0 +1,8 @@
+{
+  "rust_version": "1.99.1",
+  "commit": "58cf8f9c35b355199727627d07ae34a4e2846d67",
+  "file": "Rust-1.99.1-COPYRIGHT-library.html",
+  "sha256": "5647be074c8edf7339fd863055923a8fc80bc5610a8d4661ec3b767b9d392c27",
+  "origin": "Official installed Rust 1.99.1 share/doc/rust/COPYRIGHT-library.html; retained so minimal toolchains do not require rust-docs",
+  "upstream": "https://github.com/rust-lang/rust/tree/58cf8f9c35b355199727627d07ae34a4e2846d67"
+}

@@ -1,12 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
+mod automatic;
+mod backup;
+mod backup_ui;
+mod calendar_month;
+mod calendar_view;
 mod date_entry;
 mod i18n;
+mod import;
 mod lifecycle;
 mod matrix;
+mod matrix_clip;
+mod matrix_drag;
 mod matrix_view;
+mod priority_style;
 mod storage;
+mod storage_job;
 mod tasks;
 mod tray;
 

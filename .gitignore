@@ -12,3 +12,6 @@ debian/*
 !debian/install
 !debian/rules
 !debian/source
+/packaging/work/
+/dist/
+__pycache__/

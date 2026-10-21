@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{
     matrix::{self, Direction},
-    tasks::{self, Quadrant, Task, TaskList},
+    tasks::{self, Priority, Quadrant, Task, TaskList, TaskSort},
 };
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -19,14 +19,175 @@ struct Document {
     tasks: Vec<Task>,
     #[serde(default)]
     lists: Vec<TaskList>,
+    #[serde(default)]
+    sort_mode: TaskSort,
+    #[serde(default)]
+    sort_ascending: Option<bool>,
+    #[serde(default = "default_show_completed")]
+    show_completed: bool,
+    #[serde(default)]
+    automatic_backups: Option<crate::automatic::Preferences>,
+}
+fn default_show_completed() -> bool {
+    true
+}
+
+// Legacy values are deliberately accepted only by the versioned migration.
+#[derive(Deserialize)]
+enum LegacyPriority {
+    Low,
+    Normal,
+    High,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyTask {
+    id: String,
+    title: String,
+    completed: bool,
+    due_date: Option<String>,
+    priority: LegacyPriority,
+    notes: Option<String>,
+    list_id: Option<String>,
+    #[serde(default)]
+    matrix_quadrant: Option<Quadrant>,
+    #[serde(default)]
+    matrix_order: Option<u64>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyDocument {
+    version: u32,
+    tasks: Vec<LegacyTask>,
+    #[serde(default)]
+    lists: Vec<TaskList>,
+}
+fn decode_document(bytes: &[u8]) -> Result<Document, String> {
+    #[derive(Deserialize)]
+    struct Header {
+        version: u32,
+    }
+    let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    match header.version {
+        4..=7 => {
+            let doc: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            if doc.version == 7 && doc.automatic_backups.is_none() {
+                return Err("Missing automatic backup preferences in schema 7.".into());
+            }
+            if let Some(prefs) = &doc.automatic_backups {
+                prefs.validate()?;
+            }
+            Ok(doc)
+        }
+        1..=3 => {
+            let old: LegacyDocument = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            let mut converted = Vec::with_capacity(old.tasks.len());
+            for task in old.tasks {
+                if task.matrix_quadrant.is_none() && task.matrix_order.is_some() {
+                    return Err("A legacy Matrix order requires a quadrant.".into());
+                }
+                // Retired priority is validated, then preserved in the byte-exact
+                // backup rather than guessed into a new importance/urgency value.
+                let _retired_priority = task.priority;
+                converted.push(Task {
+                    id: task.id,
+                    title: task.title,
+                    completed: task.completed,
+                    due_date: task.due_date,
+                    notes: task.notes,
+                    list_id: task.list_id,
+                    created_at: None,
+                    priority: task
+                        .matrix_quadrant
+                        .map_or(Priority::P0, Quadrant::priority),
+                    matrix_order: task.matrix_order,
+                });
+            }
+            Ok(Document {
+                version: old.version,
+                tasks: converted,
+                lists: old.lists,
+                sort_mode: TaskSort::default(),
+                sort_ascending: None,
+                show_completed: true,
+                automatic_backups: None,
+            })
+        }
+        other => Err(format!("Unsupported task data version {other}.")),
+    }
+}
+
+/// No-clobber publication, byte verification and directory sync must all finish
+/// before the original legacy file can be atomically replaced.
+fn ensure_migration_backup(path: &Path, original: &[u8], suffix: &str) -> Result<(), String> {
+    let backup = path.with_extension(suffix);
+    let dir = path.parent().ok_or("Invalid storage path.")?;
+    let verify = || -> Result<(), String> {
+        let metadata = fs::symlink_metadata(&backup).map_err(|e| e.to_string())?;
+        if !metadata.file_type().is_file()
+            || fs::read(&backup).map_err(|e| e.to_string())? != original
+        {
+            return Err(format!(
+                "Migration backup {} differs from the original or is not a regular file. Preserve both files and resolve the backup conflict before retrying.",
+                backup.display()
+            ));
+        }
+        File::open(&backup)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        File::open(dir)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())
+    };
+    if !backup.try_exists().map_err(|e| e.to_string())? {
+        let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
+        temp.write_all(original)
+            .and_then(|()| temp.as_file().sync_all())
+            .map_err(|e| e.to_string())?;
+        match temp.persist_noclobber(&backup) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(format!(
+                    "Cannot create migration backup {}: {e}",
+                    backup.display()
+                ));
+            }
+        }
+    }
+    verify()
+        .map_err(|e| format!("Cannot verify migration backup; legacy data was not replaced: {e}"))
+}
+
+// A one-shot, thread-local fault injection covers rollback after publication
+// without touching real user data or affecting concurrently running tests.
+#[cfg(test)]
+thread_local! {
+    static FAIL_COMMIT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(crate) fn fail_next_commit_sync() {
+    FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+}
+fn sync_committed_directory(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if FAIL_COMMIT_SYNC.with(|flag| flag.replace(false)) {
+        return Err(io::Error::other("injected directory sync failure"));
+    }
+    File::open(dir).and_then(|f| f.sync_all())
 }
 
 pub struct Store {
     path: PathBuf,
-    _lock: File,
+    _lock: Option<File>,
     snapshot: Option<Vec<u8>>,
-    tasks: Vec<Task>,
-    lists: Vec<TaskList>,
+    migration_version: Option<u32>,
+    tasks: std::sync::Arc<Vec<Task>>,
+    lists: std::sync::Arc<Vec<TaskList>>,
+    sort_mode: TaskSort,
+    sort_ascending: bool,
+    show_completed: bool,
+    automatic_backups: crate::automatic::Preferences,
 }
 
 pub fn data_path() -> Result<PathBuf, String> {
@@ -73,54 +234,331 @@ impl Store {
             format!("Cannot lock task storage; another Kara instance may be using it: {e}")
         })?;
         let snapshot = read(&path)?;
-        let (tasks, lists) = match &snapshot {
-            None => (Vec::new(), Vec::new()),
-            Some(bytes) => {
-                let mut doc: Document = serde_json::from_slice(bytes).map_err(|e| {
-                    format!(
-                        "Invalid task data in {}: {e}. The file has been preserved.",
-                        path.display()
-                    )
-                })?;
-                if ![1, 2, 3].contains(&doc.version) {
-                    return Err(format!(
-                        "Unsupported task data version {}. The file has been preserved.",
-                        doc.version
-                    ));
-                }
-                if doc.version == 1 {
-                    // Stage 1 allowed reserved list IDs without list definitions. Recover
-                    // those definitions without changing a task or writing on load.
-                    for task in &doc.tasks {
-                        if let Some(id) = &task.list_id
-                            && !doc.lists.iter().any(|list| &list.id == id)
-                        {
-                            let mut name = format!("Recovered list {id}");
-                            while tasks::validate_list_name(&name, &doc.lists, None).is_err() {
-                                name.push(' ');
-                                name.push('•');
+        let mut migration_version = None;
+        let (tasks, lists, sort_mode, sort_ascending, show_completed, automatic_backups) =
+            match &snapshot {
+                None => (
+                    Vec::new(),
+                    Vec::new(),
+                    TaskSort::default(),
+                    TaskSort::default().default_ascending(),
+                    true,
+                    crate::automatic::Preferences::default(),
+                ),
+                Some(bytes) => {
+                    let mut doc = decode_document(bytes).map_err(|e| {
+                        format!(
+                            "Invalid task data in {}: {e}. The file has been preserved.",
+                            path.display()
+                        )
+                    })?;
+                    migration_version = (doc.version < 7).then_some(doc.version);
+                    if doc.version == 1 {
+                        // Stage 1 allowed reserved list IDs without list definitions. Recover
+                        // those definitions without changing a task or writing on load.
+                        for task in &doc.tasks {
+                            if let Some(id) = &task.list_id
+                                && !doc.lists.iter().any(|list| &list.id == id)
+                            {
+                                let mut name = format!("Recovered list {id}");
+                                while tasks::validate_list_name(&name, &doc.lists, None).is_err() {
+                                    name.push(' ');
+                                    name.push('•');
+                                }
+                                doc.lists.push(TaskList {
+                                    id: id.clone(),
+                                    name,
+                                    pinned: false,
+                                });
                             }
-                            doc.lists.push(TaskList {
-                                id: id.clone(),
-                                name,
-                                pinned: false,
-                            });
                         }
                     }
+                    tasks::validate_document(&doc.tasks, &doc.lists).map_err(|e| {
+                        format!("Invalid task data: {e} The file has been preserved.")
+                    })?;
+                    matrix::normalize(&mut doc.tasks);
+                    let ascending = doc
+                        .sort_ascending
+                        .unwrap_or_else(|| doc.sort_mode.default_ascending());
+                    (
+                        doc.tasks,
+                        doc.lists,
+                        doc.sort_mode,
+                        ascending,
+                        doc.show_completed,
+                        doc.automatic_backups.unwrap_or_default(),
+                    )
                 }
-                tasks::validate_document(&doc.tasks, &doc.lists)
-                    .map_err(|e| format!("Invalid task data: {e} The file has been preserved."))?;
-                matrix::normalize(&mut doc.tasks);
-                (doc.tasks, doc.lists)
-            }
-        };
+            };
         Ok(Self {
             path,
-            _lock: lock,
+            _lock: Some(lock),
             snapshot,
-            tasks,
-            lists,
+            migration_version,
+            tasks: std::sync::Arc::new(tasks),
+            lists: std::sync::Arc::new(lists),
+            sort_mode,
+            sort_ascending,
+            show_completed,
+            automatic_backups,
         })
+    }
+    /// An O(1) immutable view: no duplicate lock and no cloned document bytes.
+    /// It cannot check/write disk and is replaced only by the owning worker result.
+    pub fn frozen(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            _lock: None,
+            snapshot: None,
+            migration_version: None,
+            tasks: self.tasks.clone(),
+            lists: self.lists.clone(),
+            sort_mode: self.sort_mode,
+            sort_ascending: self.sort_ascending,
+            show_completed: self.show_completed,
+            automatic_backups: self.automatic_backups.clone(),
+        }
+    }
+    /// Only a non-owning view may reload after a failed worker. Never infer a
+    /// different XDG location or discard a live writer's expected byte snapshot.
+    pub fn reopen_view(&self) -> Result<Self, String> {
+        if self.is_writable() {
+            return Err("A live writer must retain its current storage snapshot.".into());
+        }
+        if !fs::metadata(&self.path).is_ok_and(|m| m.is_file()) {
+            return Err("Task data is unavailable after the worker failed. Restore its original location before retrying; no empty defaults were loaded.".into());
+        }
+        let reopened = Self::open(self.path.clone())?;
+        if reopened.snapshot.is_none() {
+            return Err(
+                "Task data disappeared during recovery; no empty defaults were loaded.".into(),
+            );
+        }
+        Ok(reopened)
+    }
+    pub fn is_writable(&self) -> bool {
+        self._lock.is_some()
+    }
+    fn backup_data(&self) -> crate::backup::Data {
+        crate::backup::Data {
+            version: 7,
+            tasks: self.tasks.as_ref().clone(),
+            lists: self.lists.as_ref().clone(),
+            sort_mode: self.sort_mode,
+            sort_ascending: self.sort_ascending,
+            show_completed: self.show_completed,
+            automatic_backups: Some(self.automatic_backups.clone()),
+        }
+    }
+    pub fn automatic_preferences(&self) -> &crate::automatic::Preferences {
+        &self.automatic_backups
+    }
+    #[cfg(test)]
+    pub fn set_automatic_preferences(
+        &mut self,
+        enabled: bool,
+        interval: String,
+        retention: u16,
+    ) -> Result<(), String> {
+        self.set_automatic_configuration(
+            enabled,
+            interval,
+            retention,
+            self.automatic_backups.destination.clone(),
+        )
+    }
+    pub fn automatic_directory(&self) -> PathBuf {
+        self.automatic_backups
+            .destination
+            .clone()
+            .unwrap_or_else(|| {
+                self.path
+                    .parent()
+                    .expect("storage parent")
+                    .join("automatic-backups")
+            })
+    }
+    pub fn set_automatic_configuration(
+        &mut self,
+        enabled: bool,
+        interval: String,
+        retention: u16,
+        destination: Option<PathBuf>,
+    ) -> Result<(), String> {
+        let prefs = crate::automatic::Preferences {
+            enabled,
+            interval,
+            retention,
+            destination,
+            last_success: self.automatic_backups.last_success,
+        };
+        self.commit_full(
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
+            self.sort_mode,
+            self.sort_ascending,
+            self.show_completed,
+            prefs,
+        )
+    }
+    pub fn apply_retention(&self) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("A read-only view cannot manage automatic archives.".into());
+        }
+        let dir = self.automatic_directory();
+        if !dir.try_exists().map_err(|e| e.to_string())? {
+            return Ok(());
+        }
+        crate::automatic::retain(&dir, self.automatic_backups.retention)
+    }
+    pub fn automatic_backup(&mut self, now: i64) -> Result<(), String> {
+        self.check_storage()?;
+        let dir = self.automatic_directory();
+        // Never recreate a disappeared user-selected mount/folder. Legacy local
+        // archives retain their existing create-on-first-use behavior.
+        if self.automatic_backups.destination.is_some() {
+            crate::automatic::verify_destination(&dir)?;
+        }
+        let bytes = self.backup_bytes()?;
+        crate::automatic::publish(&dir, &bytes)?;
+        let prefs = crate::automatic::Preferences {
+            last_success: Some(now),
+            ..self.automatic_backups.clone()
+        };
+        self.commit_full(
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
+            self.sort_mode,
+            self.sort_ascending,
+            self.show_completed,
+            prefs,
+        )?;
+        crate::automatic::retain(&dir, self.automatic_backups.retention)
+            .map_err(|e| format!("Automatic backup saved, but retention failed: {e}"))
+    }
+    pub fn clear_all_data(&mut self) -> Result<PathBuf, String> {
+        let defaults = crate::backup::Data {
+            version: 7,
+            tasks: Vec::new(),
+            lists: Vec::new(),
+            sort_mode: TaskSort::default(),
+            sort_ascending: TaskSort::default().default_ascending(),
+            show_completed: true,
+            automatic_backups: Some(crate::automatic::Preferences::default()),
+        };
+        let prepared = crate::backup::decode(&crate::backup::encode(defaults)?)?;
+        self.replace_from_backup(&prepared, "kara-before-clear-")
+    }
+    pub fn backup_bytes(&self) -> Result<Vec<u8>, String> {
+        self.check_storage()?;
+        crate::backup::encode(self.backup_data())
+    }
+    /// The recovery file is portable and verified/durable before any live write.
+    /// Normal legacy migration still makes its own byte-exact original backup.
+    pub fn restore_backup(&mut self, backup: &crate::backup::Prepared) -> Result<PathBuf, String> {
+        self.replace_from_backup(backup, "kara-before-restore-")
+    }
+    pub fn preview_add(
+        &self,
+        backup: &crate::backup::Prepared,
+    ) -> Result<crate::import::Summary, String> {
+        crate::import::plan(self.backup_data(), backup).map(|(_, summary)| summary)
+    }
+    pub fn add_backup(
+        &mut self,
+        backup: &crate::backup::Prepared,
+    ) -> Result<(Option<PathBuf>, crate::import::Summary), String> {
+        self.check_storage()?;
+        let (data, summary) = crate::import::plan(self.backup_data(), backup)?;
+        if !summary.has_changes() {
+            return Ok((None, summary));
+        }
+        let prepared = crate::backup::decode(&crate::backup::encode(data)?)?;
+        let recovery = self.replace_from_backup(&prepared, "kara-before-import-add-")?;
+        Ok((Some(recovery), summary))
+    }
+    fn replace_from_backup(
+        &mut self,
+        backup: &crate::backup::Prepared,
+        prefix: &str,
+    ) -> Result<PathBuf, String> {
+        let operation = if prefix == "kara-before-clear-" {
+            "Clear"
+        } else {
+            "Restore"
+        };
+        crate::backup::encode(backup.data.clone())?;
+        self.check_storage()?;
+        let previous = self.backup_data();
+        let before = self.snapshot.clone();
+        let bytes = self.backup_bytes()?;
+        let dir = self.path.parent().ok_or("Invalid storage path.")?;
+        let mut recovery = tempfile::Builder::new()
+            .prefix(&format!(".{prefix}"))
+            .suffix(".partial")
+            .tempfile_in(dir)
+            .map_err(|e| format!("Cannot create recovery snapshot; nothing replaced: {e}"))?;
+        recovery
+            .write_all(&bytes)
+            .and_then(|()| recovery.as_file().sync_all())
+            .map_err(|e| format!("Cannot write recovery snapshot; nothing replaced: {e}"))?;
+        if fs::read(recovery.path()).map_err(|e| e.to_string())? != bytes {
+            return Err("Recovery snapshot verification failed; nothing replaced.".into());
+        }
+        crate::backup::read(recovery.path())?;
+        let stem = recovery
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("Invalid recovery filename.")?;
+        let path = dir.join(format!("{}.kara-backup", stem.trim_start_matches('.')));
+        recovery
+            .persist_noclobber(&path)
+            .map_err(|e| format!("Cannot publish recovery snapshot; nothing replaced: {e}"))?;
+        File::open(dir).and_then(|f| f.sync_all()).map_err(|e| {
+            format!(
+                "Cannot sync recovery snapshot {}; nothing replaced: {e}",
+                path.display()
+            )
+        })?;
+        let data = &backup.data;
+        let result = self.commit_full(
+            data.tasks.clone(),
+            data.lists.clone(),
+            data.sort_mode,
+            data.sort_ascending,
+            data.show_completed,
+            data.automatic_backups.clone().unwrap_or_default(),
+        );
+        if let Err(error) = result {
+            if self.snapshot != before {
+                // Publication succeeded but directory durability failed. Roll back
+                // through the same checked atomic path, never overwrite a later edit.
+                let rollback = self.commit_full(
+                    previous.tasks.clone(),
+                    previous.lists.clone(),
+                    previous.sort_mode,
+                    previous.sort_ascending,
+                    previous.show_completed,
+                    previous.automatic_backups.clone().unwrap_or_default(),
+                );
+                let state = if self.backup_data() == previous {
+                    "Previous data is active again."
+                } else {
+                    "Restored data is currently active; automatic rollback could not finish."
+                };
+                return Err(format!(
+                    "{operation} durability failure: {error}. {state} Rollback: {} Recovery snapshot: {}",
+                    rollback.err().unwrap_or_else(|| "completed".into()),
+                    path.display()
+                ));
+            }
+            return Err(format!(
+                "{operation} failed before replacement: {error}. Previous data remains active. Recovery snapshot: {}",
+                path.display()
+            ));
+        }
+        Ok(path)
     }
     pub fn tasks(&self) -> &[Task] {
         &self.tasks
@@ -128,21 +566,44 @@ impl Store {
     pub fn lists(&self) -> &[TaskList] {
         &self.lists
     }
+    pub fn sort_mode(&self) -> TaskSort {
+        self.sort_mode
+    }
+    pub fn sort_ascending(&self) -> bool {
+        self.sort_ascending
+    }
+    pub fn show_completed(&self) -> bool {
+        self.show_completed
+    }
+    pub fn set_preferences(
+        &mut self,
+        sort_mode: TaskSort,
+        sort_ascending: bool,
+        show_completed: bool,
+    ) -> Result<(), String> {
+        self.commit_with_preferences(
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
+            sort_mode,
+            sort_ascending,
+            show_completed,
+        )
+    }
     pub fn upsert_list(&mut self, mut list: TaskList) -> Result<(), String> {
         list.name = list.name.trim().into();
-        let mut lists = self.lists.clone();
+        let mut lists = self.lists.as_ref().clone();
         if let Some(old) = lists.iter_mut().find(|old| old.id == list.id) {
             *old = list;
         } else {
             lists.push(list);
         }
-        self.commit(self.tasks.clone(), lists)
+        self.commit(self.tasks.as_ref().clone(), lists)
     }
     pub fn delete_list(&mut self, id: &str) -> Result<(), String> {
         if !self.lists.iter().any(|list| list.id == id) {
             return Err("List no longer exists.".into());
         }
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::move_list_to_inbox(&mut tasks, id);
         let lists = self
             .lists
@@ -153,6 +614,9 @@ impl Store {
         self.commit(tasks, lists)
     }
     pub fn check_storage(&self) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("Storage is owned by the running background operation.".into());
+        }
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Restart Kara to reload it; the file has been preserved.".into());
         }
@@ -163,18 +627,61 @@ impl Store {
     /// Publish changes only after atomic replacement. A directory sync error is reported
     /// after publication because replacement has already succeeded at that point.
     pub fn replace(&mut self, tasks: Vec<Task>) -> Result<(), String> {
-        self.commit(tasks, self.lists.clone())
+        self.commit(tasks, self.lists.as_ref().clone())
     }
-    fn commit(&mut self, mut tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
+    fn commit(&mut self, tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
+        self.commit_with_preferences(
+            tasks,
+            lists,
+            self.sort_mode,
+            self.sort_ascending,
+            self.show_completed,
+        )
+    }
+    fn commit_with_preferences(
+        &mut self,
+        tasks: Vec<Task>,
+        lists: Vec<TaskList>,
+        sort_mode: TaskSort,
+        sort_ascending: bool,
+        show_completed: bool,
+    ) -> Result<(), String> {
+        self.commit_full(
+            tasks,
+            lists,
+            sort_mode,
+            sort_ascending,
+            show_completed,
+            self.automatic_backups.clone(),
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // One complete atomic document, including all preferences.
+    fn commit_full(
+        &mut self,
+        mut tasks: Vec<Task>,
+        lists: Vec<TaskList>,
+        sort_mode: TaskSort,
+        sort_ascending: bool,
+        show_completed: bool,
+        automatic_backups: crate::automatic::Preferences,
+    ) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("A read-only view cannot save task data.".into());
+        }
+        automatic_backups.validate()?;
         tasks::validate_document(&tasks, &lists)?;
         matrix::normalize(&mut tasks);
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Changes were not saved. Restart Kara to reload the file.".into());
         }
         let bytes = serde_json::to_vec_pretty(&Document {
-            version: 3,
+            version: 7,
             tasks: tasks.clone(),
             lists: lists.clone(),
+            sort_mode,
+            sort_ascending: Some(sort_ascending),
+            show_completed,
+            automatic_backups: Some(automatic_backups.clone()),
         })
         .map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or("Invalid storage path.")?;
@@ -183,51 +690,83 @@ impl Store {
         temp.write_all(&bytes)
             .and_then(|()| temp.as_file().sync_all())
             .map_err(|e| format!("Cannot write task data: {e}"))?;
-        // Check again after writing, before replacing the destination.
+        if let Some(version) = self.migration_version {
+            let backup_suffix = if version < 4 {
+                "json.pre-priority-v4.bak"
+            } else if version < 6 {
+                "json.pre-tasks-v6.bak"
+            } else {
+                "json.pre-settings-v7.bak"
+            };
+            ensure_migration_backup(
+                &self.path,
+                self.snapshot.as_deref().ok_or("Missing legacy snapshot.")?,
+                backup_suffix,
+            )
+            .map_err(|e| {
+                format!("Cannot back up legacy task data. Migration changes were not saved: {e}")
+            })?;
+        }
+        // Check again after writing/backup, before replacing the destination.
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed during save. Original data was preserved.".into());
         }
         temp.persist(&self.path)
             .map_err(|e| format!("Cannot replace task data: {e}"))?;
-        self.tasks = tasks;
-        self.lists = lists;
+        self.tasks = std::sync::Arc::new(tasks);
+        self.lists = std::sync::Arc::new(lists);
+        self.sort_mode = sort_mode;
+        self.sort_ascending = sort_ascending;
+        self.show_completed = show_completed;
+        self.automatic_backups = automatic_backups;
         self.snapshot = Some(bytes);
-        File::open(dir)
-            .and_then(|f| f.sync_all())
+        self.migration_version = None;
+        sync_committed_directory(dir)
             .map_err(|e| format!("Tasks were written, but durability could not be confirmed: {e}"))
     }
     pub fn upsert(&mut self, mut task: Task) -> Result<(), String> {
         tasks::validate(std::slice::from_ref(&task))?;
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         // Ordinary editor saves cannot change ordering, even if a draft has a
         // missing/stale rank. Only scope changes append; reorder has its own API.
         task.matrix_order = tasks
             .iter()
             .find(|old| {
-                old.id == task.id
-                    && old.list_id == task.list_id
-                    && old.matrix_quadrant == task.matrix_quadrant
+                old.id == task.id && old.list_id == task.list_id && old.priority == task.priority
             })
             .and_then(|old| old.matrix_order);
         if let Some(old) = tasks.iter_mut().find(|old| old.id == task.id) {
+            task.created_at = old.created_at;
             *old = task;
         } else {
+            task.created_at.get_or_insert_with(tasks::unix_timestamp);
             tasks.push(task);
         }
         self.replace(tasks)
     }
-    pub fn classify(&mut self, id: &str, quadrant: Option<Quadrant>) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+    pub fn classify(&mut self, id: &str, quadrant: Quadrant) -> Result<(), String> {
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::classify(&mut tasks, id, quadrant)?;
         self.replace(tasks)
     }
     pub fn reorder(&mut self, id: &str, direction: Direction) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::reorder(&mut tasks, id, direction)?;
         self.replace(tasks)
     }
+    pub fn move_matrix_task(
+        &mut self,
+        id: &str,
+        placement: &matrix::Placement,
+    ) -> Result<(), String> {
+        let mut tasks = self.tasks.as_ref().clone();
+        if matrix::move_task(&mut tasks, id, placement)? {
+            self.replace(tasks)?;
+        }
+        Ok(())
+    }
     pub fn toggle(&mut self, id: &str) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         let task = tasks
             .iter_mut()
             .find(|t| t.id == id)
@@ -236,7 +775,7 @@ impl Store {
         self.replace(tasks)
     }
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         tasks.retain(|t| t.id != id);
         self.replace(tasks)
     }
@@ -245,19 +784,1094 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frozen_view_shares_records_never_writes_and_retains_old_values() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("tasks.json");
+        let mut writer = Store::open(path.clone()).unwrap();
+        writer.upsert(Task::new("Original").unwrap()).unwrap();
+        let mut view = writer.frozen();
+        let id = writer.tasks()[0].id.clone();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(view.tasks().as_ptr(), writer.tasks().as_ptr());
+        assert_eq!(view.lists().as_ptr(), writer.lists().as_ptr());
+        assert!(!view.is_writable());
+        assert!(view.check_storage().is_err());
+        assert!(view.toggle(&id).is_err());
+        assert!(view.clear_all_data().is_err());
+        assert!(view.apply_retention().is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        writer.toggle(&id).unwrap();
+        assert!(writer.tasks()[0].completed);
+        assert!(!view.tasks()[0].completed);
+        drop(view);
+        assert!(Store::open(path).is_err()); // only the original writer owns the lock
+    }
+    #[test]
+    fn configured_destinations_survive_restart_and_never_retire_previous_archives() {
+        let root = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let path = root.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Preserved task").unwrap()).unwrap();
+        store
+            .set_automatic_configuration(true, "P1M".into(), 1, Some(first.path().into()))
+            .unwrap();
+        store.automatic_backup(1_700_000_000).unwrap();
+        let old: Vec<_> = fs::read_dir(first.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        store
+            .set_automatic_configuration(true, "P1Y".into(), 1, Some(second.path().into()))
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.automatic_directory(), second.path());
+        assert_eq!(store.automatic_preferences().interval, "P1Y");
+        let manual = second.path().join("manual.kara-backup");
+        crate::backup::export(&manual, &store.backup_bytes().unwrap()).unwrap();
+        let recovery = second
+            .path()
+            .join("kara-before-clear-protected.kara-backup");
+        crate::backup::export(&recovery, &store.backup_bytes().unwrap()).unwrap();
+        for now in 1_700_000_001..1_700_000_004 {
+            store.automatic_backup(now).unwrap();
+        }
+        assert!(old.iter().all(|path| path.exists()));
+        assert!(manual.exists() && recovery.exists());
+        assert_eq!(fs::read_dir(second.path()).unwrap().count(), 4); // index + owned + manual + recovery
+        let prepared = crate::backup::decode(&store.backup_bytes().unwrap()).unwrap();
+        assert_eq!(
+            prepared
+                .data
+                .automatic_backups
+                .as_ref()
+                .unwrap()
+                .destination
+                .as_deref(),
+            Some(second.path())
+        );
+        let before = fs::read(&path).unwrap();
+        let missing = root.path().join("gone");
+        fs::rename(second.path(), &missing).unwrap();
+        assert!(store.automatic_backup(1_700_000_010).is_err());
+        assert!(!second.path().exists()); // must not silently recreate an unavailable mount
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(missing.join("manual.kara-backup").exists());
+        fs::rename(missing, second.path()).unwrap();
+        store.automatic_backup(1_700_000_011).unwrap();
+        assert_eq!(store.tasks().len(), 1);
+        let before = fs::read(&path).unwrap();
+        assert!(
+            store
+                .set_automatic_configuration(true, "P1M".into(), 1, Some("relative".into()))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        // Clear/Replace keep all archives while restoring the saved local destination.
+        store.clear_all_data().unwrap();
+        assert!(store.automatic_preferences().destination.is_none());
+        assert!(manual.exists() && recovery.exists());
+        store.restore_backup(&prepared).unwrap();
+        assert_eq!(store.automatic_directory(), second.path());
+        assert!(manual.exists() && recovery.exists());
+    }
+    #[test]
+    fn add_import_preserves_existing_records_preferences_and_recovers_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let mut local = Task::new("Existing wins").unwrap();
+        local.id = "portable-a".into();
+        local.notes = Some("Local notes".into());
+        store.upsert(local).unwrap();
+        store
+            .set_preferences(TaskSort::Priority, true, true)
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into(), 3)
+            .unwrap();
+        let old = store.backup_data();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        let preview = store.preview_add(&incoming).unwrap();
+        assert_eq!(preview.tasks_added, 1);
+        assert_eq!(preview.tasks_skipped, 1);
+        assert_eq!(preview.lists_added, 1);
+        assert_eq!(preview.conflicts.len(), 1);
+        let (recovery, summary) = store.add_backup(&incoming).unwrap();
+        assert_eq!(summary, preview);
+        let recovery = recovery.unwrap();
+        assert!(
+            recovery
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("kara-before-import-add-")
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        assert_eq!(store.tasks()[0], old.tasks[0]);
+        assert_eq!(store.tasks().len(), 2);
+        assert_eq!(store.tasks()[1].list_id.as_deref(), Some("portable-list"));
+        assert_eq!(store.sort_mode(), old.sort_mode);
+        assert_eq!(store.sort_ascending(), old.sort_ascending);
+        assert_eq!(store.show_completed(), old.show_completed);
+        assert_eq!(
+            store.automatic_preferences(),
+            old.automatic_backups.as_ref().unwrap()
+        );
+        let added = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        let (snapshot, again) = store.add_backup(&incoming).unwrap();
+        assert!(snapshot.is_none());
+        assert_eq!(again.tasks_added, 0);
+        assert_eq!(again.tasks_skipped, 2);
+        assert_eq!(again.lists_skipped, 1);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert_eq!(store.backup_data(), added);
+        store.restore_backup(&incoming).unwrap();
+        assert_eq!(store.backup_data(), incoming.data); // Replace really replaces preferences and ID matches.
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+    }
+    #[test]
+    fn conflicting_add_is_atomic_and_replace_remains_explicitly_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        let mut list = incoming.data.lists[0].clone();
+        list.name = "Different meaning".into();
+        store.upsert_list(list).unwrap();
+        store.upsert(Task::new("Keep untouched").unwrap()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        assert!(
+            store
+                .preview_add(&incoming)
+                .unwrap_err()
+                .contains("list ID")
+        );
+        assert!(store.add_backup(&incoming).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        store.restore_backup(&incoming).unwrap();
+        assert_eq!(store.backup_data(), incoming.data);
+    }
+    #[test]
+    fn add_failures_preserve_data_and_rollback_with_a_verified_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        let old = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let incoming = crate::backup::decode(PORTABLE).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let denied = store.add_backup(&incoming);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(denied.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        assert!(
+            store
+                .add_backup(&incoming)
+                .unwrap_err()
+                .contains("Previous data is active again")
+        );
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let recovery = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|s| s == "kara-backup"))
+            .unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        fs::write(&path, b"external damaged data").unwrap();
+        assert!(store.add_backup(&incoming).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external damaged data");
+        assert_eq!(store.backup_data(), old);
+        fs::write(&path, &before).unwrap();
+        store.add_backup(&incoming).unwrap();
+        assert_eq!(store.tasks().len(), 3);
+        let expected = store.backup_data();
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), expected);
+    }
+    #[test]
+    fn retention_count_persists_restores_and_rejects_invalid_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .set_automatic_preferences(true, "PT6H".into(), 2)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        for count in [0, 101] {
+            assert!(
+                store
+                    .set_automatic_preferences(true, "PT6H".into(), count)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        for time in 1000..1005 {
+            store.automatic_backup(time).unwrap();
+        }
+        let archives = dir.path().join("automatic-backups");
+        assert_eq!(fs::read_dir(&archives).unwrap().count(), 3); // two files and catalogue
+        let old = store.backup_data();
+        let backup = store.backup_bytes().unwrap();
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert_eq!(store.backup_data(), old);
+        store
+            .set_automatic_preferences(false, "PT6H".into(), 1)
+            .unwrap();
+        store.apply_retention().unwrap();
+        assert_eq!(fs::read_dir(archives).unwrap().count(), 2);
+        store
+            .restore_backup(&crate::backup::decode(&backup).unwrap())
+            .unwrap();
+        assert_eq!(store.automatic_preferences().retention, 2);
+        store.clear_all_data().unwrap();
+        assert_eq!(store.automatic_preferences().retention, 10);
+    }
+    #[test]
+    fn settings_schema_six_upgrade_and_invalid_intervals_preserve_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../tests/fixtures/backup-v1.kara-backup"))
+                .unwrap();
+        let bytes = serde_json::to_vec_pretty(&original["data"]).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(
+            store.automatic_preferences(),
+            &crate::automatic::Preferences::default()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(
+            store
+                .set_automatic_preferences(true, "P0M".into(), 10)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!path.with_extension("json.pre-settings-v7.bak").exists());
+        store
+            .set_automatic_preferences(true, "PT30M".into(), 10)
+            .unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-settings-v7.bak")).unwrap(),
+            bytes
+        );
+        let expected = store.backup_data();
+        drop(store);
+        let reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.backup_data(), expected);
+        drop(reopened);
+        let mut damaged: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        damaged["automatic_backups"]["interval"] = "invalid".into();
+        let bytes = serde_json::to_vec(&damaged).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(Store::open(path.clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn automatic_archives_checkpoint_last_success_and_round_trip_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into(), 10)
+            .unwrap();
+        let manual = dir.path().join("manual.kara-backup");
+        crate::backup::export(&manual, &store.backup_bytes().unwrap()).unwrap();
+        let tasks = store.tasks().to_vec();
+        for time in 1000..1012 {
+            store.automatic_backup(time).unwrap();
+        }
+        assert_eq!(store.automatic_preferences().last_success, Some(1011));
+        let archive_dir = dir.path().join("automatic-backups");
+        let archives: Vec<_> = fs::read_dir(&archive_dir)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|s| s == "kara-backup"))
+            .collect();
+        assert_eq!(archives.len(), 10);
+        for archive in archives {
+            assert_eq!(crate::backup::read(&archive).unwrap().data.tasks, tasks);
+        }
+        assert!(manual.exists());
+        let exported = store.backup_bytes().unwrap();
+        let data = store.backup_data();
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), data);
+        let destination = tempfile::tempdir().unwrap();
+        let mut other = Store::open(destination.path().join("tasks.json")).unwrap();
+        other
+            .restore_backup(&crate::backup::decode(&exported).unwrap())
+            .unwrap();
+        assert_eq!(other.backup_data(), data);
+        assert!(!destination.path().join("automatic-backups").exists()); // archives aren't machine-specific backup data
+    }
+    #[test]
+    fn unsuccessful_automatic_writes_never_checkpoint_or_replace_live_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        store
+            .set_automatic_preferences(true, "PT1S".into(), 10)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let auto = dir.path().join("automatic-backups");
+        fs::create_dir(&auto).unwrap();
+        fs::write(auto.join("index.json"), b"damaged").unwrap();
+        assert!(store.automatic_backup(1000).is_err());
+        assert_eq!(store.automatic_preferences().last_success, None);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(&auto).unwrap().count(), 1);
+    }
+    #[test]
+    fn clear_keeps_all_archive_files_and_recovery_restores_the_complete_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "P1D".into(), 10)
+            .unwrap();
+        store.automatic_backup(1000).unwrap();
+        let manual = dir.path().join("manual.kara-backup");
+        let bytes = store.backup_bytes().unwrap();
+        crate::backup::export(&manual, &bytes).unwrap();
+        let auto = dir.path().join("automatic-backups");
+        let archives: Vec<_> = fs::read_dir(&auto)
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let b = fs::read(&p).unwrap();
+                (p, b)
+            })
+            .collect();
+        let old = store.backup_data();
+        let recovery = store.clear_all_data().unwrap();
+        assert!(
+            recovery
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("kara-before-clear-")
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        assert!(store.tasks().is_empty() && store.lists().is_empty());
+        assert_eq!(store.sort_mode(), TaskSort::default());
+        assert_eq!(
+            store.sort_ascending(),
+            TaskSort::default().default_ascending()
+        );
+        assert!(store.show_completed());
+        assert_eq!(
+            store.automatic_preferences(),
+            &crate::automatic::Preferences::default()
+        );
+        assert_eq!(fs::read(&manual).unwrap(), bytes);
+        for (p, b) in archives {
+            assert_eq!(fs::read(p).unwrap(), b);
+        }
+        drop(store);
+        let mut store = Store::open(path).unwrap();
+        assert!(store.tasks().is_empty());
+        assert!(!store.automatic_preferences().enabled);
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+    }
+    #[test]
+    fn clear_in_temporary_xdg_layout_never_touches_other_apps_or_external_exports() {
+        let xdg = tempfile::tempdir().unwrap();
+        let path = xdg.path().join(APP_ID).join("tasks.json");
+        let unrelated = xdg.path().join("other-application");
+        fs::create_dir(&unrelated).unwrap();
+        let sentinel = unrelated.join("keep.json");
+        fs::write(&sentinel, b"unrelated data").unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let export = external.path().join("manual.kara-backup");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        let before = store.backup_bytes().unwrap();
+        crate::backup::export(&export, &before).unwrap();
+        let recovery = store.clear_all_data().unwrap();
+        assert!(recovery.starts_with(xdg.path().join(APP_ID)));
+        assert_eq!(fs::read(sentinel).unwrap(), b"unrelated data");
+        assert_eq!(fs::read(export).unwrap(), before);
+        assert!(store.tasks().is_empty());
+        drop(store);
+        assert!(Store::open(path).unwrap().tasks().is_empty());
+    }
+    #[test]
+    fn clear_aborts_if_recovery_cannot_be_written_and_rolls_back_sync_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .set_automatic_preferences(true, "PT30M".into(), 10)
+            .unwrap();
+        let old = store.backup_data();
+        let before = fs::read(&path).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.clear_all_data();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), count);
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        assert!(
+            store
+                .clear_all_data()
+                .unwrap_err()
+                .contains("Previous data is active again")
+        );
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), old);
+    }
+    const PORTABLE: &[u8] = include_bytes!("../tests/fixtures/backup-v1.kara-backup");
+    #[test]
+    fn portable_restore_round_trips_all_fields_preferences_and_recovery_across_roots() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Before restore").unwrap()).unwrap();
+        let original = store.backup_data();
+        let prepared = crate::backup::decode(PORTABLE).unwrap();
+        let recovery = store.restore_backup(&prepared).unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, original);
+        assert_eq!(store.backup_data(), prepared.data);
+        let bytes = store.backup_bytes().unwrap();
+        let export = source.path().join("portable.kara-backup");
+        crate::backup::export(&export, &bytes).unwrap();
+        assert!(
+            !String::from_utf8(bytes)
+                .unwrap()
+                .contains(destination.path().to_str().unwrap())
+        );
+        drop(store);
+        let mut reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.backup_data(), prepared.data);
+        reopened
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(reopened.backup_data(), original);
+        // A different data root imports exactly the same record IDs, not copies.
+        let mut other = Store::open(source.path().join("tasks.json")).unwrap();
+        other
+            .restore_backup(&crate::backup::read(&export).unwrap())
+            .unwrap();
+        let again = other.restore_backup(&prepared).unwrap();
+        assert_eq!(other.backup_data(), prepared.data);
+        assert_eq!(crate::backup::read(&again).unwrap().data, prepared.data);
+    }
+    #[test]
+    fn legacy_export_does_not_migrate_and_restore_keeps_exact_migration_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        let exported = store.backup_bytes().unwrap();
+        let old = crate::backup::decode(&exported).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert_eq!(old.data.tasks, store.tasks());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        let recovery = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-priority-v4.bak")).unwrap(),
+            LEGACY_MATRIX
+        );
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old.data);
+    }
+    #[test]
+    fn failed_migration_backup_blocks_restore_and_leaves_recoverable_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        let old = store.backup_data();
+        fs::write(
+            path.with_extension("json.pre-priority-v4.bak"),
+            b"conflicting backup",
+        )
+        .unwrap();
+        let error = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap_err();
+        assert!(error.contains("Previous data remains active"));
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert_eq!(store.backup_data(), old);
+        let recovery = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "kara-backup"))
+            .unwrap();
+        assert_eq!(crate::backup::read(&recovery).unwrap().data, old);
+        // Resolve only the deliberately created fixture conflict, then retry.
+        fs::remove_file(path.with_extension("json.pre-priority-v4.bak")).unwrap();
+        store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        assert_eq!(store.tasks().len(), 2);
+    }
+    #[test]
+    fn restore_sync_failure_rolls_back_live_disk_and_restart_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Do not lose").unwrap()).unwrap();
+        let old = store.backup_data();
+        let bytes = fs::read(&path).unwrap();
+        FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+        let error = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap_err();
+        assert!(error.contains("Previous data is active again"));
+        assert!(error.contains("Rollback: completed"));
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        drop(store);
+        assert_eq!(Store::open(path).unwrap().backup_data(), old);
+    }
+    #[test]
+    fn missing_snapshot_permission_and_external_changes_block_restore_without_data_loss() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        store.upsert(Task::new("Keep").unwrap()).unwrap();
+        let old = store.backup_data();
+        let bytes = fs::read(&path).unwrap();
+        let prepared = crate::backup::decode(PORTABLE).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.restore_backup(&prepared);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        fs::write(&path, b"external damaged data").unwrap();
+        assert!(store.restore_backup(&prepared).is_err());
+        assert!(store.backup_bytes().is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external damaged data");
+        assert_eq!(store.backup_data(), old);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn first_run_empty_store_can_be_restored_and_recovered_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let old = store.backup_data();
+        let recovery = store
+            .restore_backup(&crate::backup::decode(PORTABLE).unwrap())
+            .unwrap();
+        store
+            .restore_backup(&crate::backup::read(&recovery).unwrap())
+            .unwrap();
+        assert_eq!(store.backup_data(), old);
+        assert!(store.tasks().is_empty());
+        drop(store);
+        assert!(Store::open(path).unwrap().tasks().is_empty());
+    }
     const Q1: Quadrant = Quadrant::ImportantUrgent;
     const Q2: Quadrant = Quadrant::ImportantNotUrgent;
     fn matrix_task(title: &str, list: Option<&str>, quadrant: Quadrant) -> Task {
         let mut task = Task::new(title).unwrap();
         task.list_id = list.map(str::to_string);
-        task.matrix_quadrant = Some(quadrant);
+        task.priority = quadrant.priority();
         task
     }
     fn matrix_titles(store: &Store, list: Option<&str>, quadrant: Quadrant) -> Vec<String> {
-        matrix::ordered(store.tasks(), list, Some(quadrant))
+        matrix::ordered(store.tasks(), list, quadrant)
             .into_iter()
             .map(|task| task.title.clone())
             .collect()
+    }
+    const LEGACY_MATRIX: &[u8] = include_bytes!("../tests/fixtures/priority-v3.json");
+    #[test]
+    fn matrix_drop_position_priority_and_preferences_survive_restart_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let mut list = TaskList::new("Work").unwrap();
+        list.pinned = true;
+        store.upsert_list(list.clone()).unwrap();
+        store
+            .set_preferences(TaskSort::Priority, false, false)
+            .unwrap();
+        let mut moving = matrix_task("Moving", Some(&list.id), Q1);
+        moving.notes = Some("Keep notes".into());
+        moving.due_date = Some("2026-10-18".into());
+        let id = moving.id.clone();
+        let first = matrix_task("First", Some(&list.id), Q2);
+        let last = matrix_task("Last", Some(&list.id), Q2);
+        let last_id = last.id.clone();
+        let mut done = matrix_task("Completed", Some(&list.id), Q1);
+        done.completed = true;
+        let done_id = done.id.clone();
+        for task in [moving, first, last, done, Task::new("Inbox").unwrap()] {
+            store.upsert(task).unwrap();
+        }
+        let document_ids = store
+            .tasks()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>();
+        let original = store.tasks().iter().find(|t| t.id == id).unwrap().clone();
+        let target = matrix::Placement {
+            list_id: Some(list.id.clone()),
+            quadrant: Q2,
+            before: Some(last_id),
+        };
+        store.move_matrix_task(&id, &target).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q2),
+            ["First", "Moving", "Last"]
+        );
+        let target = matrix::Placement {
+            before: None,
+            ..target
+        };
+        store.move_matrix_task(&id, &target).unwrap();
+        store.move_matrix_task(&done_id, &target).unwrap();
+        assert_eq!(
+            matrix_titles(&store, Some(&list.id), Q2),
+            ["First", "Last", "Moving", "Completed"]
+        );
+        let expected = store.tasks().to_vec();
+        assert_eq!(
+            expected.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            document_ids
+        );
+        let updated = expected.iter().find(|t| t.id == id).unwrap();
+        let mut original = original;
+        original.priority = Q2.priority();
+        original.matrix_order = updated.matrix_order;
+        assert_eq!(updated, &original);
+        drop(store);
+        let store = Store::open(path).unwrap();
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(store.lists(), &[list]);
+        assert_eq!(store.sort_mode(), TaskSort::Priority);
+        assert!(!store.sort_ascending());
+        assert!(!store.show_completed());
+        assert!(
+            store
+                .tasks()
+                .iter()
+                .find(|t| t.id == done_id)
+                .unwrap()
+                .completed
+        );
+    }
+    #[test]
+    fn invalid_noop_denied_and_external_drop_writes_preserve_live_and_disk_state() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let moving = matrix_task("Keep", None, Q1);
+        let id = moving.id.clone();
+        store.upsert(moving).unwrap();
+        let before = fs::read(&path).unwrap();
+        let tasks = store.tasks().to_vec();
+        let inode = fs::metadata(&path).unwrap().ino();
+        let no_op = matrix::Placement {
+            list_id: None,
+            quadrant: Q1,
+            before: None,
+        };
+        store.move_matrix_task(&id, &no_op).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode); // no save for a no-op
+        assert!(
+            store
+                .move_matrix_task(
+                    &id,
+                    &matrix::Placement {
+                        before: Some("missing".into()),
+                        ..no_op
+                    }
+                )
+                .is_err()
+        );
+        let target = matrix::Placement {
+            list_id: None,
+            quadrant: Q2,
+            before: None,
+        };
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.move_matrix_task(&id, &target);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(store.tasks(), tasks);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::write(&path, b"external data").unwrap();
+        assert!(store.move_matrix_task(&id, &target).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external data");
+        assert_eq!(store.tasks(), tasks);
+    }
+    #[test]
+    fn migration_preserves_properties_order_and_exact_backup_then_is_idempotent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = path.with_extension("json.pre-priority-v4.bak");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert!(!backup.exists());
+        assert_eq!(
+            store.tasks().iter().map(|t| t.priority).collect::<Vec<_>>(),
+            [
+                Priority::P0,
+                Priority::P0,
+                Priority::P0,
+                Priority::P0,
+                Priority::P1,
+                Priority::P2,
+                Priority::P3,
+                Priority::P3
+            ]
+        );
+        assert_eq!(
+            matrix_titles(&store, Some("work"), Q1),
+            ["P3 rank two", "P3 rank seven"]
+        );
+        assert_eq!(
+            matrix_titles(&store, None, Quadrant::NotImportantNotUrgent),
+            ["P0 existing", "Old High", "Old Low", "Old Normal"]
+        );
+        let original: serde_json::Value = serde_json::from_slice(LEGACY_MATRIX).unwrap();
+        let mut transformed = serde_json::to_value(store.tasks()).unwrap();
+        let mut unrelated = original["tasks"].clone();
+        for collection in [&mut transformed, &mut unrelated] {
+            for task in collection.as_array_mut().unwrap() {
+                for key in ["priority", "matrix_quadrant", "matrix_order"] {
+                    task.as_object_mut().unwrap().remove(key);
+                }
+            }
+        }
+        assert_eq!(transformed, unrelated);
+        let expected = store.tasks().to_vec();
+        store.replace(expected.clone()).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), LEGACY_MATRIX);
+        assert_eq!(
+            fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let bytes = fs::read(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["version"], 7);
+        assert_eq!(saved["lists"], original["lists"]);
+        for task in saved["tasks"].as_array().unwrap() {
+            assert!(task["priority"].as_u64().is_some_and(|p| p <= 3));
+            assert!(task.get("matrix_quadrant").is_none());
+        }
+        drop(store);
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.tasks(), expected);
+        store.replace(expected).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::read(&backup).unwrap(), LEGACY_MATRIX);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3); // data, lock, backup
+    }
+
+    #[test]
+    fn v5_upgrade_backs_up_exact_legacy_data_and_persists_preferences_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = path.with_extension("json.pre-tasks-v6.bak");
+        let legacy = br#"{"version":5,"tasks":[{"id":"old-a","title":"Old A","completed":true,"due_date":null,"priority":3,"notes":null,"list_id":null,"matrix_order":0},{"id":"old-b","title":"Old B","completed":false,"due_date":null,"priority":3,"notes":null,"list_id":null,"matrix_order":1}],"lists":[],"sort_mode":"DueDate","show_completed":false}"#;
+        fs::write(&path, legacy).unwrap();
+
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.sort_mode(), TaskSort::DueDate);
+        assert!(store.sort_ascending());
+        assert!(!store.show_completed());
+        assert!(store.tasks().iter().all(|task| task.created_at.is_none()));
+        assert!(!backup.exists());
+        store
+            .set_preferences(TaskSort::Priority, true, false)
+            .unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), legacy);
+        assert_eq!(store.sort_mode(), TaskSort::Priority);
+        assert!(store.sort_ascending());
+        assert!(!store.show_completed());
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 7);
+        assert_eq!(saved["sort_mode"], "Priority");
+        assert_eq!(saved["sort_ascending"], true);
+        assert_eq!(saved["show_completed"], false);
+        assert!(
+            saved["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|task| task.get("created_at").is_none())
+        );
+        assert_eq!(
+            store
+                .tasks()
+                .iter()
+                .map(|task| task.matrix_order)
+                .collect::<Vec<_>>(),
+            [Some(1), Some(0)]
+        );
+        drop(store);
+
+        let restored = Store::open(path).unwrap();
+        assert_eq!(restored.sort_mode(), TaskSort::Priority);
+        assert!(restored.sort_ascending());
+        assert!(!restored.show_completed());
+        assert!(
+            restored
+                .tasks()
+                .iter()
+                .all(|task| task.created_at.is_none())
+        );
+        assert_eq!(fs::read(backup).unwrap(), legacy);
+    }
+
+    #[test]
+    fn v4_upgrade_preserves_creation_default_and_recovers_exact_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = path.with_extension("json.pre-tasks-v6.bak");
+        let legacy = br#"{"version":4,"tasks":[],"lists":[]}"#;
+        fs::write(&path, legacy).unwrap();
+
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.sort_mode(), TaskSort::CreationDate);
+        assert!(!store.sort_ascending());
+        assert!(store.show_completed());
+        store
+            .set_preferences(
+                TaskSort::CreationDate,
+                TaskSort::CreationDate.default_ascending(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), legacy);
+        drop(store);
+        let restored = Store::open(path).unwrap();
+        assert_eq!(restored.sort_mode(), TaskSort::CreationDate);
+        assert!(!restored.sort_ascending());
+        assert!(restored.show_completed());
+    }
+
+    #[test]
+    fn new_task_creation_timestamp_survives_save_and_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path.clone()).unwrap();
+        let task = Task::new("Stamped").unwrap();
+        let created_at = task.created_at;
+        store.upsert(task.clone()).unwrap();
+        let mut edited = task;
+        edited.title = "Edited".into();
+        edited.created_at = None;
+        store.upsert(edited).unwrap();
+        assert_eq!(store.tasks()[0].created_at, created_at);
+        drop(store);
+        let restored = Store::open(path).unwrap();
+        assert_eq!(restored.tasks()[0].created_at, created_at);
+    }
+    #[test]
+    fn legacy_versions_one_and_two_migrate_on_copies_with_verified_backups() {
+        for version in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tasks.json");
+            let mut doc: serde_json::Value = serde_json::from_slice(LEGACY_MATRIX).unwrap();
+            doc["version"] = serde_json::json!(version);
+            for task in doc["tasks"].as_array_mut().unwrap() {
+                task.as_object_mut().unwrap().remove("matrix_quadrant");
+                task.as_object_mut().unwrap().remove("matrix_order");
+            }
+            let original = serde_json::to_vec(&doc).unwrap();
+            fs::write(&path, &original).unwrap();
+            let mut store = Store::open(path.clone()).unwrap();
+            assert!(store.tasks().iter().all(|t| t.priority == Priority::P0));
+            let expected = store.tasks().to_vec();
+            store.replace(expected.clone()).unwrap();
+            assert_eq!(
+                fs::read(path.with_extension("json.pre-priority-v4.bak")).unwrap(),
+                original
+            );
+            drop(store);
+            assert_eq!(Store::open(path).unwrap().tasks(), expected);
+        }
+    }
+    #[test]
+    fn migration_recovers_after_backup_publication_without_rewriting_legacy_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        // Model interruption after durable backup publication but before replacement.
+        ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak").unwrap();
+        ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        let mut store = Store::open(path.clone()).unwrap();
+        let expected = store.tasks().to_vec();
+        store.replace(expected.clone()).unwrap();
+        drop(store);
+        assert_eq!(Store::open(path.clone()).unwrap().tasks(), expected);
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-priority-v4.bak")).unwrap(),
+            LEGACY_MATRIX
+        );
+    }
+    #[test]
+    fn conflicting_backup_blocks_migration_without_changing_live_or_disk_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = path.with_extension("json.pre-priority-v4.bak");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        fs::write(&backup, b"different existing backup").unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        let expected = store.tasks().to_vec();
+        assert!(
+            store
+                .toggle("unclassified-high")
+                .unwrap_err()
+                .contains("backup")
+        );
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        assert_eq!(fs::read(&backup).unwrap(), b"different existing backup");
+        fs::remove_file(&backup).unwrap(); // disposable fixture only
+        std::os::unix::fs::symlink(&path, &backup).unwrap();
+        assert!(store.replace(expected.clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        fs::remove_file(&backup).unwrap();
+        store.replace(expected).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), LEGACY_MATRIX);
+    }
+    #[test]
+    fn denied_backup_and_external_legacy_changes_never_publish_migration() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        fs::write(&path, LEGACY_MATRIX).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = ensure_migration_backup(&path, LEGACY_MATRIX, "json.pre-priority-v4.bak");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), LEGACY_MATRIX);
+        let mut store = Store::open(path.clone()).unwrap();
+        let expected = store.tasks().to_vec();
+        fs::write(&path, b"external corrupt data").unwrap();
+        assert!(store.replace(expected.clone()).is_err());
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(fs::read(&path).unwrap(), b"external corrupt data");
+        assert!(!path.with_extension("json.pre-priority-v4.bak").exists());
+    }
+    #[test]
+    fn malformed_legacy_priority_quadrant_and_rank_never_migrate_or_create_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let base: serde_json::Value = serde_json::from_slice(LEGACY_MATRIX).unwrap();
+        let mut cases = vec![];
+        for (key, value) in [
+            ("priority", serde_json::json!(3)),
+            ("priority", serde_json::json!("Unknown")),
+            ("matrix_quadrant", serde_json::json!("Unknown")),
+            ("matrix_quadrant", serde_json::json!(2)),
+            ("matrix_order", serde_json::json!(-1)),
+            ("matrix_order", serde_json::json!(1.5)),
+            ("unknown_field", serde_json::json!(true)),
+        ] {
+            let mut doc = base.clone();
+            doc["tasks"][0][key] = value;
+            cases.push(doc);
+        }
+        for doc in cases {
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(Store::open(path.clone()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!path.with_extension("json.pre-priority-v4.bak").exists());
+        }
+    }
+    #[test]
+    fn editor_priority_changes_append_and_all_records_appear_in_one_quadrant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let mut store = Store::open(path).unwrap();
+        let mut moving = Task::new("Moving").unwrap();
+        let destination = matrix_task("Destination", None, Q1);
+        let done = {
+            let mut t = matrix_task("Done", None, Q1);
+            t.completed = true;
+            t
+        };
+        for task in [moving.clone(), destination, done] {
+            store.upsert(task).unwrap();
+        }
+        moving.priority = Priority::P3;
+        store.upsert(moving.clone()).unwrap();
+        assert_eq!(
+            matrix_titles(&store, None, Q1),
+            ["Destination", "Moving", "Done"]
+        );
+        let ids: Vec<_> = Quadrant::ALL
+            .into_iter()
+            .flat_map(|q| matrix::ordered(store.tasks(), None, q))
+            .map(|t| &t.id)
+            .collect();
+        assert_eq!(ids.len(), store.tasks().len());
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            ids.len()
+        );
+        store.toggle(&moving.id).unwrap();
+        assert_eq!(
+            store
+                .tasks()
+                .iter()
+                .find(|t| t.id == moving.id)
+                .unwrap()
+                .priority,
+            Priority::P3
+        );
     }
     #[test]
     fn matrix_edits_and_list_moves_preserve_records_and_append_to_destination() {
@@ -273,7 +1887,7 @@ mod tests {
         let mut second = matrix_task("Second", Some(&list.id), Q1);
         second.notes = Some("Preserve notes\nline 2".into());
         second.due_date = Some("2026-10-18".into());
-        second.priority = tasks::Priority::High;
+        second.priority = tasks::Priority::P3;
         let id = second.id.clone();
         store.upsert(first).unwrap();
         store.upsert(second).unwrap();
@@ -309,13 +1923,13 @@ mod tests {
         assert_eq!(store.tasks().len(), 3);
         assert!(store.lists()[0].pinned);
         let task = store.tasks().iter().find(|task| task.id == id).unwrap();
-        assert_eq!(task.matrix_quadrant, Some(Q1));
+        assert_eq!(task.priority.quadrant(), Q1);
         assert_eq!(task.notes.as_deref(), Some("Preserve notes\nline 2"));
-        assert_eq!(task.priority, tasks::Priority::High);
+        assert_eq!(task.priority, tasks::Priority::P3);
         store.toggle(&id).unwrap();
         let completed = store.tasks().iter().find(|task| task.id == id).unwrap();
         assert!(completed.completed);
-        assert_eq!(completed.matrix_quadrant, Some(Q1));
+        assert_eq!(completed.priority.quadrant(), Q1);
         let mut moving = completed.clone();
         moving.list_id = Some(list.id.clone());
         store.upsert(moving).unwrap();
@@ -332,12 +1946,14 @@ mod tests {
             ["First", "Edited"]
         );
         store.toggle(&id).unwrap();
-        store.classify(&id, Some(Q2)).unwrap();
+        store.classify(&id, Q2).unwrap();
         assert_eq!(matrix_titles(&store, Some(&list.id), Q2), ["Edited"]);
-        store.classify(&id, None).unwrap();
+        store
+            .classify(&id, Quadrant::NotImportantNotUrgent)
+            .unwrap();
         let task = store.tasks().iter().find(|task| task.id == id).unwrap();
-        assert_eq!(task.matrix_order, None);
-        assert_eq!(task.matrix_quadrant, None);
+        assert_eq!(task.matrix_order, Some(0));
+        assert_eq!(task.priority, Priority::P0);
         assert_eq!(task.list_id.as_deref(), Some(list.id.as_str()));
         drop(store);
         assert_eq!(Store::open(path).unwrap().tasks().len(), 3);
@@ -372,10 +1988,10 @@ mod tests {
             store
                 .tasks()
                 .iter()
-                .all(|task| task.list_id.is_none() && task.matrix_quadrant == Some(Q1))
+                .all(|task| task.list_id.is_none() && task.priority.quadrant() == Q1)
         );
         store.delete(&first_id).unwrap();
-        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Some(Q1))
+        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Q1)
             .iter()
             .map(|task| task.matrix_order.unwrap())
             .collect();
@@ -389,33 +2005,35 @@ mod tests {
         assert!(store.lists().is_empty());
     }
     #[test]
-    fn legacy_polished_tasks_default_to_unassigned_and_pinned_lists_survive_upgrade() {
+    fn legacy_polished_tasks_default_to_p0_and_pinned_lists_survive_upgrade() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
         let bytes = br#"{"version":2,"tasks":[{"id":"original-id","title":"Legacy completed","completed":true,"due_date":"2026-10-18","priority":"High","notes":"Original notes","list_id":"work-id"}],"lists":[{"id":"work-id","name":"Work","pinned":true}]}"#;
         fs::write(&path, bytes).unwrap();
         let mut store = Store::open(path.clone()).unwrap();
-        assert_eq!(store.tasks()[0].matrix_quadrant, None);
-        assert_eq!(store.tasks()[0].matrix_order, None);
+        assert_eq!(store.tasks()[0].priority, Priority::P0);
+        assert_eq!(store.tasks()[0].matrix_order, Some(0));
         assert!(store.lists()[0].pinned);
         assert_eq!(fs::read(&path).unwrap(), bytes);
-        store.classify("original-id", Some(Q2)).unwrap();
+        store.classify("original-id", Q2).unwrap();
         drop(store);
         let store = Store::open(path.clone()).unwrap();
-        assert_eq!(store.tasks()[0].matrix_quadrant, Some(Q2));
+        assert_eq!(store.tasks()[0].priority.quadrant(), Q2);
         assert!(store.tasks()[0].completed);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 3);
-        let legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-        saved["tasks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("matrix_quadrant");
+        assert_eq!(saved["version"], 7);
+        let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         saved["tasks"][0]
             .as_object_mut()
             .unwrap()
             .remove("matrix_order");
+        for tasks in [&mut saved["tasks"], &mut legacy["tasks"]] {
+            for task in tasks.as_array_mut().unwrap() {
+                task.as_object_mut().unwrap().remove("priority");
+                task.as_object_mut().unwrap().remove("matrix_order");
+            }
+        }
         assert_eq!(saved["tasks"], legacy["tasks"]);
         assert_eq!(saved["lists"], legacy["lists"]);
     }
@@ -433,9 +2051,13 @@ mod tests {
         tasks[2].matrix_order = Some(40);
         tasks[3].matrix_order = Some(u64::MAX);
         let bytes = serde_json::to_vec(&Document {
-            version: 3,
+            version: 4,
             tasks,
             lists: vec![],
+            sort_mode: TaskSort::default(),
+            sort_ascending: None,
+            show_completed: true,
+            automatic_backups: None,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -445,7 +2067,7 @@ mod tests {
             matrix_titles(&store, None, Q1),
             ["Duplicate1", "Duplicate2", "Missing"]
         );
-        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Some(Q1))
+        let ranks: Vec<_> = matrix::ordered(store.tasks(), None, Q1)
             .iter()
             .map(|task| task.matrix_order)
             .collect();
@@ -458,11 +2080,11 @@ mod tests {
         assert_eq!(Store::open(path).unwrap().tasks(), expected);
     }
     #[test]
-    fn corrupt_matrix_fields_are_preserved_and_block_loading() {
+    fn corrupt_priority_matrix_and_retired_fields_are_preserved_and_block_loading() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
         let task = matrix_task("Bad data", None, Q1);
-        let base = serde_json::json!({"version":3,"tasks":[task],"lists":[]});
+        let base = serde_json::json!({"version":4,"tasks":[task],"lists":[]});
         let mut cases = vec![];
         for value in [serde_json::json!("not-a-quadrant"), serde_json::json!(1)] {
             let mut doc = base.clone();
@@ -478,10 +2100,26 @@ mod tests {
             doc["tasks"][0]["matrix_order"] = value;
             cases.push(doc);
         }
-        let mut no_quadrant = base.clone();
-        no_quadrant["tasks"][0]["matrix_quadrant"] = serde_json::Value::Null;
-        no_quadrant["tasks"][0]["matrix_order"] = serde_json::json!(0);
-        cases.push(no_quadrant);
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(4),
+            serde_json::json!(3.0),
+            serde_json::json!("High"),
+            serde_json::Value::Null,
+        ] {
+            let mut doc = base.clone();
+            doc["tasks"][0]["priority"] = value;
+            cases.push(doc);
+        }
+        let mut missing_priority = base.clone();
+        missing_priority["tasks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("priority");
+        cases.push(missing_priority);
+        let mut retired_quadrant = base.clone();
+        retired_quadrant["tasks"][0]["matrix_quadrant"] = serde_json::Value::Null;
+        cases.push(retired_quadrant);
         let mut unknown = base;
         unknown["tasks"][0]["matrix_future_field"] = serde_json::json!(true);
         cases.push(unknown);
@@ -506,7 +2144,7 @@ mod tests {
         let before = fs::read(&path).unwrap();
         let tasks = store.tasks().to_vec();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
-        let classify = store.classify(&id, Some(Q2));
+        let classify = store.classify(&id, Q2);
         let reorder = store.reorder(&id, Direction::Down);
         let complete = store.toggle(&id);
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -516,12 +2154,12 @@ mod tests {
         assert_eq!(store.tasks(), tasks);
         assert_eq!(fs::read(&path).unwrap(), before);
         store.reorder(&id, Direction::Down).unwrap();
-        store.classify(&id, Some(Q2)).unwrap();
+        store.classify(&id, Q2).unwrap();
         drop(store);
         let mut store = Store::open(path.clone()).unwrap();
         assert_eq!(matrix_titles(&store, None, Q2), ["First"]);
         fs::write(&path, b"external corruption").unwrap();
-        assert!(store.classify(&id, Some(Q1)).is_err());
+        assert!(store.classify(&id, Q1).is_err());
         assert!(store.reorder(&id, Direction::Up).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"external corruption");
         assert_eq!(matrix_titles(&store, None, Q2), ["First"]);
@@ -537,6 +2175,7 @@ mod tests {
         store.upsert_list(first.clone()).unwrap();
         store.upsert_list(second.clone()).unwrap();
         let mut task = Task::new("Move me").unwrap();
+        task.matrix_order = Some(0);
         let task_id = task.id.clone();
         store.upsert(task.clone()).unwrap();
         for assignment in [
@@ -575,14 +2214,17 @@ mod tests {
         store.upsert_list(first.clone()).unwrap();
         store.upsert_list(second.clone()).unwrap();
         let mut active = Task::new("Active").unwrap();
+        active.matrix_order = Some(0);
         active.list_id = Some(first.id.clone());
         active.notes = Some("Keep all fields".into());
         active.due_date = Some("2026-10-18".into());
-        active.priority = tasks::Priority::High;
+        active.priority = tasks::Priority::P3;
         let mut completed = Task::new("Completed").unwrap();
+        completed.matrix_order = Some(0);
         completed.list_id = Some(first.id.clone());
         completed.completed = true;
         let mut other = Task::new("Other").unwrap();
+        other.matrix_order = Some(0);
         other.list_id = Some(second.id.clone());
         store
             .replace(vec![active.clone(), completed.clone(), other.clone()])
@@ -623,9 +2265,16 @@ mod tests {
         let store = Store::open(path.clone()).unwrap();
         assert_eq!(store.tasks(), original);
         assert_eq!(store.lists().len(), 1);
-        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 3);
-        let legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 7);
+        let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        for tasks in [&mut saved["tasks"], &mut legacy["tasks"]] {
+            for task in tasks.as_array_mut().unwrap() {
+                task.as_object_mut().unwrap().remove("priority");
+                task.as_object_mut().unwrap().remove("matrix_order");
+            }
+        }
         assert_eq!(saved["tasks"], legacy["tasks"]);
     }
     #[test]
@@ -634,8 +2283,11 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut task = Task::new("Legacy assignment").unwrap();
         task.list_id = Some("reserved-id".into());
-        let bytes =
-            serde_json::to_vec(&serde_json::json!({"version":1,"tasks":[task.clone()]})).unwrap();
+        task.created_at = None;
+        let mut legacy = serde_json::to_value(&task).unwrap();
+        legacy["priority"] = serde_json::json!("Normal");
+        let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"tasks":[legacy]})).unwrap();
+        task.matrix_order = Some(0);
         fs::write(&path, &bytes).unwrap();
         let mut store = Store::open(path.clone()).unwrap();
         assert_eq!(store.tasks(), std::slice::from_ref(&task));
@@ -667,9 +2319,13 @@ mod tests {
             vec![empty_id],
         ] {
             let bytes = serde_json::to_vec(&Document {
-                version: 2,
+                version: 4,
                 tasks: vec![],
                 lists,
+                sort_mode: TaskSort::default(),
+                sort_ascending: None,
+                show_completed: true,
+                automatic_backups: None,
             })
             .unwrap();
             fs::write(&path, &bytes).unwrap();
@@ -679,9 +2335,13 @@ mod tests {
         let mut task = Task::new("Dangling").unwrap();
         task.list_id = Some("missing".into());
         let bytes = serde_json::to_vec(&Document {
-            version: 2,
+            version: 4,
             tasks: vec![task],
             lists: vec![list],
+            sort_mode: TaskSort::default(),
+            sort_ascending: None,
+            show_completed: true,
+            automatic_backups: None,
         })
         .unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -722,6 +2382,7 @@ mod tests {
         let list = TaskList::new("Work").unwrap();
         store.upsert_list(list.clone()).unwrap();
         let mut task = Task::new("Keep association").unwrap();
+        task.matrix_order = Some(0);
         task.list_id = Some(list.id.clone());
         store.upsert(task.clone()).unwrap();
         let before = fs::read(&path).unwrap();
@@ -774,6 +2435,7 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut store = Store::open(path.clone()).unwrap();
         let mut task = Task::new("Before").unwrap();
+        task.matrix_order = Some(0);
         store.upsert(task.clone()).unwrap();
         let before = fs::read(&path).unwrap();
         let mut original_handle = File::open(&path).unwrap();
@@ -800,7 +2462,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
         let mut store = Store::open(path.clone()).unwrap();
-        let task = Task::new("Keep me").unwrap();
+        let mut task = Task::new("Keep me").unwrap();
+        task.matrix_order = Some(0);
         store.upsert(task.clone()).unwrap();
         let before = fs::read(&path).unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
@@ -817,12 +2480,13 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut store = Store::open(path.clone()).unwrap();
         let mut task = Task::new("Original").unwrap();
+        task.matrix_order = Some(0);
         let id = task.id.clone();
         store.upsert(task.clone()).unwrap();
         task.title = "Edited".into();
         task.due_date = Some("2026-10-17".into());
         task.notes = Some("Notes\nsecond line".into());
-        task.priority = tasks::Priority::High;
+        task.priority = tasks::Priority::P3;
         let list = TaskList::new("Future").unwrap();
         store.upsert_list(list.clone()).unwrap();
         task.list_id = Some(list.id);
@@ -853,18 +2517,30 @@ mod tests {
                 version: 99,
                 lists: vec![],
                 tasks: vec![],
+                sort_mode: TaskSort::default(),
+                sort_ascending: None,
+                show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
-                version: 1,
+                version: 4,
                 lists: vec![],
                 tasks: vec![task.clone(), task.clone()],
+                sort_mode: TaskSort::default(),
+                sort_ascending: None,
+                show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             serde_json::to_vec(&Document {
-                version: 1,
+                version: 4,
                 lists: vec![],
                 tasks: vec![invalid],
+                sort_mode: TaskSort::default(),
+                sort_ascending: None,
+                show_completed: true,
+                automatic_backups: None,
             })
             .unwrap(),
             br#"{"version":1,"tasks":[],"future_field":true}"#.to_vec(),
@@ -880,7 +2556,8 @@ mod tests {
         let path = dir.path().join("tasks.json");
         let mut store = Store::open(path.clone()).unwrap();
         assert!(Store::open(path.clone()).is_err());
-        let task = Task::new("Saved").unwrap();
+        let mut task = Task::new("Saved").unwrap();
+        task.matrix_order = Some(0);
         store.upsert(task.clone()).unwrap();
         fs::write(&path, b"external data").unwrap();
         assert!(

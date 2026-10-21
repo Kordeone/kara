@@ -1,0 +1,41 @@
+{
+  "format": "io.github.kordeone.Kara.backup",
+  "backup_version": 1,
+  "sha256": "3b837b171e32cb6a36be0176b445ac5d6749812113ac3ee7e319c6d863b00a49",
+  "data": {
+    "version": 6,
+    "tasks": [
+      {
+        "id": "portable-a",
+        "title": "Portable task — Calendar",
+        "completed": false,
+        "due_date": "2024-02-29",
+        "priority": 3,
+        "notes": "Keep notes\nsecond line",
+        "list_id": "portable-list",
+        "created_at": 1700000000,
+        "matrix_order": 0
+      },
+      {
+        "id": "portable-b",
+        "title": "Completed task",
+        "completed": true,
+        "due_date": null,
+        "priority": 3,
+        "notes": null,
+        "list_id": "portable-list",
+        "matrix_order": 1
+      }
+    ],
+    "lists": [
+      {
+        "id": "portable-list",
+        "name": "Work",
+        "pinned": true
+      }
+    ],
+    "sort_mode": "Name",
+    "sort_ascending": false,
+    "show_completed": false
+  }
+}
