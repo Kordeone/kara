@@ -103,19 +103,19 @@ remote main state. Cached main was ahead of origin/main by 23 commits; cached
 origin/feat/appimage-ci was 5900ac8.
 
 ```text
-refs/heads/audit/engineering-quality 33239eebb7eaa4876937f4ea9548a14f223b02a1  
-refs/heads/backup/eisenhower-before-consolidation-20261018T230210Z 92508f2e99f44e44ba31bcb1b5d80d44c88c0a41  
-refs/heads/backup/main-before-consolidation-20261018T230210Z 72da937d7c0dc4a55ee00fe1f52b3160e4cb8e00  
-refs/heads/feat/appimage-ci 5900ac8981c7f9d51c817d405cd92468968a7808 refs/remotes/origin/feat/appimage-ci 
-refs/heads/feat/backup-restore 22d0b30de3a1ed423e942c20a602c9f7067f2540  
-refs/heads/feat/calendar-month 2ec9ed35b63b433ec2c0d707ee908c758179d0ed  
-refs/heads/feat/eisenhower 92508f2e99f44e44ba31bcb1b5d80d44c88c0a41  
-refs/heads/feat/matrix-dnd-feedback 1daeb9de2c64c3fbdfb26ce1aa6d5a5472a297ad  
-refs/heads/feat/release-packaging 199d69ec717eaac996950ebc2140f326088efbd1  
-refs/heads/feat/sidebar-selector-polish b744b6bd4312bf9d16654f0a5a0b9b4df1268ec5  
-refs/heads/feat/tasks-ui-polish 716cf96f5833424d7e2488dd51e6df3a216896d1  
-refs/heads/fix/performance-readiness 7514dfc460e0d00bb0fba1e321d55115e990f3b1  
-refs/heads/integration/matrix-feedback 7259a39d37592ce6cb1280cb9004fdb0d7d53920  
+refs/heads/audit/engineering-quality 33239eebb7eaa4876937f4ea9548a14f223b02a1
+refs/heads/backup/eisenhower-before-consolidation-20261018T230210Z 92508f2e99f44e44ba31bcb1b5d80d44c88c0a41
+refs/heads/backup/main-before-consolidation-20261018T230210Z 72da937d7c0dc4a55ee00fe1f52b3160e4cb8e00
+refs/heads/feat/appimage-ci 5900ac8981c7f9d51c817d405cd92468968a7808 refs/remotes/origin/feat/appimage-ci
+refs/heads/feat/backup-restore 22d0b30de3a1ed423e942c20a602c9f7067f2540
+refs/heads/feat/calendar-month 2ec9ed35b63b433ec2c0d707ee908c758179d0ed
+refs/heads/feat/eisenhower 92508f2e99f44e44ba31bcb1b5d80d44c88c0a41
+refs/heads/feat/matrix-dnd-feedback 1daeb9de2c64c3fbdfb26ce1aa6d5a5472a297ad
+refs/heads/feat/release-packaging 199d69ec717eaac996950ebc2140f326088efbd1
+refs/heads/feat/sidebar-selector-polish b744b6bd4312bf9d16654f0a5a0b9b4df1268ec5
+refs/heads/feat/tasks-ui-polish 716cf96f5833424d7e2488dd51e6df3a216896d1
+refs/heads/fix/performance-readiness 7514dfc460e0d00bb0fba1e321d55115e990f3b1
+refs/heads/integration/matrix-feedback 7259a39d37592ce6cb1280cb9004fdb0d7d53920
 refs/heads/main 7514dfc460e0d00bb0fba1e321d55115e990f3b1 refs/remotes/origin/main [ahead 23]
 refs/heads/rescue/shared-checkout-before-main-promotion-20261019T140759555033Z b744b6bd4312bf9d16654f0a5a0b9b4df1268ec5
 ```
