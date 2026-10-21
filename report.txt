@@ -1,126 +1,159 @@
-KARA — Final Settings layout and automatic backup configuration
+KARA — Stage 3B: Performance and Reliability Remediation
 
-Scope
-- Worktree: /home/rapper/projects/kara-backup-restore
-- Branch: feat/backup-restore; baseline: 3c5985e.
-- Changes confined to Settings and automatic backup configuration, plus related
-  validation/tests. No merge, push, installation, new dependencies or other
-  worktree edits. Tasks, Calendar, Matrix, branding and tray code are preserved.
-- Headless Debian automated validation only. Owner's COSMIC acceptance is pending.
+Scope and delivery
+- Branch: fix/performance-readiness
+- Worktree: /home/rapper/projects/kara-performance
+- Based on clean main 22d0b30; reviewed audit 33239ee in kara-audit.
+- No merge, push, packaging, installation, dependency update or schema change.
+  Main and all existing worktrees/backups/rescue data remain preserved.
+- Native Tasks dialog, sidebar/module layout, branding, application ID, priority
+  mappings, task IDs, due dates, notes, list assignments and storage format remain.
+- Graphical acceptance and live performance measurements remain with the owner.
 
-Settings layout
-- Removed settings::section cards. Sections now use the drawer's existing surface,
-  consistent native spacing/padding and two subtle theme separators.
-- Export Backup and Import Backup share an equal-width horizontal row, use bundled
-  Tabler icons and native flat text buttons. Folder choice and Apply are also flat.
-- Native drawer header, Close, Settings icon/tooltip, focus and access are retained.
-- Automatic backups has enable toggle, numeric Every field, unit selector, Keep
-  last (1–100), destination/path picker, last-success status and one Apply button.
-- Units: Seconds (s), Minutes (m), Hours (h), Days (d), Weeks (w), Months (M),
-  Years (y). Lowercase m means minutes; uppercase M means calendar months.
-- Schedule, retention, folder and Apply controls are disabled while off. The locked
-  dropdown has no disabled API; when off, its current label uses a disabled native
-  button in the same position. Event guards also reject disabled input messages.
-- Enabling stages the configuration until Apply. Disabling immediately persists
-  the off state, even if staged values or the destination are invalid. Other
-  staged inputs are not saved by disabling. This avoids an invalid form trapping
-  the scheduler in an enabled state.
-- Apply needs valid amount/unit, valid retention, and a verified selected folder.
-  It rechecks writability before persisting; failures leave live preferences intact.
+1. Matrix root causes and measured changes
+- Baseline task_row asked matrix::neighbor twice for every task. neighbor rebuilt
+  and sorted its entire group each time. A 10k concentrated diagnostic sweep alone
+  took 14.36s in this run; actual native layout median was 17.50s (audit: 20.5s).
+- Drop destination converted ordered Task refs back to vector positions using a
+  fresh linear search per row. One 10k concentrated validation took 282ms.
+- All rows were built/laid out even inside scrollables. Fixing lookup complexity
+  alone would still leave thousands of widgets, glyphs, callbacks and drop targets.
 
-Intervals and scheduling
-- Positive whole-number intervals only. New configurations require at least
-  60 seconds, up to 1,000,000 units, with calendar caps of 1,200 months/100 years.
-- Fixed seconds/minutes/hours/days/weeks keep elapsed-time semantics. Days are
-  24 hours and weeks are seven days, preserving previous ISO duration semantics.
-- Months and years use the locked jiff calendar arithmetic in the local system
-  timezone, anchored to last successful backup. Month ends constrain to the last
-  valid date: Jan 31 + one month becomes Feb 28/29; Feb 29 + one year becomes
-  Feb 28. Local wall time is retained across DST transitions when representable;
-  the library resolves DST gaps/folds consistently. These are never approximated
-  by 30-day or 365-day constants.
-- Each next calendar interval is relative to its successful predecessor, not an
-  end-of-month recurrence rule. After a Jan 31 -> Feb 28 backup, the next month
-  is relative to Feb 28. Overdue execution anchors the next interval to actual
-  success, not an unbounded sequence of missed schedule dates.
-- Running deadlines still use Linux CLOCK_BOOTTIME, including suspend and avoiding
-  repeated backups from wall-clock jumps. Restart computes a single remaining
-  interval from persisted last success; overdue/future-timestamp cases catch up
-  at most once. Failed attempts retain a 60-second retry delay. No background
-  daemon runs after full Quit. Manual operations/import/Clear confirmations still
-  defer automatic backups, and Store operations remain serialized.
+Implementation
+- Row Up/Down flags now use adjacent references from the ONE preordered group,
+  retaining completion boundaries and full-group neighbor semantics. The general
+  keyboard neighbor function uses one allocation-free linear scan, not sorting.
+- Destination constructs/sorts original indices directly; source-group reindexing
+  also retains indices rather than cloning IDs and searching repeatedly. Only the
+  affected ordering groups change. Stored document order/identities are preserved.
+- Investigated locked iced List: it incrementally measures and virtualizes content
+  but does not delegate native drag destinations/accessibility for these cards.
+  Replacing the proven DnD path with it would require a disproportionate wrapper.
+- Used bounded native pagination instead: <=50 task cards per quadrant; <=200
+  total. Small groups keep their existing display. Large groups show Previous,
+  Next and a native range selector (e.g. 1–50 of 10000) for direct page access.
+  Every task is counted/reachable; no records are discarded or silently filtered.
+- Pagination is ephemeral per (list ID/Inbox, quadrant), never persisted in task
+  ordering/preferences. Headers/Add remain fixed; each page scrolls independently.
+  Direct page selection resets its native scroll position to the top.
+- Page-end drop slots target the NEXT hidden record within the same completion
+  group. At an active/completed boundary they retain the existing group-append
+  semantics. Quadrant background drops still append within the matching group.
+- Create/edit/complete, classify, reorder and successful drops follow the affected
+  task's destination page. Keyboard Up/Down crosses page boundaries correctly.
+- Native drag handles, source feedback, neutral preview icon, destination highlight,
+  insertion marker and existing clipped hit boxes remain. Page switching is
+  disabled during an active drag; choose destination pages before starting it.
 
-Old and new backup-directory behavior
-- OLD default (still used when no destination preference exists):
-    $XDG_DATA_HOME/io.github.kordeone.Kara/automatic-backups/
-  Fallback with XDG_DATA_HOME unset:
-    /home/rapper/.local/share/io.github.kordeone.Kara/automatic-backups/
-  XDG_DATA_HOME was unset in this execution environment. This path was established
-  from source/environment; existing real user task/backup files were not inspected
-  or modified for testing.
-- NEW configurations: user chooses an existing folder with libcosmic's native XDG
-  portal folder picker. Archives and index.json are stored directly in that folder.
-  Choose a dedicated folder; an existing foreign/damaged index.json is rejected.
-- Folder verification uses a uniquely named disposable private probe: create,
-  write, sync, read/compare, delete, directory sync and catalogue validation.
-  It never overwrites an existing file or invokes sudo/privilege elevation.
-  Permission errors identify the path and ask for a writable folder.
-- Absolute real directories are required; relative paths, files, final-component
-  symbolic links, unavailable folders and invalid catalogues fail visibly.
-- Verified at choice, reopening Settings, Apply and before automatic publication.
-  A previously selected folder that disappears is NOT silently recreated. Existing
-  archives remain untouched; scheduler errors are visible and retries are bounded.
-- Changing destination does not copy, move or delete the previous folder's files.
-  The saved last-success timestamp is retained; switching destinations is not an
-  instruction to replay earlier backups immediately.
-- Default retention remains 10, configurable 1–100. Pruning targets only the
-  current folder's catalogue-owned automatic archives with matching recorded
-  device/inode/change time, regular file type and valid backup contents. Manual
-  exports, unknown files, protected recovery snapshots and previous destinations
-  are never swept. Retention errors preserve uncertain files and may leave extras.
+2. Nonblocking storage execution and ownership
+- Added storage_job.rs: async native chooser plus tokio::spawn_blocking for expensive
+  work. No external worker framework, database, daemon or new dependency.
+- Export encoding/publication, import reading/validation/Add preview, Add, Replace,
+  Clear, automatic backup/checkpoint/retention, destination probes and settings
+  persistence/retention now execute outside the UI thread.
+- Exactly ONE writable Store (and its original File lock/expected byte snapshot)
+  moves into the operation future. UI keeps Store::frozen(), an O(1) Arc-backed
+  tasks/lists view with no lock and no document-byte copy. It cannot commit,
+  create a backup, clear data, inspect storage as a writer or prune archives.
+- The writer returns on BOTH normal success and ordinary transaction failure.
+  The existing validated atomic/recovery/rollback methods still do the work;
+  no optimistic UI state is saved over the result. JSON/backup versions unchanged.
+- Gate permits one operation at a time and issues monotonic IDs. Duplicated/stale
+  completion messages cannot install a different Store or consume a result twice.
+  Its completion mutex only takes an ALREADY FINISHED result once; no worker holds
+  it and no UI code waits on a Store mutex, joins a thread or blocks on a future.
+- While busy, task/list writes, conflicting manual jobs and automatic ticks are
+  rejected/deferred. Read-only navigation remains available. Progress appears
+  in native text, Settings and the confirmation dialog; completion paths/errors/
+  added/skipped counts remain visible. Destructive confirmations cannot be canceled
+  mid-transaction. Native chooser Cancel remains safe before a transaction starts.
+- Quit/Close-without-tray while work is active is recorded and executed after the
+  result arrives. Native background windows/tray subscriptions keep running.
+  Automatic backups preserve unsaved editor drafts, defer during backup/import
+  confirmations or an active drag, and keep boottime deadlines, retry delays, destinations and retention behavior.
+- Add preserves preferences/current navigation/scheduler; Replace/Clear rebuild
+  actual UI state and saved preferences. Config success/durability outcomes reset
+  the scheduler using actual stored preferences, even if retention reports an error.
+- Worker panic releases the writer lock and leaves the UI snapshot read-only with
+  a visible storage error. Retry reopens the EXACT original Store path, never a
+  different default XDG path. It refuses missing/corrupt task data instead of empty
+  defaults, clears stale confirmations and reconstructs UI/scheduler from disk.
+  A fresh empty store with no tasks.json after a panic may require restart; this
+  conservative case never authorizes an empty overwrite of a previously known file.
 
-Compatibility, backup integrity and recovery
-- Existing ISO strings remain the persisted interval representation. Existing
-  fixed/composite/fractional-but-whole-second intervals load into equivalent
-  number/unit controls. There is no eager data rewrite on load.
-- Existing sub-minute intervals remain readable; runtime applies the 60-second
-  safety floor without rewriting their saved text. The form shows a minimum
-  validation error until a valid new interval is selected and Applied.
-- Storage remains JSON schema 7 and portable backups remain version 2/schema 7.
-  A new optional absolute destination field defaults to None and is omitted when
-  absent, preserving existing version-2 checksum compatibility. Old version-1
-  backups and all existing task-data migrations remain supported.
-- Older binaries can reject calendar intervals/new destination fields; do not
-  assume backwards loading in older executables. Migration backups remain protected.
-- Destination is a preference, so Replace restores it and Add keeps the current
-  destination. On another machine, an unavailable restored path fails safely and
-  must be reselected. Foreign archive catalogues/ownership are never imported.
-- Manual export, checksums, Add existing-wins/conflict handling, Replace explicit
-  confirmation, verified pre-import recovery snapshots, atomic replacement and
-  rollback are unchanged. Add no-ops do not rewrite documents or create snapshots.
-- Clear still requires exact typed CLEAR, creates/verifies recovery first, aborts
-  on recovery failure, resets all managed preferences (including destination),
-  prevents stale-editor writes, and preserves manual/automatic/recovery files.
-- Recovery snapshots remain in Kara's XDG data root, not the chosen auto folder:
-    kara-before-import-add-<random>.kara-backup
-    kara-before-restore-<random>.kara-backup
-    kara-before-clear-<random>.kara-backup
-  Restore these using Replace to undo a prior import/clear.
+3. Persistence and recovery invariants
+- Live storage remains version-7 JSON; portable backups remain version-2 JSON
+  with existing version-1/legacy migration compatibility and checksums.
+- Recovery snapshot is published/verified/synced BEFORE Add, Replace or Clear.
+  Existing write-failure rollback path stays active on the worker; the test fault
+  is injected on that worker's own thread, not incorrectly on the UI thread.
+- Stable task/list IDs, conservative existing-wins Add/conflict rejection, no-op
+  repeat import, explicit Replace confirmation and exact CLEAR remain intact.
+- Destination permission/unavailability checks, atomic no-clobber publication and
+  catalogue ownership retention stay unchanged. Previous destinations, manual
+  exports, unknown files, migration backups and recovery snapshots are not pruned.
+- No cancellation handle interrupts a destructive transaction. Forced OS kills or
+  power loss still depend on the existing atomic/sync/recovery design; physical
+  crash testing was not performed. An archive/catalogue/checkpoint can leave a
+  conservative extra/unindexed file on interruption, as documented in the audit.
 
-Changed files
-- src/backup_ui.rs: flat drawer sections, numeric/unit/folder form, disabled state,
-  Apply predicate and enabled/disabled small-viewport layout coverage.
-- src/app.rs: form compatibility, folder chooser/verification, safe Apply/disable,
-  scheduler interval calculation and controller regressions.
-- src/automatic.rs: units/validation, calendar duration arithmetic, minimum floor,
-  optional destination, writable-folder probe and scheduling/filesystem tests.
-- src/storage.rs: atomic configuration persistence, effective destination routing,
-  missing-folder protection and restart/archive-isolation/recovery tests.
-- src/backup.rs: native folder chooser; preference fixture/invalid-interval updates.
-- report.txt: this consolidated report. Cargo.toml/Cargo.lock unchanged.
+4. Before/after measurements
+Environment: headless Debian 13, Intel i7-8550U (4 cores/8 threads), ~11GiB RAM,
+Rust/Cargo 1.99.1, locked dependencies, default optimized release profile. Existing
+external cache /var/tmp/kara-matrix-integration-target; no compiler/profile tuning.
+Host load, filesystem cache, font warmup and thermals were not controlled.
 
-Validation — headless Debian
-Required commands (all passed):
+Dataset: same audit shape, 20 lists, stable IDs, 192-byte notes, due dates for 80%,
+about 1/7 completed. Distributed: 20% Inbox, priorities spread. Concentrated: all
+10k tasks in Inbox/P3. March 2026 (42 Calendar cells). ~4.9MB JSON at 10k. Every
+process used fresh disposable Store/XDG roots under /var/tmp. No display required.
+
+Same audit native widget build/layout probe, 1200x800, locked TinySkia; ms:
+  Dataset                  Layout before Layout after   Drop before   Drop after
+   1000 balanced             31.702       36.307        0.142        0.005
+  10000 balanced            623.830       74.519       11.169        0.066
+  10000 concentrated      17496.464       26.333      282.170        1.066
+Layout is the median of three constructions; drop validation is one sample.
+Raw first/warm samples and memory snapshots are in performance/results.json.
+10k concentrated: about 664x reduction in this host run; 10k distributed: about
+8.4x. The 1k distributed case already has only 50 tasks per quadrant; its small
+31.7/36.3ms difference is not a claim of improvement and is within uncontrolled
+measurement variability. This is not a 60fps guarantee or a benchmark percentile.
+The audit's 20.5s figure was independently reproduced here at 17.5s before fixes.
+
+Headless process memory (probe fixtures/imports are retained, NOT Kara GUI RSS):
+- 10k concentrated original probe: peak about 477MiB, Matrix-stage RSS about 450MiB.
+- New raw measurements record the reduced bounded-widget footprint. Do not infer
+  a task-only heap census, live idle memory or absence of long-session leaks.
+- Initial widget construction now allocates at most 50 native drag handles per
+  populated quadrant; a test lays out 10k tasks and verifies only 50 are created,
+  then directly visits the last page and verifies the other 50 are accessible.
+
+Matched event-loop proxy: current-thread Tokio, 5ms timer, 10k records, alternating
+three BEFORE/AFTER runs. BEFORE matches the old controller's already-background
+file read/export publication, with encoding/Add preview on the timer thread;
+Add/Replace/Clear/automatic transactions are synchronous. AFTER runs the same work
+on the single-owner worker. Snapshot setup was <=0.006ms in the recorded runs.
+
+Milliseconds: median worst gap (3 runs), maximum gap (all 3), median operation wall:
+  Operation           Gap before  Gap after Max before  Max after Wall before Wall after
+  export               130.73       5.64     136.85       5.97     352.01     271.37
+  import_preview        31.05       6.88      32.76       7.93     178.69     199.54
+  add                 1058.69       7.53    1080.21       9.87    1057.49     871.19
+  replace              596.23       8.30     640.56       8.50     594.00     530.91
+  automatic            463.53       6.45     510.84       6.77     462.16     494.08
+  clear                309.08       6.90     320.92       8.66     306.89     332.87
+The timer measures event-loop availability, not actual COSMIC input, rendering,
+chooser wait, startup or GUI frame time. Operation wall time need not decrease:
+verified backups still perform the same serialization, atomic writes and fsync,
+plus worker postflight checks. The goal is to stop waiting on the UI thread, not
+skip safeguards or claim faster storage. Deterministic iced/controller tests
+separately prove module navigation/timer work while a worker is deliberately held.
+
+5. Validation
+Final validation: all seven commands passed on the final source.
+Commands run under fresh temporary XDG_DATA_HOME/XDG_CONFIG_HOME/XDG_CACHE_HOME/
+XDG_STATE_HOME and TMPDIR, with the external Cargo cache:
   cargo fmt --check
   cargo check --locked
   cargo clippy --locked --all-targets -- -D warnings
@@ -129,78 +162,119 @@ Required commands (all passed):
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
     -- --ignored --exact --nocapture
-Cache: CARGO_TARGET_DIR=/var/tmp/kara-matrix-integration-target
-- 164 regular tests passed; zero failed. One normally ignored isolated D-Bus test
-  passed separately: 165 tests exercised.
-- Seven new tests cover numeric/unit bounds, minimum and ISO compatibility,
-  leap/nonleap month ends, year boundaries/DST, calendar restart/clock behavior,
-  disposable writable probes, permission-denied/missing/foreign/symlink folders,
-  Apply/disabled/cancel behavior, destination persistence, unavailable-folder
-  failure and recovery, retention isolation and Clear/Replace destination handling.
-- Existing task/list, Calendar, Matrix, backup Add/Replace, corruption, migration,
-  Clear/rollback and tray regressions pass. Drawer coverage includes enabled form
-  and long portal paths at 300, 400, 640 and 1000px viewport widths.
-- All filesystem/destructive tests use disposable directories, not actual user data.
+  cargo build --release --locked
+Results: 176 regular tests passed, 0 failed, 1 ignored (private D-Bus test).
+The isolated D-Bus command separately passed that 1 test: 177 exercised in total.
+Strict Clippy reported no warnings. Debug and optimized release builds passed.
+Final regular test runtime: 6.39s; isolated D-Bus runtime: 0.10s.
+Command logs: /var/tmp/kara-performance-measurements/final-validation-{0..6}.log.
 
-Limitations and portal considerations
-- No COSMIC graphical or packaged sandbox verification was performed on Debian.
-- The folder picker uses the locked native portal path/grants and persists its
-  returned path. Kara does not change sandbox permissions or grant itself access.
-  A read-only, revoked, nonpersistent or insufficient portal grant fails the access
-  probe or later backup visibly; reselect the folder through the chooser. Persistent
-  write access across actual Flatpak restarts must be checked when packaging.
-- Portal/FUSE backends must support private staging, directory sync, atomic
-  publication and stable identity for retention. Unsupported access fails safely;
-  identity changes protect archives rather than authorizing deletion. AppImage
-  launch directories do not change configured/XDG paths.
-- A clock/timezone change does not revise an already cached running boottime
-  deadline. The current local timezone is used for subsequent calendar calculations
-  and for restart reconstruction. No fixed timezone/recurrence preference is added.
-- Existing 64 MiB portable limit and plaintext/unencrypted backup format remain.
-  SHA-256 checks accidental damage, not provenance. Local I/O is serialized and
-  may briefly block UI updates on slow storage. Physical power-loss and hot-unplug
-  races are not hardware-tested; existing atomic sync/recovery checks remain.
+12 focused new tests cover 10k page coverage/unique identities/global neighbors;
+completion/page-edge and cross-quadrant movement; actual native bounded layout;
+keyboard page crossing/create/complete visibility; O(1) shared snapshots rejecting
+writes/retention; canceled/corrupt/valid export/import paths and duplicate prevention;
+Add/Replace/Clear recovery across restart; worker-thread post-publication rollback
+and denied writes; failed worker lock/reload safety; automatic destination/retention/
+checkpoint behavior; actual iced task completion, conflicting/stale messages,
+single-thread timer progress and deferred tray Quit. Existing regressions were
+adapted to drive real asynchronous iced outputs rather than assume immediate writes.
+Original task/list/Calendar/Matrix/date/backup/migration/tray tests remain present.
 
-CachyOS acceptance — disposable data/destinations only
-1. Transfer feature source via Samba. Fully Quit any old Kara instance via tray.
-   In the transferred source:
-     cargo build --locked
-     KARA_SETTINGS_TEST_DATA="$(mktemp -d)"
-     XDG_DATA_HOME="$KARA_SETTINGS_TEST_DATA" cargo run --locked
-   Reuse this same test directory across restarts. Choose separate disposable
-   destination folders A and B. Never exercise Clear against production data.
-2. Test light/dark themes, narrow/wide windows and keyboard focus. Confirm sections
-   have no gray cards, Export/Import are side by side, labels align, native header
-   and Close work, long paths/errors scroll, and controls do not clip.
-3. Off: inputs, unit, folder and Apply must be disabled. Enable: controls activate.
-   Check 60 Seconds, 1 Minute, Hours, Days, Weeks, Months and Years. Invalid/zero/
-   fractional/too-large amounts, <60 seconds and retention 0/101 must block Apply
-   with clear feedback, without substituting different saved values.
-4. Choose folder A with the native picker. Cancel once (no preference change),
-   then choose successfully. Confirm its path and enabled Apply. Apply 1 Minute,
-   Keep last 2. Reopen and fully Quit/restart: saved schedule/folder/count persist.
-5. Let several backups run in A, including with the window closed to tray. Verify
-   only two owned archives plus index remain; manual/recovery files are retained.
-   Full Quit stops backups. Overdue restart produces one catch-up, no burst.
-6. Choose B and Apply; verify subsequent backups are in B while every file in A
-   remains. Make B unavailable by renaming/unmounting the DISPOSABLE destination,
-   or remove write permission. Verify visible errors, no recreated replacement
-   folder and no missing archives. Restore access/reselect, Apply and verify retry.
-   Try a root-owned/inaccessible location in the chooser; no privilege request.
-7. Calendar Months/Years: verify selections persist, no fixed-day approximation
-   is displayed and backup preferences survive restart. Leap/month-end/DST timing
-   is tested deterministically; do not change the system clock to test it.
-8. Export then Add/Replace imports: check previews, existing-wins and collision
-   rejection, cancellation, recovery paths and persistence. Replace restores saved
-   destination; Add preserves the local choice. A foreign-machine path must fail
-   visibly until reselected, without deleting archives elsewhere.
-9. Clear (isolated data only): Cancel/invalid text is harmless. Exact CLEAR creates
-   recovery, empties data/defaults and disables automatic backups, but all A/B and
-   manual/recovery files remain. Replace from recovery restores the destination
-   preference and data. Check accepted Tasks/Calendar/Matrix/tray remain unchanged.
-10. For later Flatpak acceptance, choose a portal-granted folder outside sandbox
-    data, restart fully and verify persistent write/retention access. Revoked grants
-    must fail visibly without privilege escalation or unsafe fallback. Packaging
-    changes are outside this milestone.
+Test-safety incident and correction:
+- One intermediate new panic-recovery test followed the old Retry load path into
+  the default XDG location. It issued no task-saving transaction there; Store::open
+  can create/open its directory and tasks.lock. We did not inspect or clean that
+  location afterward. No claim is made that every intermediate test was isolated.
+- Corrected Retry to use its frozen view's exact path, added missing-file refusal,
+  and validated panic/reload against a renamed/restored disposable task file.
+  Final complete validation runs additionally set ALL XDG roots to temporary paths.
+  All benchmark fixtures and destructive transaction tests used disposable Stores.
 
-Stop for owner's COSMIC graphical acceptance. Do not merge or push.
+6. Changed files
+- src/matrix.rs: allocation-free neighbor lookup, indexed movement/reindexing,
+  bounded page/edge helpers and large-data ordering tests.
+- src/matrix_view.rs: bounded native pages, range picker, shared neighbor flags,
+  exact page-end insertion, native scroll reset and 10k native layout regression.
+- src/matrix_drag.rs: transient page cursor/focus state and stable widget IDs.
+- src/storage.rs: shared read-only record snapshots, single writable-lock ownership,
+  writer guards, exact-path nonempty recovery and isolated snapshot tests.
+- src/storage_job.rs (new): owned asynchronous chooser/worker, completion Gate,
+  progress labels, normal/failure results and isolated worker regressions.
+- src/app.rs: task dispatch/completion/progress, busy/write/quit guards, Matrix
+  cursor following, actual-state failure recovery and asynchronous controller tests.
+- src/backup_ui.rs: native operation progress and disabled transaction cancellation;
+  test-only chooser fixture messages, no task editor layout changes.
+- src/main.rs: registers storage_job.
+- report.txt, performance/results.json, performance/measurement-probes.md: report,
+  raw evidence and exact reproducible benchmark/graphical fixture source.
+- Cargo.toml, Cargo.lock, task schemas, task editor/date picker layout, Calendar,
+  priority assets, logo, tray transport and application ID were not changed.
+
+7. Limitations and remaining packaging blockers
+- Pagination is bounded presentation, not continuous virtual scrolling. Choose
+  source/destination pages before a drag; switching pages during a native drag is
+  intentionally disabled. Cross-page keyboard reorder and direct range selection
+  remain available. No drag autoscroll/page-turn behavior was invented.
+- While a Store job is active, record writes are temporarily disabled rather than
+  queued. Read-only navigation/tray remains live. One job can wait for a native
+  chooser; Quit is deferred until it is canceled/completed. There is no unsafe
+  force-cancel of a running filesystem transaction.
+- Ordinary task/list CRUD, Matrix drop commits and initial/retry document loading
+  still use existing synchronous persistence. These can pause on large files or
+  slow disks. This milestone removes the audited 1–2s BACKUP/IMPORT UI transactions;
+  it does not claim every data operation or Tasks/Calendar rendering is asynchronous.
+- Tasks/Calendar still eagerly build/scan their own collections; native rendering
+  of extremely large task views may need later work. Unbounded individual notes/
+  titles and the live document/64MiB backup resource budget remain audit items.
+- Widget-ID cache pruning for deleted/churned records, cold startup/idle CPU/RSS,
+  GPU frame timing and multi-day tray memory behavior remain unmeasured/future work.
+- No packaging artifacts created. Prior audit blockers remain: invalid AppStream
+  metadata/template provides ID, hardcoded build output paths, dependency advisory/
+  license decisions, MSRV/toolchain/offline build policy, actual Flatpak persistent
+  portal write grants/atomic sync/retention identity, and AppImage runtime baseline.
+  No new dependency/security audit or blanket advisory clearance is claimed here.
+- No COSMIC graphical verification, physical power-loss or live hardware performance
+  measurements were performed on Debian. Owner acceptance is required before merge.
+
+8. CachyOS functional/performance acceptance
+1. Transfer this FEATURE source via Samba. Fully Quit every old Kara process via
+   tray before launching; the shared application ID can activate an old instance
+   even with a different XDG_DATA_HOME. Build cargo build --release --locked.
+2. Use a NEW disposable XDG root and backup folder. Seed 1k/10k distributed and
+   10k concentrated fixtures using performance/measurement-probes.md, each in a
+   separate fresh root. Never seed/replace production data. Reuse a test root only
+   for intentional restart checks. Launch with that exact XDG_DATA_HOME.
+3. Record commit, machine, COSMIC/display scaling/theme/backend, window dimensions,
+   cold/warm state and sample counts. Measure real interactions with recording or
+   compositor timing; do not call cargo build elapsed time application startup.
+4. Test Matrix wide/narrow/short windows and both themes. Normal small lists should
+   look the same. Large quadrants must show exact counts and range picker; visit
+   first/middle/last ranges, use keyboard and Previous/Next, verify 10k unique IDs
+   remain reachable and native scrolling/headers/Add/actions stay accessible.
+5. Drag within/between quadrants and at visible page ends; verify final position
+   before the next hidden row, priority updates, source/destination/marker feedback,
+   no duplicate/lost records, completion groups and canceled/invalid drops unchanged.
+   Switch target pages BEFORE dragging. Reorder across page boundary with arrows;
+   create/edit/complete tasks and confirm the affected record is followed to its
+   page. Check named-list filtering and restart-persisted priority/manual order.
+6. In each module, export/import/Add/Replace/Clear using disposable records. Watch
+   progress, move/resize/navigate, and test tray Open/Close/second launch. Data writes
+   must remain disabled during a job; repeated actions cannot start a conflict.
+   Distinguish remaining large Tasks/Calendar widget-render cost from worker delay.
+7. Confirm Add existing-wins/conflict/count/no-duplicate behavior and Replace/Clear
+   confirmation/recovery. Cancel native chooser/pretransaction confirmation; no
+   data changes. Running destructive work has no mid-transaction Cancel.
+8. With a large import/backup running, request tray Quit or close without a host:
+   Kara must finish safely then exit. If a chooser is waiting, cancel/complete it.
+   Reopen the SAME disposable root and check persisted data/recovery archives.
+9. Test automatic backup while hidden, suspend/resume, one overdue restart, Apply/
+   disable, Keep last and destination switching/unavailability. Preserve manual/
+   recovery files and previous destinations; errors must remain visible.
+10. Worker panic is injected only in automated tests, not a shipped UI action.
+    For a real failure preserve files/recoveries, use Retry Storage at the SAME
+    path, and never bypass corruption/missing-file errors with empty defaults.
+11. Compare actual visible/hidden CPU, RSS/PSS and drag latency before/after at
+    identical data/window sizes. Headless timer/layout numbers are evidence for
+    backend fixes, not COSMIC graphical acceptance or an all-module frame-rate claim.
+
+Stop for owner review. Do not merge, push or begin packaging.

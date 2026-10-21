@@ -1,0 +1,1303 @@
+{
+  "baseline_commit": "22d0b30de3a1ed423e942c20a602c9f7067f2540",
+  "audit_reference": "33239ee",
+  "recorded_at_utc": "2026-10-21T00:18:39.600052+00:00",
+  "validation": {
+    "format": "passed",
+    "check_locked": "passed",
+    "strict_clippy_all_targets": "passed",
+    "regular_tests": {
+      "passed": 176,
+      "failed": 0,
+      "ignored": 1,
+      "seconds": 6.39
+    },
+    "isolated_dbus": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 0.1
+    },
+    "debug_build_locked": "passed",
+    "release_build_locked": "passed",
+    "isolation": "Disposable TMPDIR and all XDG roots; see report for intermediate failed-test incident",
+    "logs": "/var/tmp/kara-performance-measurements/final-validation-{0..6}.log"
+  },
+  "matrix_before": [
+    {
+      "tasks": 1000,
+      "distribution": "balanced",
+      "status": 0,
+      "elapsed_seconds": 0.8832888189936057,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 0.129753
+        },
+        {
+          "metric": "dataset",
+          "tasks": 1000,
+          "lists": 20,
+          "concentrated": false,
+          "live_bytes": 494527
+        },
+        {
+          "metric": "store_open",
+          "ms": 2.92253
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t    7880 kB",
+            "VmRSS:\t    7880 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 0.09628400000000001
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 0.944717
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 2.028726
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 0.14243599999999998
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 14.039393
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 12.599147
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 11.979696
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 9.193916
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 11.661857
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 19.334436
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 1.727821
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 116.899806
+        },
+        {
+          "metric": "replace_import",
+          "ms": 61.906152
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 78.458873
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t   21204 kB",
+            "VmRSS:\t   18376 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.354568
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 244.546498
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 16.521069
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 15.143323
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t   21964 kB",
+            "VmRSS:\t   21964 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 83.154671
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 30.935718
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 31.702049000000002
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t   23740 kB",
+            "VmRSS:\t   23740 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 71.52394
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "tasks": 10000,
+      "distribution": "balanced",
+      "status": 0,
+      "elapsed_seconds": 6.34046285203658,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 1.502691
+        },
+        {
+          "metric": "dataset",
+          "tasks": 10000,
+          "lists": 20,
+          "concentrated": false,
+          "live_bytes": 4938241
+        },
+        {
+          "metric": "store_open",
+          "ms": 26.13145
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t   22928 kB",
+            "VmRSS:\t   22928 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 0.995612
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 11.780092000000002
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 219.46927399999998
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 11.168861
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 45.458147999999994
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 42.040758999999994
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 39.531675
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 70.551064
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 128.02291499999998
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 197.753674
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 34.851426
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 1050.0305270000001
+        },
+        {
+          "metric": "replace_import",
+          "ms": 626.134845
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 618.450861
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t  157736 kB",
+            "VmRSS:\t  116900 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.18352400000000002
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 285.657101
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 69.312945
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 69.14469600000001
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  157736 kB",
+            "VmRSS:\t  120608 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 629.605191
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 612.267252
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 623.8299870000001
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  157736 kB",
+            "VmRSS:\t  124104 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 475.239578
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "tasks": 10000,
+      "distribution": "concentrated",
+      "status": 0,
+      "elapsed_seconds": 71.92974202998448,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 2.7662400000000003
+        },
+        {
+          "metric": "dataset",
+          "tasks": 10000,
+          "lists": 20,
+          "concentrated": true,
+          "live_bytes": 4913331
+        },
+        {
+          "metric": "store_open",
+          "ms": 34.730744
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t   21560 kB",
+            "VmRSS:\t   21560 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 8.059557
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 17.57328
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 14355.115136
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 282.170255
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 78.49533
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 46.451727999999996
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 39.756341
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 55.798941
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 109.955433
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 179.15170799999999
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 40.175297
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 1334.0209760000002
+        },
+        {
+          "metric": "replace_import",
+          "ms": 857.405401
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 498.373468
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t  156352 kB",
+            "VmRSS:\t  118584 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.22311999999999999
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 285.898492
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 68.02586500000001
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 67.693212
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  156352 kB",
+            "VmRSS:\t  122024 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 17496.463927
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 17925.913873999998
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 16631.112827
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  488196 kB",
+            "VmRSS:\t  460412 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 409.219277
+        }
+      ],
+      "stderr": ""
+    }
+  ],
+  "matrix_after": [
+    {
+      "tasks": 1000,
+      "distribution": "balanced",
+      "status": 0,
+      "elapsed_seconds": 0.8173206449719146,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 0.23680500000000002
+        },
+        {
+          "metric": "dataset",
+          "tasks": 1000,
+          "lists": 20,
+          "concentrated": false,
+          "live_bytes": 494527
+        },
+        {
+          "metric": "store_open",
+          "ms": 3.1566889999999996
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t    8108 kB",
+            "VmRSS:\t    8108 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 0.10567900000000001
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 0.93691
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 3.813407
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 0.0054269999999999995
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 14.085518
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 10.513112
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 10.220149
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 8.395839
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 10.238768
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 17.651691
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 1.454372
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 104.779356
+        },
+        {
+          "metric": "replace_import",
+          "ms": 58.378529
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 75.39108499999999
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t   21240 kB",
+            "VmRSS:\t   16976 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.22467499999999999
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 236.214651
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 18.070846000000003
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 15.734831000000002
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t   21240 kB",
+            "VmRSS:\t   20192 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 80.055193
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 36.306832
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 31.789682
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t   23556 kB",
+            "VmRSS:\t   23556 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 36.729609
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "tasks": 10000,
+      "distribution": "balanced",
+      "status": 0,
+      "elapsed_seconds": 4.915198615984991,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 1.4060979999999998
+        },
+        {
+          "metric": "dataset",
+          "tasks": 10000,
+          "lists": 20,
+          "concentrated": false,
+          "live_bytes": 4938241
+        },
+        {
+          "metric": "store_open",
+          "ms": 20.967032
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t   22908 kB",
+            "VmRSS:\t   22908 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 0.9801479999999999
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 9.739124
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 399.904942
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 0.065696
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 44.478113
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 42.789187
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 41.852801
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 60.058980999999996
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 122.042062
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 189.33924399999998
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 35.359387
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 1104.571113
+        },
+        {
+          "metric": "replace_import",
+          "ms": 652.462035
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 623.278678
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t  156036 kB",
+            "VmRSS:\t  113596 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.220334
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 301.521896
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 76.086521
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 75.434722
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  156036 kB",
+            "VmRSS:\t  116992 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 240.87525000000002
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 74.51928600000001
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 48.717202
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  156036 kB",
+            "VmRSS:\t  117232 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 324.827881
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "tasks": 10000,
+      "distribution": "concentrated",
+      "status": 0,
+      "elapsed_seconds": 7.649522388994228,
+      "metrics": [
+        {
+          "metric": "matrix_normalize",
+          "ms": 1.459295
+        },
+        {
+          "metric": "dataset",
+          "tasks": 10000,
+          "lists": 20,
+          "concentrated": true,
+          "live_bytes": 4913331
+        },
+        {
+          "metric": "store_open",
+          "ms": 24.444309
+        },
+        {
+          "metric": "after_open_memory",
+          "proc_status": [
+            "VmHWM:\t   22848 kB",
+            "VmRSS:\t   22848 kB"
+          ]
+        },
+        {
+          "metric": "inbox_name_sort",
+          "ms": 4.659354
+        },
+        {
+          "metric": "calendar_all_cell_queries",
+          "ms": 9.945618999999999
+        },
+        {
+          "metric": "matrix_all_row_neighbors",
+          "ms": 3100.028929
+        },
+        {
+          "metric": "one_drop_validation",
+          "ms": 1.065561
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 85.871077
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 55.356717
+        },
+        {
+          "metric": "atomic_toggle_save",
+          "ms": 50.867946999999994
+        },
+        {
+          "metric": "backup_encode",
+          "ms": 116.37531299999999
+        },
+        {
+          "metric": "backup_decode",
+          "ms": 219.66699
+        },
+        {
+          "metric": "backup_export_publish",
+          "ms": 249.370431
+        },
+        {
+          "metric": "add_preview_half_overlap",
+          "ms": 41.394031
+        },
+        {
+          "metric": "add_import_half_overlap",
+          "ms": 1147.92786
+        },
+        {
+          "metric": "replace_import",
+          "ms": 605.148299
+        },
+        {
+          "metric": "automatic_backup_checkpoint",
+          "ms": 554.6753749999999
+        },
+        {
+          "metric": "after_backups_memory",
+          "proc_status": [
+            "VmHWM:\t  156296 kB",
+            "VmRSS:\t  119600 kB"
+          ]
+        },
+        {
+          "metric": "headless_renderer_init",
+          "ms": 0.34513499999999997
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 287.963974
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 67.55709399999999
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "ms": 66.18001
+        },
+        {
+          "metric": "calendar_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  156296 kB",
+            "VmRSS:\t  123104 kB"
+          ]
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 87.731045
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 26.332933999999998
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "ms": 26.242839
+        },
+        {
+          "metric": "matrix_widget_build_layout",
+          "proc_status": [
+            "VmHWM:\t  156296 kB",
+            "VmRSS:\t  123292 kB"
+          ]
+        },
+        {
+          "metric": "clear_with_recovery",
+          "ms": 332.762181
+        }
+      ],
+      "stderr": ""
+    }
+  ],
+  "matched_responsiveness": [
+    {
+      "repeat": 1,
+      "phase": "before",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 287.776605,
+          "snapshot_ms": 0.00015099999999999998,
+          "max_timer_gap_ms": 83.982471,
+          "p95_timer_gap_ms": 5.725302,
+          "timer_ticks": 48
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 178.686816,
+          "snapshot_ms": 0.000148,
+          "max_timer_gap_ms": 30.749361,
+          "p95_timer_gap_ms": 5.350193,
+          "timer_ticks": 37
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 1044.657432,
+          "snapshot_ms": 5.5e-05,
+          "max_timer_gap_ms": 1047.03913,
+          "p95_timer_gap_ms": 1047.03913,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 593.998091,
+          "snapshot_ms": 5.1e-05,
+          "max_timer_gap_ms": 596.227834,
+          "p95_timer_gap_ms": 596.227834,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 462.160397,
+          "snapshot_ms": 4.9000000000000005e-05,
+          "max_timer_gap_ms": 463.530241,
+          "p95_timer_gap_ms": 463.530241,
+          "timer_ticks": 8
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 306.888878,
+          "snapshot_ms": 7.2e-05,
+          "max_timer_gap_ms": 309.081548,
+          "p95_timer_gap_ms": 309.081548,
+          "timer_ticks": 8
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "repeat": 1,
+      "phase": "after",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 298.761831,
+          "snapshot_ms": 0.002233,
+          "max_timer_gap_ms": 5.641971,
+          "p95_timer_gap_ms": 5.5566510000000005,
+          "timer_ticks": 66
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 209.44463299999998,
+          "snapshot_ms": 0.0046619999999999995,
+          "max_timer_gap_ms": 6.875204999999999,
+          "p95_timer_gap_ms": 5.583295000000001,
+          "timer_ticks": 48
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 871.1891929999999,
+          "snapshot_ms": 0.002041,
+          "max_timer_gap_ms": 7.527639,
+          "p95_timer_gap_ms": 5.424758,
+          "timer_ticks": 182
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 516.502212,
+          "snapshot_ms": 0.002518,
+          "max_timer_gap_ms": 8.303827,
+          "p95_timer_gap_ms": 5.533062,
+          "timer_ticks": 111
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 494.08311199999997,
+          "snapshot_ms": 0.002944,
+          "max_timer_gap_ms": 5.624200999999999,
+          "p95_timer_gap_ms": 5.4988909999999995,
+          "timer_ticks": 106
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 332.868299,
+          "snapshot_ms": 0.003552,
+          "max_timer_gap_ms": 6.9010240000000005,
+          "p95_timer_gap_ms": 5.620894000000001,
+          "timer_ticks": 73
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "repeat": 2,
+      "phase": "before",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 352.01460499999996,
+          "snapshot_ms": 5.1e-05,
+          "max_timer_gap_ms": 130.734249,
+          "p95_timer_gap_ms": 5.600433,
+          "timer_ticks": 52
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 184.086786,
+          "snapshot_ms": 0.000147,
+          "max_timer_gap_ms": 31.051026,
+          "p95_timer_gap_ms": 5.593489999999999,
+          "timer_ticks": 38
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 1077.628598,
+          "snapshot_ms": 5.8e-05,
+          "max_timer_gap_ms": 1080.209401,
+          "p95_timer_gap_ms": 1080.209401,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 638.3081390000001,
+          "snapshot_ms": 5.9999999999999995e-05,
+          "max_timer_gap_ms": 640.563723,
+          "p95_timer_gap_ms": 640.563723,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 509.34389000000004,
+          "snapshot_ms": 4.8e-05,
+          "max_timer_gap_ms": 510.83857600000005,
+          "p95_timer_gap_ms": 510.83857600000005,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 318.800955,
+          "snapshot_ms": 3.8e-05,
+          "max_timer_gap_ms": 320.917047,
+          "p95_timer_gap_ms": 320.917047,
+          "timer_ticks": 7
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "repeat": 2,
+      "phase": "after",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 271.369189,
+          "snapshot_ms": 0.001766,
+          "max_timer_gap_ms": 5.967286,
+          "p95_timer_gap_ms": 5.594644000000001,
+          "timer_ticks": 61
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 199.537098,
+          "snapshot_ms": 0.004608,
+          "max_timer_gap_ms": 6.002891,
+          "p95_timer_gap_ms": 5.505269,
+          "timer_ticks": 46
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 888.2762389999999,
+          "snapshot_ms": 0.002988,
+          "max_timer_gap_ms": 5.608246,
+          "p95_timer_gap_ms": 5.2470930000000005,
+          "timer_ticks": 185
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 591.426509,
+          "snapshot_ms": 0.002895,
+          "max_timer_gap_ms": 8.163307,
+          "p95_timer_gap_ms": 5.574293,
+          "timer_ticks": 126
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 500.93819900000005,
+          "snapshot_ms": 0.00241,
+          "max_timer_gap_ms": 6.448128,
+          "p95_timer_gap_ms": 5.585454,
+          "timer_ticks": 107
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 341.537285,
+          "snapshot_ms": 0.0026709999999999998,
+          "max_timer_gap_ms": 8.657237,
+          "p95_timer_gap_ms": 5.564750999999999,
+          "timer_ticks": 76
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "repeat": 3,
+      "phase": "before",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 375.13043600000003,
+          "snapshot_ms": 4.8e-05,
+          "max_timer_gap_ms": 136.85028,
+          "p95_timer_gap_ms": 5.5877870000000005,
+          "timer_ticks": 56
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 175.257236,
+          "snapshot_ms": 6.7e-05,
+          "max_timer_gap_ms": 32.757571,
+          "p95_timer_gap_ms": 5.591027,
+          "timer_ticks": 37
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 1057.485738,
+          "snapshot_ms": 5.7e-05,
+          "max_timer_gap_ms": 1058.685553,
+          "p95_timer_gap_ms": 1058.685553,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 572.08439,
+          "snapshot_ms": 6.7e-05,
+          "max_timer_gap_ms": 573.26616,
+          "p95_timer_gap_ms": 573.26616,
+          "timer_ticks": 8
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 438.451692,
+          "snapshot_ms": 4.9999999999999996e-05,
+          "max_timer_gap_ms": 441.05888799999997,
+          "p95_timer_gap_ms": 441.05888799999997,
+          "timer_ticks": 7
+        },
+        {
+          "worker": false,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 287.080524,
+          "snapshot_ms": 8.2e-05,
+          "max_timer_gap_ms": 288.243713,
+          "p95_timer_gap_ms": 288.243713,
+          "timer_ticks": 8
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "repeat": 3,
+      "phase": "after",
+      "status": 0,
+      "metrics": [
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "export",
+          "operation_ms": 264.418889,
+          "snapshot_ms": 0.0017000000000000001,
+          "max_timer_gap_ms": 5.560262,
+          "p95_timer_gap_ms": 5.3327729999999995,
+          "timer_ticks": 59
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "import_preview",
+          "operation_ms": 175.972287,
+          "snapshot_ms": 0.002104,
+          "max_timer_gap_ms": 7.93436,
+          "p95_timer_gap_ms": 5.597937,
+          "timer_ticks": 41
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "add",
+          "operation_ms": 847.5190970000001,
+          "snapshot_ms": 0.0029189999999999997,
+          "max_timer_gap_ms": 9.868696,
+          "p95_timer_gap_ms": 5.423233000000001,
+          "timer_ticks": 176
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "replace",
+          "operation_ms": 530.908198,
+          "snapshot_ms": 0.002326,
+          "max_timer_gap_ms": 8.498116,
+          "p95_timer_gap_ms": 5.512325000000001,
+          "timer_ticks": 113
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "automatic",
+          "operation_ms": 441.396243,
+          "snapshot_ms": 0.002774,
+          "max_timer_gap_ms": 6.770931,
+          "p95_timer_gap_ms": 5.587387,
+          "timer_ticks": 95
+        },
+        {
+          "worker": true,
+          "tasks": 10000,
+          "operation": "clear",
+          "operation_ms": 293.518883,
+          "snapshot_ms": 0.003555,
+          "max_timer_gap_ms": 5.649901,
+          "p95_timer_gap_ms": 5.6008309999999994,
+          "timer_ticks": 66
+        }
+      ],
+      "stderr": ""
+    }
+  ],
+  "scope": "Native headless layout and single-threaded timer proxy; no live COSMIC/GPU/fps measurement.",
+  "final_source_sha256": {
+    "src/app.rs": "6e9f66e872ce78b8232ba35d082f8f88aeffd8440c45074ae3ce3262e31bf63e",
+    "src/automatic.rs": "7311458462544be438112bed079f3784eb8996af67b87e7bc4929f72a0f3881d",
+    "src/backup.rs": "54ff598835605e9985131faed8d1ca2aa66a105436c4c5ca3a7fdbaf3526681f",
+    "src/backup_ui.rs": "d01ce240e92324e65b9f59b82f260e09d1aeda4abd88762f77d19006308a8e9e",
+    "src/calendar_month.rs": "89ee745b54d2c4c68ebae5f8f0e2de117b3d779ab293ddb77847f506221a90b3",
+    "src/calendar_view.rs": "19daae54f5eb629d3e7179c1d060b60d960e1bb229913d1dea8cd1af9f79ec67",
+    "src/config.rs": "a0191b6212db10ae6794207c1d78a4c3facb9cb32a88e432830a5ec430a3fedb",
+    "src/date_entry.rs": "4c12ca461e389a40612bbcb45e87ce6d5d00f504a8d397d324bba8582ed9cc65",
+    "src/i18n.rs": "b54e11458043d2c16022a6496fd08dd653218ffbc80888547565b7eabdef5be0",
+    "src/import.rs": "bb88057aa1a1dfea360e830e55468d00d1d5c9822682960d442bd9978c412e56",
+    "src/lifecycle.rs": "844cfbd2d323fbeb66b8646085dd24c5a0a2edb4a6812da52e7f78d3f484689b",
+    "src/main.rs": "866fe6a2de55b1f28cbc1de6480eedfb92e7eeeb1a8960e5ef2ffa4b76104fae",
+    "src/matrix.rs": "9fa037cbcdd40e0194f864d7c197383b5defb023d08f0fbf43a8ebf60b173321",
+    "src/matrix_clip.rs": "bbfd1a97e0cc8faa3286a36c6a1ac60c333f53e8be636a5d6fd3d655a639697a",
+    "src/matrix_drag.rs": "1ae3a67952112865b82421cb6fc8f29eed74acfd0e8cf1a6d8913dae5364ed6a",
+    "src/matrix_view.rs": "c33008e394d1b2179980c0a3885d4f2a4197e9c4df57a404df799cfe32d0a08e",
+    "src/priority_style.rs": "0d3d7811d3343fd4f4eed555b499470507c5d3edc30747e6ddb611cb3aa168c3",
+    "src/storage.rs": "313a2deef1ed3509be5341b2ba4bb0c0a77dd7c59b519ad3107fd76f398b2d91",
+    "src/storage_job.rs": "4e1d6b4959c3518d7f46843783c2fb06815e86cafb37f2ebcef45ea22bbd5c4f",
+    "src/tasks.rs": "1b2168ed645f2155678077f3e26fa224b98edfbcad7a3b44e552a26037e53654",
+    "src/tray.rs": "47c45f5b40bcc2c1df0bced50058d8b2e051c45a51262e9a65680555e281a218"
+  }
+}

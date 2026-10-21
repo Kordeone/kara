@@ -8,6 +8,7 @@ use std::{path::PathBuf, sync::Arc};
 pub struct State {
     pub open: bool,
     pub busy: bool,
+    pub progress: Option<&'static str>,
     pub pending: Option<Arc<Prepared>>,
     pub notice: Option<String>,
     pub auto_enabled: bool,
@@ -31,7 +32,9 @@ pub enum Action {
     Close,
     Export,
     Restore,
+    #[cfg(test)]
     Exported(Result<Option<PathBuf>, String>),
+    #[cfg(test)]
     Loaded(Result<Option<Arc<Prepared>>, String>),
     Confirm,
     ChooseReplace,
@@ -41,6 +44,7 @@ pub enum Action {
     Amount(String),
     Unit(usize),
     ChooseFolder,
+    #[cfg(test)]
     FolderChosen(Result<Option<PathBuf>, String>),
     SaveAutomatic,
     Clear,
@@ -58,6 +62,10 @@ impl State {
             return None;
         }
         let message = |action| Message::Backup(action);
+        if self.busy && (self.clear_open || self.pending.is_some()) {
+            return Some(widget::dialog().title(self.progress.unwrap_or("Working…"))
+                .body("The transaction is running safely in the background. Please wait; Quit will finish after the operation.").into());
+        }
         if self.clear_open {
             return Some(widget::dialog().title("Clear All Data?")
                 .body(format!("Clear all {tasks} tasks, {lists} lists and Kara's saved preferences, including automatic backup settings. A verified recovery backup is required first. Manual backups, automatic archives and recovery files will remain. Type CLEAR to confirm."))
@@ -225,7 +233,8 @@ impl State {
         let mut status = widget::column::with_capacity(3).spacing(cosmic::theme::spacing().space_s);
         if self.busy {
             status = status.push(widget::text::body(
-                "Waiting for the file dialog or file operation…",
+                self.progress
+                    .unwrap_or("Waiting for the file dialog or file operation…"),
             ));
         }
         if let Some(notice) = &self.notice {

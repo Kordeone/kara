@@ -21,6 +21,7 @@ pub enum Action {
     Add(Quadrant),
     Classify(String, Quadrant),
     Reorder(String, Direction),
+    Page(Quadrant, usize),
     DragStart(Payload, Task),
     DragHover(Placement),
     DragOffered(Placement),
@@ -150,6 +151,7 @@ fn task_content<'a>(
         .spacing(spacing.space_s)
         .width(Length::Fill);
     let tasks = matrix::ordered(store.tasks(), list, quadrant);
+    let range = matrix::page_range(tasks.len(), drag.page(list, quadrant));
     let empty = tasks.is_empty();
     if empty {
         // The first task will replace the empty state at the top, not below it.
@@ -159,7 +161,7 @@ fn task_content<'a>(
         content = content.push(widget::text::body("No tasks in this quadrant."));
     }
     let mut completed = false;
-    for task in tasks {
+    for (index, task) in tasks.iter().enumerate().take(range.end).skip(range.start) {
         if task.completed && !completed {
             let end = placement(list, quadrant, None);
             content = content.push(drop_line(
@@ -171,14 +173,25 @@ fn task_content<'a>(
         let target = placement(list, quadrant, Some(&task.id));
         let row = widget::column::with_capacity(2)
             .push(drop_line(drag.hover.as_ref() == Some(&target)))
-            .push(task_row(store, task, can_write, priority_task, drag));
+            .push(task_row(
+                task,
+                matrix::row_neighbors(&tasks, index),
+                can_write,
+                priority_task,
+                drag,
+            ));
         content = content.push(drop_zone(row.into(), target, can_write, drag));
     }
-    let end = placement(list, quadrant, None);
+    // The page's trailing slot inserts before the NEXT record in the same
+    // completion group, rather than silently appending to the entire quadrant.
+    let before = matrix::page_end_anchor(&tasks, range.end);
+    let end = placement(list, quadrant, before);
     if !empty {
-        content = content.push(drop_line(
-            drag.hover.as_ref() == Some(&end)
-                && (drag.source().is_some_and(|t| t.completed) || !completed),
+        content = content.push(drop_zone(
+            drop_line(drag.hover.as_ref() == Some(&end)),
+            end.clone(),
+            can_write,
+            drag,
         ));
     }
     widget::container(content)
@@ -197,6 +210,14 @@ fn add_button(quadrant: Quadrant, can_write: bool) -> Element<'static, Message> 
     .height(Length::Fixed(36.0))
     .on_press_maybe(can_write.then_some(Message::Matrix(Action::Add(quadrant))))
     .into()
+}
+
+pub fn scroll_id(
+    drag: &matrix_drag::State,
+    list: Option<&str>,
+    quadrant: Quadrant,
+) -> cosmic::widget::Id {
+    drag.widget_id(format!("matrix-scroll:{list:?}:{quadrant:?}"))
 }
 
 fn quadrant<'a>(
@@ -229,9 +250,11 @@ fn quadrant<'a>(
                 priority_task,
                 drag,
             ))
+            .id(scroll_id(drag, list, quadrant))
             .height(Length::Fill)
             .width(Length::Fill),
         ))
+        .push(page_controls(store, list, quadrant, drag))
         .height(Length::Fill);
     let end = placement(list, quadrant, None);
     let highlighted = hovered_quadrant(drag, list, quadrant);
@@ -250,9 +273,62 @@ fn quadrant<'a>(
     drop_zone(panel, end, can_write, drag)
 }
 
-fn task_row<'a>(
+fn page_controls<'a>(
     store: &'a Store,
+    list: Option<&str>,
+    quadrant: Quadrant,
+    drag: &matrix_drag::State,
+) -> Element<'a, Message> {
+    let total = store
+        .tasks()
+        .iter()
+        .filter(|t| t.list_id.as_deref() == list && t.priority.quadrant() == quadrant)
+        .count();
+    if total <= matrix::PAGE_SIZE {
+        return widget::space::vertical().height(0).into();
+    }
+    let range = matrix::page_range(total, drag.page(list, quadrant));
+    let page = range.start / matrix::PAGE_SIZE;
+    let selected: Element<'a, Message> = if drag.pending() {
+        widget::text::caption(format!("{}–{} of {total}", range.start + 1, range.end))
+            .width(Length::Fill)
+            .into()
+    } else {
+        let choices: Vec<String> = (0..total.div_ceil(matrix::PAGE_SIZE))
+            .map(|page| {
+                let range = matrix::page_range(total, page);
+                format!("{}–{} of {total}", range.start + 1, range.end)
+            })
+            .collect();
+        widget::dropdown(choices, Some(page), move |page| {
+            Message::Matrix(Action::Page(quadrant, page))
+        })
+        .width(Length::Fill)
+        .into()
+    };
+    widget::row::with_capacity(3)
+        .spacing(cosmic::theme::spacing().space_xxs)
+        .align_y(Alignment::Center)
+        .push(
+            widget::button::text("Previous").on_press_maybe(
+                (!drag.pending() && range.start > 0)
+                    .then(|| Message::Matrix(Action::Page(quadrant, page - 1))),
+            ),
+        )
+        .push(selected)
+        .push(
+            widget::button::text("Next").on_press_maybe(
+                (!drag.pending() && range.end < total)
+                    .then_some(Message::Matrix(Action::Page(quadrant, page + 1))),
+            ),
+        )
+        .padding(cosmic::theme::spacing().space_s)
+        .into()
+}
+
+fn task_row<'a>(
     task: &'a Task,
+    neighbors: [bool; 2],
     can_write: bool,
     priority_task: Option<&str>,
     drag: &'a matrix_drag::State,
@@ -322,7 +398,7 @@ fn task_row<'a>(
         .push(priority_control)
         .push(title);
 
-    for (direction, asset, label) in [
+    for (index, (direction, asset, label)) in [
         (
             Direction::Up,
             include_bytes!("../assets/tabler/arrow-up.svg").as_slice(),
@@ -333,7 +409,10 @@ fn task_row<'a>(
             include_bytes!("../assets/tabler/arrow-down.svg").as_slice(),
             "Move task down",
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         actions = actions.push(
             widget::button::icon(icon::from_svg_bytes(asset).symbolic(true))
                 .width(Length::Fixed(36.0))
@@ -341,7 +420,7 @@ fn task_row<'a>(
                 .name(label)
                 .tooltip(label)
                 .on_press_maybe(
-                    (can_write && matrix::neighbor(store.tasks(), &task.id, direction).is_some())
+                    (can_write && neighbors[index])
                         .then(|| Message::Matrix(Action::Reorder(task.id.clone(), direction))),
                 ),
         );
@@ -571,6 +650,40 @@ fn metadata(task: &Task) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn ten_thousand_task_native_view_builds_only_one_page_and_any_page_is_reachable() {
+        use cosmic::iced::{
+            Size,
+            advanced::{layout::Limits, renderer::Headless, widget::Tree},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("tasks.json")).unwrap();
+        let tasks: Vec<_> = (0..10000)
+            .map(|i| {
+                let mut t = Task::new(&format!("Task {i}")).unwrap();
+                t.matrix_order = Some(i);
+                t
+            })
+            .collect();
+        store.replace(tasks).unwrap();
+        let renderer = cosmic::Renderer::new(cosmic::font::default(), 14.into(), Some("tiny-skia"))
+            .await
+            .unwrap();
+        let mut drag = matrix_drag::State::default();
+        for page in [0, 199] {
+            drag.set_page(None, Quadrant::NotImportantNotUrgent, page);
+            let mut element = view(Some(&store), None, true, None, &drag);
+            let mut tree = Tree::new(&element);
+            let layout = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(1200., 800.)),
+            );
+            assert!(layout.size().width <= 1200. && layout.size().height <= 800.);
+            assert_eq!(drag.cached_handle_count(), if page == 0 { 50 } else { 100 });
+        }
+        assert_eq!(store.tasks().len(), 10000);
+    }
     #[test]
     fn matrix_controls_resolve_to_theme_tintable_tabler_svgs() {
         for asset in [

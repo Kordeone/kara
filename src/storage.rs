@@ -165,6 +165,10 @@ fn ensure_migration_backup(path: &Path, original: &[u8], suffix: &str) -> Result
 thread_local! {
     static FAIL_COMMIT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+#[cfg(test)]
+pub(crate) fn fail_next_commit_sync() {
+    FAIL_COMMIT_SYNC.with(|flag| flag.set(true));
+}
 fn sync_committed_directory(dir: &Path) -> io::Result<()> {
     #[cfg(test)]
     if FAIL_COMMIT_SYNC.with(|flag| flag.replace(false)) {
@@ -175,11 +179,11 @@ fn sync_committed_directory(dir: &Path) -> io::Result<()> {
 
 pub struct Store {
     path: PathBuf,
-    _lock: File,
+    _lock: Option<File>,
     snapshot: Option<Vec<u8>>,
     migration_version: Option<u32>,
-    tasks: Vec<Task>,
-    lists: Vec<TaskList>,
+    tasks: std::sync::Arc<Vec<Task>>,
+    lists: std::sync::Arc<Vec<TaskList>>,
     sort_mode: TaskSort,
     sort_ascending: bool,
     show_completed: bool,
@@ -288,22 +292,58 @@ impl Store {
             };
         Ok(Self {
             path,
-            _lock: lock,
+            _lock: Some(lock),
             snapshot,
             migration_version,
-            tasks,
-            lists,
+            tasks: std::sync::Arc::new(tasks),
+            lists: std::sync::Arc::new(lists),
             sort_mode,
             sort_ascending,
             show_completed,
             automatic_backups,
         })
     }
+    /// An O(1) immutable view: no duplicate lock and no cloned document bytes.
+    /// It cannot check/write disk and is replaced only by the owning worker result.
+    pub fn frozen(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            _lock: None,
+            snapshot: None,
+            migration_version: None,
+            tasks: self.tasks.clone(),
+            lists: self.lists.clone(),
+            sort_mode: self.sort_mode,
+            sort_ascending: self.sort_ascending,
+            show_completed: self.show_completed,
+            automatic_backups: self.automatic_backups.clone(),
+        }
+    }
+    /// Only a non-owning view may reload after a failed worker. Never infer a
+    /// different XDG location or discard a live writer's expected byte snapshot.
+    pub fn reopen_view(&self) -> Result<Self, String> {
+        if self.is_writable() {
+            return Err("A live writer must retain its current storage snapshot.".into());
+        }
+        if !fs::metadata(&self.path).is_ok_and(|m| m.is_file()) {
+            return Err("Task data is unavailable after the worker failed. Restore its original location before retrying; no empty defaults were loaded.".into());
+        }
+        let reopened = Self::open(self.path.clone())?;
+        if reopened.snapshot.is_none() {
+            return Err(
+                "Task data disappeared during recovery; no empty defaults were loaded.".into(),
+            );
+        }
+        Ok(reopened)
+    }
+    pub fn is_writable(&self) -> bool {
+        self._lock.is_some()
+    }
     fn backup_data(&self) -> crate::backup::Data {
         crate::backup::Data {
             version: 7,
-            tasks: self.tasks.clone(),
-            lists: self.lists.clone(),
+            tasks: self.tasks.as_ref().clone(),
+            lists: self.lists.as_ref().clone(),
             sort_mode: self.sort_mode,
             sort_ascending: self.sort_ascending,
             show_completed: self.show_completed,
@@ -353,8 +393,8 @@ impl Store {
             last_success: self.automatic_backups.last_success,
         };
         self.commit_full(
-            self.tasks.clone(),
-            self.lists.clone(),
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
             self.sort_mode,
             self.sort_ascending,
             self.show_completed,
@@ -362,6 +402,9 @@ impl Store {
         )
     }
     pub fn apply_retention(&self) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("A read-only view cannot manage automatic archives.".into());
+        }
         let dir = self.automatic_directory();
         if !dir.try_exists().map_err(|e| e.to_string())? {
             return Ok(());
@@ -383,8 +426,8 @@ impl Store {
             ..self.automatic_backups.clone()
         };
         self.commit_full(
-            self.tasks.clone(),
-            self.lists.clone(),
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
             self.sort_mode,
             self.sort_ascending,
             self.show_completed,
@@ -539,8 +582,8 @@ impl Store {
         show_completed: bool,
     ) -> Result<(), String> {
         self.commit_with_preferences(
-            self.tasks.clone(),
-            self.lists.clone(),
+            self.tasks.as_ref().clone(),
+            self.lists.as_ref().clone(),
             sort_mode,
             sort_ascending,
             show_completed,
@@ -548,19 +591,19 @@ impl Store {
     }
     pub fn upsert_list(&mut self, mut list: TaskList) -> Result<(), String> {
         list.name = list.name.trim().into();
-        let mut lists = self.lists.clone();
+        let mut lists = self.lists.as_ref().clone();
         if let Some(old) = lists.iter_mut().find(|old| old.id == list.id) {
             *old = list;
         } else {
             lists.push(list);
         }
-        self.commit(self.tasks.clone(), lists)
+        self.commit(self.tasks.as_ref().clone(), lists)
     }
     pub fn delete_list(&mut self, id: &str) -> Result<(), String> {
         if !self.lists.iter().any(|list| list.id == id) {
             return Err("List no longer exists.".into());
         }
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::move_list_to_inbox(&mut tasks, id);
         let lists = self
             .lists
@@ -571,6 +614,9 @@ impl Store {
         self.commit(tasks, lists)
     }
     pub fn check_storage(&self) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("Storage is owned by the running background operation.".into());
+        }
         if read(&self.path)? != self.snapshot {
             return Err("Task storage changed outside Kara. Restart Kara to reload it; the file has been preserved.".into());
         }
@@ -581,7 +627,7 @@ impl Store {
     /// Publish changes only after atomic replacement. A directory sync error is reported
     /// after publication because replacement has already succeeded at that point.
     pub fn replace(&mut self, tasks: Vec<Task>) -> Result<(), String> {
-        self.commit(tasks, self.lists.clone())
+        self.commit(tasks, self.lists.as_ref().clone())
     }
     fn commit(&mut self, tasks: Vec<Task>, lists: Vec<TaskList>) -> Result<(), String> {
         self.commit_with_preferences(
@@ -619,6 +665,9 @@ impl Store {
         show_completed: bool,
         automatic_backups: crate::automatic::Preferences,
     ) -> Result<(), String> {
+        if !self.is_writable() {
+            return Err("A read-only view cannot save task data.".into());
+        }
         automatic_backups.validate()?;
         tasks::validate_document(&tasks, &lists)?;
         matrix::normalize(&mut tasks);
@@ -664,8 +713,8 @@ impl Store {
         }
         temp.persist(&self.path)
             .map_err(|e| format!("Cannot replace task data: {e}"))?;
-        self.tasks = tasks;
-        self.lists = lists;
+        self.tasks = std::sync::Arc::new(tasks);
+        self.lists = std::sync::Arc::new(lists);
         self.sort_mode = sort_mode;
         self.sort_ascending = sort_ascending;
         self.show_completed = show_completed;
@@ -677,7 +726,7 @@ impl Store {
     }
     pub fn upsert(&mut self, mut task: Task) -> Result<(), String> {
         tasks::validate(std::slice::from_ref(&task))?;
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         // Ordinary editor saves cannot change ordering, even if a draft has a
         // missing/stale rank. Only scope changes append; reorder has its own API.
         task.matrix_order = tasks
@@ -696,12 +745,12 @@ impl Store {
         self.replace(tasks)
     }
     pub fn classify(&mut self, id: &str, quadrant: Quadrant) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::classify(&mut tasks, id, quadrant)?;
         self.replace(tasks)
     }
     pub fn reorder(&mut self, id: &str, direction: Direction) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         matrix::reorder(&mut tasks, id, direction)?;
         self.replace(tasks)
     }
@@ -710,14 +759,14 @@ impl Store {
         id: &str,
         placement: &matrix::Placement,
     ) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         if matrix::move_task(&mut tasks, id, placement)? {
             self.replace(tasks)?;
         }
         Ok(())
     }
     pub fn toggle(&mut self, id: &str) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         let task = tasks
             .iter_mut()
             .find(|t| t.id == id)
@@ -726,7 +775,7 @@ impl Store {
         self.replace(tasks)
     }
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
-        let mut tasks = self.tasks.clone();
+        let mut tasks = self.tasks.as_ref().clone();
         tasks.retain(|t| t.id != id);
         self.replace(tasks)
     }
@@ -735,6 +784,29 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frozen_view_shares_records_never_writes_and_retains_old_values() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("tasks.json");
+        let mut writer = Store::open(path.clone()).unwrap();
+        writer.upsert(Task::new("Original").unwrap()).unwrap();
+        let mut view = writer.frozen();
+        let id = writer.tasks()[0].id.clone();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(view.tasks().as_ptr(), writer.tasks().as_ptr());
+        assert_eq!(view.lists().as_ptr(), writer.lists().as_ptr());
+        assert!(!view.is_writable());
+        assert!(view.check_storage().is_err());
+        assert!(view.toggle(&id).is_err());
+        assert!(view.clear_all_data().is_err());
+        assert!(view.apply_retention().is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        writer.toggle(&id).unwrap();
+        assert!(writer.tasks()[0].completed);
+        assert!(!view.tasks()[0].completed);
+        drop(view);
+        assert!(Store::open(path).is_err()); // only the original writer owns the lock
+    }
     #[test]
     fn configured_destinations_survive_restart_and_never_retire_previous_archives() {
         let root = tempfile::tempdir().unwrap();

@@ -71,17 +71,54 @@ pub fn classify(tasks: &mut [Task], id: &str, quadrant: Quadrant) -> Result<(), 
 }
 
 pub fn neighbor<'a>(tasks: &'a [Task], id: &str, direction: Direction) -> Option<&'a str> {
-    let task = tasks.iter().find(|task| task.id == id)?;
-    let ordered = ordered(tasks, task.list_id.as_deref(), task.priority.quadrant());
-    let position = ordered.iter().position(|task| task.id == id)?;
-    let index = match direction {
-        Direction::Up => position.checked_sub(1)?,
-        Direction::Down => position.checked_add(1)?,
+    let (source, task) = tasks.iter().enumerate().find(|(_, t)| t.id == id)?;
+    let key = |index: usize| {
+        (
+            tasks[index].matrix_order.is_none(),
+            tasks[index].matrix_order.unwrap_or(0),
+            index,
+        )
     };
+    let current = key(source);
+    let candidates = tasks.iter().enumerate().filter(|(i, t)| {
+        *i != source
+            && t.list_id == task.list_id
+            && t.priority == task.priority
+            && t.completed == task.completed
+    });
+    match direction {
+        Direction::Up => candidates
+            .filter(|(i, _)| key(*i) < current)
+            .max_by_key(|(i, _)| key(*i)),
+        Direction::Down => candidates
+            .filter(|(i, _)| key(*i) > current)
+            .min_by_key(|(i, _)| key(*i)),
+    }
+    .map(|(_, t)| t.id.as_str())
+}
+/// Bounded presentation, independent of the task's persisted ordering.
+pub const PAGE_SIZE: usize = 50;
+pub fn page_range(total: usize, page: usize) -> std::ops::Range<usize> {
+    let start = page.min(total.saturating_sub(1) / PAGE_SIZE) * PAGE_SIZE;
+    start..start.saturating_add(PAGE_SIZE).min(total)
+}
+pub fn page_end_anchor<'a>(ordered: &[&'a Task], end: usize) -> Option<&'a str> {
     ordered
-        .get(index)
-        .filter(|other| other.completed == task.completed)
-        .map(|task| task.id.as_str())
+        .get(end)
+        .filter(|next| {
+            ordered
+                .get(end.saturating_sub(1))
+                .is_some_and(|last| last.completed == next.completed)
+        })
+        .map(|t| t.id.as_str())
+}
+pub fn row_neighbors(ordered: &[&Task], index: usize) -> [bool; 2] {
+    let task = ordered[index];
+    [
+        index.checked_sub(1).and_then(|i| ordered.get(i)),
+        ordered.get(index + 1),
+    ]
+    .map(|other| other.is_some_and(|t| t.completed == task.completed))
 }
 
 pub fn reorder(tasks: &mut [Task], id: &str, direction: Direction) -> Result<(), String> {
@@ -121,12 +158,23 @@ fn destination(
     if task.list_id != placement.list_id {
         return Err("A Matrix drop cannot change the task list.".into());
     }
-    let ordered = ordered(tasks, placement.list_id.as_deref(), placement.quadrant);
-    let mut indices: Vec<_> = ordered
-        .into_iter()
-        .filter(|t| t.id != id)
-        .map(|t| tasks.iter().position(|other| other.id == t.id).unwrap())
+    let mut indices: Vec<_> = tasks
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| {
+            *i != source
+                && t.list_id == placement.list_id
+                && t.priority.quadrant() == placement.quadrant
+        })
+        .map(|(i, _)| i)
         .collect();
+    indices.sort_by_key(|&i| {
+        (
+            tasks[i].completed,
+            tasks[i].matrix_order.is_none(),
+            tasks[i].matrix_order.unwrap_or(0),
+        )
+    });
     let position = if let Some(before) = &placement.before {
         if before == id && task.priority.quadrant() == placement.quadrant {
             return Ok((source, Vec::new())); // drop on itself is a no-op
@@ -173,12 +221,21 @@ pub fn move_task(tasks: &mut [Task], id: &str, placement: &Placement) -> Result<
     }
     tasks[source].priority = placement.quadrant.priority();
     if old != placement.quadrant {
-        let remaining: Vec<_> = ordered(tasks, placement.list_id.as_deref(), old)
+        let mut remaining: Vec<_> = tasks
             .iter()
-            .map(|t| t.id.clone())
+            .enumerate()
+            .filter(|(_, t)| t.list_id == placement.list_id && t.priority.quadrant() == old)
+            .map(|(i, _)| i)
             .collect();
-        for (rank, id) in remaining.iter().enumerate() {
-            tasks.iter_mut().find(|t| &t.id == id).unwrap().matrix_order = Some(rank as u64);
+        remaining.sort_by_key(|&i| {
+            (
+                tasks[i].completed,
+                tasks[i].matrix_order.is_none(),
+                tasks[i].matrix_order.unwrap_or(0),
+            )
+        });
+        for (rank, &index) in remaining.iter().enumerate() {
+            tasks[index].matrix_order = Some(rank as u64);
         }
     }
     for (rank, &index) in indices.iter().enumerate() {
@@ -249,6 +306,94 @@ mod tests {
             quadrant,
             before: before.map(str::to_string),
         }
+    }
+    #[test]
+    fn ten_thousand_rows_have_complete_bounded_pages_and_global_neighbors() {
+        let mut tasks: Vec<_> = (0..10_000)
+            .map(|i| {
+                let mut t = Task::new(&format!("Task {i}")).unwrap();
+                t.priority = crate::tasks::Priority::P3;
+                t.completed = i % 7 == 0;
+                t.matrix_order = Some(i);
+                t
+            })
+            .collect();
+        normalize(&mut tasks);
+        let rows = ordered(&tasks, None, Quadrant::ImportantUrgent);
+        let mut ids = std::collections::HashSet::new();
+        for page in 0..rows.len().div_ceil(PAGE_SIZE) {
+            let range = page_range(rows.len(), page);
+            assert!(range.len() <= PAGE_SIZE);
+            for index in range {
+                assert!(ids.insert(rows[index].id.clone()));
+                let flags = row_neighbors(&rows, index);
+                if index % PAGE_SIZE == 0 || index % PAGE_SIZE == PAGE_SIZE - 1 {
+                    assert_eq!(
+                        flags[0],
+                        neighbor(&tasks, &rows[index].id, Direction::Up).is_some()
+                    );
+                    assert_eq!(
+                        flags[1],
+                        neighbor(&tasks, &rows[index].id, Direction::Down).is_some()
+                    );
+                }
+            }
+        }
+        assert_eq!(ids.len(), tasks.len());
+        assert_eq!(page_range(0, usize::MAX), 0..0);
+        assert_eq!(page_range(10_000, usize::MAX), 9950..10000);
+        let source = rows[200].id.clone();
+        let anchor = page_end_anchor(&rows, PAGE_SIZE).unwrap().to_owned();
+        let original = tasks.iter().find(|t| t.id == source).unwrap().clone();
+        let placement = Placement {
+            list_id: None,
+            quadrant: Quadrant::ImportantUrgent,
+            before: Some(anchor.clone()),
+        };
+        move_task(&mut tasks, &source, &placement).unwrap();
+        let rows = ordered(&tasks, None, Quadrant::ImportantUrgent);
+        assert_eq!(rows[50].id, source);
+        assert_eq!(rows[51].id, anchor);
+        let mut moved = tasks.iter().find(|t| t.id == source).unwrap().clone();
+        moved.matrix_order = original.matrix_order;
+        assert_eq!(moved, original);
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|t| &t.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            10_000
+        );
+    }
+    #[test]
+    fn page_edges_keep_completion_groups_and_indexed_drops_match_existing_semantics() {
+        let mut tasks: Vec<_> = (0..103)
+            .map(|i| {
+                let mut t = Task::new(&format!("Task {i}")).unwrap();
+                t.completed = i >= 50;
+                t.matrix_order = Some(i);
+                t
+            })
+            .collect();
+        normalize(&mut tasks);
+        let rows = ordered(&tasks, None, Quadrant::NotImportantNotUrgent);
+        assert!(page_end_anchor(&rows, 50).is_none());
+        assert_eq!(page_end_anchor(&rows, 100), Some(rows[100].id.as_str()));
+        assert!(page_end_anchor(&rows, 103).is_none());
+        let id = rows[80].id.clone();
+        move_task(
+            &mut tasks,
+            &id,
+            &Placement {
+                list_id: None,
+                quadrant: Quadrant::ImportantUrgent,
+                before: None,
+            },
+        )
+        .unwrap();
+        assert!(tasks.iter().find(|t| t.id == id).unwrap().completed);
+        assert_eq!(ordered(&tasks, None, Quadrant::ImportantUrgent)[0].id, id);
     }
     #[test]
     fn drops_move_between_quadrants_at_exact_positions_without_changing_other_fields() {

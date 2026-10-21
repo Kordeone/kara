@@ -53,8 +53,31 @@ pub struct State {
     ended: bool,
     offered: Option<Placement>,
     ids: RefCell<HashMap<String, cosmic::widget::Id>>,
+    pages: HashMap<(Option<String>, crate::tasks::Quadrant), usize>,
 }
 impl State {
+    pub fn page(&self, list: Option<&str>, quadrant: crate::tasks::Quadrant) -> usize {
+        self.pages
+            .get(&(list.map(str::to_owned), quadrant))
+            .copied()
+            .unwrap_or(0)
+    }
+    pub fn set_page(&mut self, list: Option<&str>, quadrant: crate::tasks::Quadrant, page: usize) {
+        if !self.pending() {
+            self.pages.insert((list.map(str::to_owned), quadrant), page);
+        }
+    }
+    pub fn focus_task(&mut self, tasks: &[Task], id: &str) {
+        if let Some(task) = tasks.iter().find(|t| t.id == id) {
+            let rows = matrix::ordered(tasks, task.list_id.as_deref(), task.priority.quadrant());
+            if let Some(index) = rows.iter().position(|t| t.id == id) {
+                self.pages.insert(
+                    (task.list_id.clone(), task.priority.quadrant()),
+                    index / matrix::PAGE_SIZE,
+                );
+            }
+        }
+    }
     pub fn start(&mut self, payload: Payload, task: Task) {
         if payload.id == task.id {
             self.session = Some((payload, task));
@@ -70,6 +93,14 @@ impl State {
         self.hover = None;
         self.ended = false;
         self.offered = None;
+    }
+    #[cfg(test)]
+    pub(crate) fn cached_handle_count(&self) -> usize {
+        self.ids
+            .borrow()
+            .keys()
+            .filter(|key| key.starts_with("matrix-handle:"))
+            .count()
     }
     pub fn widget_id(&self, key: String) -> cosmic::widget::Id {
         // Custom named IDs compare equal by name, but DndDestination routes by

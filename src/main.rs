@@ -16,6 +16,7 @@ mod matrix_drag;
 mod matrix_view;
 mod priority_style;
 mod storage;
+mod storage_job;
 mod tasks;
 mod tray;
 
