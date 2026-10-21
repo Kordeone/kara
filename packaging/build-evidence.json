@@ -1,0 +1,136 @@
+{
+  "base_commit": "7514dfc460e0d00bb0fba1e321d55115e990f3b1",
+  "branch": "feat/release-packaging",
+  "application_source_changed": false,
+  "rust": "1.99.1",
+  "builder_base": "ubuntu:22.04@sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04",
+  "native_regressions": {
+    "fmt": "passed",
+    "check_locked": "passed",
+    "strict_clippy_all_targets": "passed",
+    "regular_tests_passed": 176,
+    "regular_tests_failed": 0,
+    "regular_tests_ignored": 1,
+    "isolated_dbus_passed": 1,
+    "debug_build": "passed",
+    "release_build": "passed"
+  },
+  "packaging_tests_passed": 9,
+  "metadata": {
+    "appstream_1.0.5": "passed; uppercase-ID/release-history pedantic notices only",
+    "appstream_0.15.2": "passed; developer tag informational notice only",
+    "desktop_file_validate": "passed"
+  },
+  "runtime_commits": {
+    "org.freedesktop.Platform//25.08": "b7aba340fd291e08bf26442d43a0e4adb6733da5a06d47ff4296a964af40cc8a",
+    "org.freedesktop.Sdk//25.08": "18fa1be304b09e42dd3606f6d933e2d6a27513dd3aeee1203b2b58d59ad3db71",
+    "org.freedesktop.Sdk.Extension.rust-stable//25.08": "09784a9989ae5a7fda6a2280033ca9aa32aac6907961da8b18be4590dd261507"
+  },
+  "appimage": {
+    "minimum_glibc_policy": "2.35",
+    "payload_symbol_maxima": {
+      "usr/bin/kara": "2.35",
+      "usr/lib/libxkbcommon.so.0": "2.33"
+    },
+    "host_libraries": [
+      "libgcc_s.so.1",
+      "libstdc++.so.6",
+      "libc.so.6",
+      "libm.so.6",
+      "ld-linux-x86-64.so.2",
+      "libGL.so.1",
+      "libEGL.so.1",
+      "libvulkan.so.1"
+    ],
+    "artifact_bytes": 14223864,
+    "sha256": "57fb8bdc29a36acaca88889230ec01e1203bed80708449795b57f35da23950ca",
+    "tools": [
+      {
+        "repository": "AppImage/appimagetool",
+        "release_tag": "1.9.1",
+        "release_id": 263382884,
+        "asset_id": 324406736,
+        "url": "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+        "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+        "upstream_digest": "sha256:ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+        "size": 15092216
+      },
+      {
+        "repository": "AppImage/type2-runtime",
+        "release_tag": "20251108",
+        "release_id": 260789861,
+        "asset_id": 326011592,
+        "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+        "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+        "upstream_digest": "sha256:2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+        "size": 944632
+      }
+    ]
+  },
+  "appimage_repeat_sha256": "57fb8bdc29a36acaca88889230ec01e1203bed80708449795b57f35da23950ca",
+  "read_only_network_disabled_cached_build": "passed",
+  "flatpak": {
+    "artifact": null,
+    "source_manifest_parsed": true,
+    "staging_permissions_match_allowlist": true,
+    "runtime_loader_resolution": "all needed libraries resolved from Freedesktop Platform 25.08",
+    "native_sdk_build": "blocked before compilation",
+    "export": "blocked by icon-validation sandbox",
+    "error": "bwrap: Creating new namespace failed: Operation not permitted",
+    "privileged_or_sandbox_bypass_used": false,
+    "install_and_launch": "not performed; no bundle produced",
+    "finished_metadata": {
+      "Application": {
+        "name": "io.github.kordeone.Kara",
+        "runtime": "org.freedesktop.Platform/x86_64/25.08",
+        "sdk": "org.freedesktop.Sdk/x86_64/25.08",
+        "command": "kara"
+      },
+      "Context": {
+        "sockets": "wayland;",
+        "devices": "dri;",
+        "filesystems": "xdg-config/cosmic/com.system76.CosmicTheme.Mode:ro;xdg-config/cosmic/com.system76.CosmicTk:ro;xdg-config/cosmic/com.system76.CosmicTheme.Light:ro;xdg-config/cosmic/com.system76.CosmicTheme.Dark:ro;"
+      },
+      "Session Bus Policy": {
+        "org.kde.StatusNotifierWatcher": "talk",
+        "com.system76.CosmicSettingsDaemon.Config": "talk",
+        "com.system76.CosmicSettingsDaemon": "talk"
+      }
+    }
+  },
+  "graphical_verification": "not performed; headless Debian",
+  "appimage_headless_launch": {
+    "exit": 101,
+    "reason": "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.",
+    "meaning": "application entry reached; not a GUI success"
+  },
+  "license_inventory_records": 481,
+  "license_review_flags": [
+    "drm-fourcc full upstream MIT text absent at locked revision; preserve original declaration/author evidence",
+    "runtime exact-source/relink obligations and dependency advisories require public-release review"
+  ],
+  "sizes_bytes": {
+    "ubuntu_release_unstripped": 49350088,
+    "ubuntu_release_stripped": 35786568,
+    "debian_debug": 742593368,
+    "debian_release": 49362680
+  },
+  "sources_sha256": {
+    "Cargo.lock": "bec4f266aa2ae6ae01e1d653b88c10dfd099d45d6fe5b852338035d94e0aae72",
+    "build.rs": "f976c871c2887444a3aa64e7427fcfd31990878facf0e1bf5002594d2ad72add",
+    "resources/app.desktop": "2b6beafde5bb3cd01c68c0a51221107ab4c9afb973ed9612968efa806947f27b",
+    "resources/app.metainfo.xml": "bffd99630ea12fd78be55e3d29121bd31f3719b5bba80283dd04bd6e6980426d",
+    "rust-toolchain.toml": "f715f440167e20fd8ea9afa0498c3d1ab80174cfcb8cbc895f106a34d907a1e1",
+    "packaging/build.py": "1026238feb88ce0ddd0068bca07166a2674f1892e49b6bd002eece2653bc41cd",
+    "packaging/appimage/build.py": "75b15218d94415b935881aefe07f276d98a35fdff7db5f1d0e022d4f2e994f03",
+    "packaging/flatpak/assemble.py": "1569016fc633320ca9795158698ff62530314e11f67a2eaa83907e710e83e2da",
+    "packaging/flatpak/io.github.kordeone.Kara.json": "313a2d999d2fba9eed09a50d6481c687dae73341d22b741a8cf5895f9cbaa203"
+  },
+  "logs_directory": "/var/tmp/kara-packaging-build",
+  "final_native_target_directory": "/var/tmp/kara-packaging-build/debian-target",
+  "native_cache_method": "Private non-hardlinked copy of warm cache; earlier native pass reused existing external cache",
+  "final_validation_log": "/var/tmp/kara-packaging-build/validation-delivery-final.log",
+  "final_validation_exit": 0,
+  "appimage_delivery_ldd": "\tlinux-vdso.so.1 (0x00007f4176a87000)\n\tlibxkbcommon.so.0 => /work/appimage-delivery-check/squashfs-root/usr/lib/libxkbcommon.so.0 (0x00007f4176a3a000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f41747e0000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f41746f9000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f41744d0000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f4176a89000)\n",
+  "appimage_delivery_headless_log": "\nthread 'main' (9810) panicked at /work/cargo/git/checkouts/libcosmic-41009aea1d72760b/e1f2cd2/iced/winit/src/lib.rs:94:39:\nCreate event loop: NotSupported(NotSupportedError { reason: \"neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.\" })\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+}

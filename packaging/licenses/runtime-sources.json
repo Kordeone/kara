@@ -1,0 +1,32 @@
+[
+  {
+    "file": "musl-COPYRIGHT",
+    "url": "https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT",
+    "sha256": "b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b",
+    "scope": "AppImage runtime third-party notices; full exact-source/relink review required before public distribution"
+  },
+  {
+    "file": "libfuse-LGPL2.txt",
+    "url": "https://raw.githubusercontent.com/libfuse/libfuse/master/LGPL2.txt",
+    "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+    "scope": "AppImage runtime third-party notices; full exact-source/relink review required before public distribution"
+  },
+  {
+    "file": "squashfuse-LICENSE",
+    "url": "https://raw.githubusercontent.com/vasi/squashfuse/master/LICENSE",
+    "sha256": "9e909cc8a8ba27b1a649c964cf9eda37de911f3138c2b64e6d2f01703904ac13",
+    "scope": "AppImage runtime third-party notices; full exact-source/relink review required before public distribution"
+  },
+  {
+    "file": "zstd-LICENSE",
+    "url": "https://raw.githubusercontent.com/facebook/zstd/dev/LICENSE",
+    "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+    "scope": "AppImage runtime third-party notices; full exact-source/relink review required before public distribution"
+  },
+  {
+    "file": "zlib-LICENSE",
+    "url": "https://raw.githubusercontent.com/madler/zlib/master/LICENSE",
+    "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2",
+    "scope": "AppImage runtime third-party notices; full exact-source/relink review required before public distribution"
+  }
+]

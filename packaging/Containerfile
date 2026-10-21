@@ -1,0 +1,11 @@
+# Local test builder only. No host package installation or privileged container.
+FROM docker.io/library/ubuntu:22.04@sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+    libxcb1-dev libvulkan-dev libegl1-mesa-dev ca-certificates python3 python3-pil \
+    curl git flatpak flatpak-builder desktop-file-utils appstream squashfs-tools \
+    patchelf zstd dbus-x11 file \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV CARGO_HOME=/work/cargo CARGO_BUILD_JOBS=2
+WORKDIR /source

@@ -1,280 +1,278 @@
-KARA — Stage 3B: Performance and Reliability Remediation
+KARA — Stage 4: Local Flatpak and AppImage Packaging
 
-Scope and delivery
-- Branch: fix/performance-readiness
-- Worktree: /home/rapper/projects/kara-performance
-- Based on clean main 22d0b30; reviewed audit 33239ee in kara-audit.
-- No merge, push, packaging, installation, dependency update or schema change.
-  Main and all existing worktrees/backups/rescue data remain preserved.
-- Native Tasks dialog, sidebar/module layout, branding, application ID, priority
-  mappings, task IDs, due dates, notes, list assignments and storage format remain.
-- Graphical acceptance and live performance measurements remain with the owner.
+Delivery status: PARTIAL — AppImage built; Flatpak blocked by build-host isolation.
+These are unsigned local testing artifacts, not a production/public release.
+Branch: feat/release-packaging
+Worktree: /home/rapper/projects/kara-packaging
+Base/main preserved at 7514dfc460e0d00bb0fba1e321d55115e990f3b1.
+No merge, push, publication, production deployment or host software installation.
+All existing worktrees, rescue files, backups and main remain preserved.
 
-1. Matrix root causes and measured changes
-- Baseline task_row asked matrix::neighbor twice for every task. neighbor rebuilt
-  and sorted its entire group each time. A 10k concentrated diagnostic sweep alone
-  took 14.36s in this run; actual native layout median was 17.50s (audit: 20.5s).
-- Drop destination converted ordered Task refs back to vector positions using a
-  fresh linear search per row. One 10k concentrated validation took 282ms.
-- All rows were built/laid out even inside scrollables. Fixing lookup complexity
-  alone would still leave thousands of widgets, glyphs, callbacks and drop targets.
+1. Implemented packaging changes
+- Corrected AppStream description, developer/homepage/bugtracker, provides/binary,
+  categories and installed metadata path. Removed the template application ID.
+- Desktop entry now uses Exec=kara, no unsupported %F or empty MimeType;
+  Office/ProjectManagement categories. Application ID remains exactly
+  io.github.kordeone.Kara everywhere. No new D-Bus activation service is claimed.
+- Retained accepted KARA 5100 icon unchanged at 512px; added 32, 48, 64, 128 and
+  256px packaging copies. No blank template SVG is installed.
+- Added full Kara MPL-2.0 license text, Tabler MIT attribution, exact locked
+  workspace/dependency/font notices and Rust standard-library notices.
+  Supplementary texts have revision URLs and SHA256 provenance. Staging produces
+  481 dependency inventory records from the Linux-resolved graph (a conservative
+  superset including build/additional target metadata, not all necessarily linked).
+- Pinned Rust 1.99.1. Cargo.lock and Cargo.toml are unchanged. No dependency update.
+- build.rs uses OUT_DIR/xdgen and explicit rerun inputs; no source-tree target/xdgen
+  output. packaging/build.py obtains actual binary/generated metadata paths from
+  Cargo JSON and validates installed payload metadata. Just install uses this
+  contract; its syntax/staged destination were checked by dry-run, not installed.
+- Added rootless Ubuntu 22.04 Containerfile, offline preparation/validation helpers,
+  a minimal Flatpak source manifest and verified AppImage assembly/tool download.
+- No src/ application module, task schema, UI/dialog, identity, tray, data migration
+  or automatic-backup behavior changed. No new notification/reminder feature added.
 
-Implementation
-- Row Up/Down flags now use adjacent references from the ONE preordered group,
-  retaining completion boundaries and full-group neighbor semantics. The general
-  keyboard neighbor function uses one allocation-free linear scan, not sorting.
-- Destination constructs/sorts original indices directly; source-group reindexing
-  also retains indices rather than cloning IDs and searching repeatedly. Only the
-  affected ordering groups change. Stored document order/identities are preserved.
-- Investigated locked iced List: it incrementally measures and virtualizes content
-  but does not delegate native drag destinations/accessibility for these cards.
-  Replacing the proven DnD path with it would require a disproportionate wrapper.
-- Used bounded native pagination instead: <=50 task cards per quadrant; <=200
-  total. Small groups keep their existing display. Large groups show Previous,
-  Next and a native range selector (e.g. 1–50 of 10000) for direct page access.
-  Every task is counted/reachable; no records are discarded or silently filtered.
-- Pagination is ephemeral per (list ID/Inbox, quadrant), never persisted in task
-  ordering/preferences. Headers/Add remain fixed; each page scrolls independently.
-  Direct page selection resets its native scroll position to the top.
-- Page-end drop slots target the NEXT hidden record within the same completion
-  group. At an active/completed boundary they retain the existing group-append
-  semantics. Quadrant background drops still append within the matching group.
-- Create/edit/complete, classify, reorder and successful drops follow the affected
-  task's destination page. Keyboard Up/Down crosses page boundaries correctly.
-- Native drag handles, source feedback, neutral preview icon, destination highlight,
-  insertion marker and existing clipped hit boxes remain. Page switching is
-  disabled during an active drag; choose destination pages before starting it.
+2. Artifact: AppImage
+Path:
+  /home/rapper/projects/kara-packaging/dist/Kara-0.1.0-testing-x86_64.AppImage
+Bytes: 14,223,864 (13.56 MiB).
+SHA256:
+  57fb8bdc29a36acaca88889230ec01e1203bed80708449795b57f35da23950ca
+Sidecars: dist/SHA256SUMS and the .AppImage.json file.
+Artifacts are intentionally ignored by Git; source/recipes/evidence are committed.
 
-2. Nonblocking storage execution and ownership
-- Added storage_job.rs: async native chooser plus tokio::spawn_blocking for expensive
-  work. No external worker framework, database, daemon or new dependency.
-- Export encoding/publication, import reading/validation/Add preview, Add, Replace,
-  Clear, automatic backup/checkpoint/retention, destination probes and settings
-  persistence/retention now execute outside the UI thread.
-- Exactly ONE writable Store (and its original File lock/expected byte snapshot)
-  moves into the operation future. UI keeps Store::frozen(), an O(1) Arc-backed
-  tasks/lists view with no lock and no document-byte copy. It cannot commit,
-  create a backup, clear data, inspect storage as a writer or prune archives.
-- The writer returns on BOTH normal success and ordinary transaction failure.
-  The existing validated atomic/recovery/rollback methods still do the work;
-  no optimistic UI state is saved over the result. JSON/backup versions unchanged.
-- Gate permits one operation at a time and issues monotonic IDs. Duplicated/stale
-  completion messages cannot install a different Store or consume a result twice.
-  Its completion mutex only takes an ALREADY FINISHED result once; no worker holds
-  it and no UI code waits on a Store mutex, joins a thread or blocks on a future.
-- While busy, task/list writes, conflicting manual jobs and automatic ticks are
-  rejected/deferred. Read-only navigation remains available. Progress appears
-  in native text, Settings and the confirmation dialog; completion paths/errors/
-  added/skipped counts remain visible. Destructive confirmations cannot be canceled
-  mid-transaction. Native chooser Cancel remains safe before a transaction starts.
-- Quit/Close-without-tray while work is active is recorded and executed after the
-  result arrives. Native background windows/tray subscriptions keep running.
-  Automatic backups preserve unsaved editor drafts, defer during backup/import
-  confirmations or an active drag, and keep boottime deadlines, retry delays, destinations and retention behavior.
-- Add preserves preferences/current navigation/scheduler; Replace/Clear rebuild
-  actual UI state and saved preferences. Config success/durability outcomes reset
-  the scheduler using actual stored preferences, even if retention reports an error.
-- Worker panic releases the writer lock and leaves the UI snapshot read-only with
-  a visible storage error. Retry reopens the EXACT original Store path, never a
-  different default XDG path. It refuses missing/corrupt task data instead of empty
-  defaults, clears stale confirmations and reconstructs UI/scheduler from disk.
-  A fresh empty store with no tasks.json after a panic may require restart; this
-  conservative case never authorizes an empty overwrite of a previously known file.
+Build/link baseline: x86_64 Ubuntu 22.04, glibc 2.35, Rust 1.99.1.
+Container base pinned to:
+  ubuntu:22.04@sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04
+Unstripped Ubuntu release ELF: 49,350,088 bytes (47.06 MiB).
+Stripped payload ELF: 35,786,568 bytes (34.13 MiB).
+Debian validation ELF sizes: debug 742,593,368; release 49,362,680 bytes.
+These are actual files, not installed/Flatpak download/idle-memory estimates.
 
-3. Persistence and recovery invariants
-- Live storage remains version-7 JSON; portable backups remain version-2 JSON
-  with existing version-1/legacy migration compatibility and checksums.
-- Recovery snapshot is published/verified/synced BEFORE Add, Replace or Clear.
-  Existing write-failure rollback path stays active on the worker; the test fault
-  is injected on that worker's own thread, not incorrectly on the UI thread.
-- Stable task/list IDs, conservative existing-wins Add/conflict rejection, no-op
-  repeat import, explicit Replace confirmation and exact CLEAR remain intact.
-- Destination permission/unavailability checks, atomic no-clobber publication and
-  catalogue ownership retention stay unchanged. Previous destinations, manual
-  exports, unknown files, migration backups and recovery snapshots are not pruned.
-- No cancellation handle interrupts a destructive transaction. Forced OS kills or
-  power loss still depend on the existing atomic/sync/recovery design; physical
-  crash testing was not performed. An archive/catalogue/checkpoint can leave a
-  conservative extra/unindexed file on interruption, as documented in the audit.
+Bundled only Ubuntu libxkbcommon.so.0, with notices. libgcc_s.so.1 remains
+host-provided, following upstream AppImage host-library exclusion guidance.
+Payload maximum referenced GLIBC versions: Kara 2.35, libxkbcommon 2.33.
+Compiler runtime, libc, ELF loader and hardware-specific graphics drivers are not
+bundled. Ubuntu 20.04/older glibc and ARM are not supported by this candidate.
+Host graphics libraries/compositor, session D-Bus and FUSE or extract-and-run
+are still required. The runtime is static; the application payload uses glibc.
 
-4. Before/after measurements
-Environment: headless Debian 13, Intel i7-8550U (4 cores/8 threads), ~11GiB RAM,
-Rust/Cargo 1.99.1, locked dependencies, default optimized release profile. Existing
-external cache /var/tmp/kara-matrix-integration-target; no compiler/profile tuning.
-Host load, filesystem cache, font warmup and thermals were not controlled.
+appimagetool 1.9.1 and runtime 20251108 are checksum-pinned against upstream
+asset digests; no mutable continuous runtime is used. SOURCE_DATE_EPOCH is the
+accepted baseline commit time 1792542388. Two final assemblies have identical
+SHA256. This proves repeat assembly of the same payload here, NOT independently
+reproducible clean compiles across distributions/toolchains.
 
-Dataset: same audit shape, 20 lists, stable IDs, 192-byte notes, due dates for 80%,
-about 1/7 completed. Distributed: 20% Inbox, priorities spread. Concentrated: all
-10k tasks in Inbox/P3. March 2026 (42 Calendar cells). ~4.9MB JSON at 10k. Every
-process used fresh disposable Store/XDG roots under /var/tmp. No display required.
+Actual artifact validation:
+- Type-2 ELF header, executable mode, x86_64 and SquashFS extraction passed.
+- Actual extracted desktop/metainfo/icons/license payload checked.
+- ldd on Ubuntu 22.04 resolves every directly required library; bundled libraries
+  resolve from the extracted payload; libgcc_s/libc/libm/loader from the baseline host.
+- Extract-and-run reaches application entry under private D-Bus and disposable
+  XDG data. Exit 101 is EXPECTED without a display:
+  Create event loop: NotSupported(NotSupportedError { reason: "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set." })
+  This is not successful GUI launch, renderer, portal, tray or notification proof.
+- appimagetool emits a legacy *.appdata.xml filename warning even though valid
+  *.metainfo.xml is installed and separately validated. No duplicate metadata or
+  disabled validator was introduced to hide it.
 
-Same audit native widget build/layout probe, 1200x800, locked TinySkia; ms:
-  Dataset                  Layout before Layout after   Drop before   Drop after
-   1000 balanced             31.702       36.307        0.142        0.005
-  10000 balanced            623.830       74.519       11.169        0.066
-  10000 concentrated      17496.464       26.333      282.170        1.066
-Layout is the median of three constructions; drop validation is one sample.
-Raw first/warm samples and memory snapshots are in performance/results.json.
-10k concentrated: about 664x reduction in this host run; 10k distributed: about
-8.4x. The 1k distributed case already has only 50 tasks per quadrant; its small
-31.7/36.3ms difference is not a claim of improvement and is within uncontrolled
-measurement variability. This is not a 60fps guarantee or a benchmark percentile.
-The audit's 20.5s figure was independently reproduced here at 17.5s before fixes.
+3. Flatpak: prepared, but NO .flatpak artifact
+Source manifest:
+  packaging/flatpak/io.github.kordeone.Kara.json
+Supported runtime/SDK: org.freedesktop.Platform and org.freedesktop.Sdk, 25.08.
+Installed privately in the rootless container, not on the Debian host.
+Exact tested runtime commit:
+  b7aba340fd291e08bf26442d43a0e4adb6733da5a06d47ff4296a964af40cc8a
+Exact SDK commit:
+  18fa1be304b09e42dd3606f6d933e2d6a27513dd3aeee1203b2b58d59ad3db71
+Rust extension was inspected/installed privately, but the generated source-build
+manifest supplies verified exact Rust 1.99.1 via --toolchain /opt/rust instead
+of relying on a rolling extension version. No compiler is in the final payload.
 
-Headless process memory (probe fixtures/imports are retained, NOT Kara GUI RSS):
-- 10k concentrated original probe: peak about 477MiB, Matrix-stage RSS about 450MiB.
-- New raw measurements record the reduced bounded-widget footprint. Do not infer
-  a task-only heap census, live idle memory or absence of long-session leaks.
-- Initial widget construction now allocates at most 50 native drag handles per
-  populated quadrant; a test lays out 10k tasks and verifies only 50 are created,
-  then directly visits the last page and verifies the other 50 are accessible.
+Permissions:
+- Wayland socket and dri GPU device.
+- org.kde.StatusNotifierWatcher.
+- Exact com.system76.CosmicSettingsDaemon and .Config watcher services.
+- Read-only xdg-config/cosmic subdirectories: com.system76.CosmicTk and
+  com.system76.CosmicTheme.Mode, .Dark, .Light. Locked libcosmic directly reads
+  these and subscribes to the settings daemon; no shared configuration writes.
+No unrestricted home/host filesystem, network, X11, system bus or full session
+bus access. Portals and own application-ID names use standard filtered-bus access.
+Automatic destinations remain explicitly selected/granted by the user.
 
-Matched event-loop proxy: current-thread Tokio, 5ms timer, 10k records, alternating
-three BEFORE/AFTER runs. BEFORE matches the old controller's already-background
-file read/export publication, with encoding/Add preview on the timer thread;
-Add/Replace/Clear/automatic transactions are synchronous. AFTER runs the same work
-on the single-owner worker. Snapshot setup was <=0.006ms in the recorded runs.
+Completed checks:
+- Manifest parsed by flatpak-builder; all locked sources successfully vendored.
+- Standard build-init/build-finish created a correct staged application.
+- Finished metadata was parsed and checked against the exact permission allowlist.
+- A verified Ubuntu prebuilt-payload route was also attempted using standard export.
+  Its stripped executable SHA256 equals the AppImage executable exactly.
+- Freedesktop 25.08's own loader resolves ALL required libraries from its runtime.
+  This is ABI/loader readiness, not application execution inside the sandbox.
 
-Milliseconds: median worst gap (3 runs), maximum gap (all 3), median operation wall:
-  Operation           Gap before  Gap after Max before  Max after Wall before Wall after
-  export               130.73       5.64     136.85       5.97     352.01     271.37
-  import_preview        31.05       6.88      32.76       7.93     178.69     199.54
-  add                 1058.69       7.53    1080.21       9.87    1057.49     871.19
-  replace              596.23       8.30     640.56       8.50     594.00     530.91
-  automatic            463.53       6.45     510.84       6.77     462.16     494.08
-  clear                309.08       6.90     320.92       8.66     306.89     332.87
-The timer measures event-loop availability, not actual COSMIC input, rendering,
-chooser wait, startup or GUI frame time. Operation wall time need not decrease:
-verified backups still perform the same serialization, atomic writes and fsync,
-plus worker postflight checks. The goal is to stop waiting on the UI thread, not
-skip safeguards or claim faster storage. Deterministic iced/controller tests
-separately prove module navigation/timer work while a worker is deliberately held.
+Genuine environment blocker — do not bypass:
+Native flatpak-builder module execution fails BEFORE compilation:
+  bwrap: Creating new namespace failed: Operation not permitted
+Standard build-export also fails because its sandboxed icon validator cannot run:
+  error: /work/flatpak-export-build/export/share/icons/hicolor/32x32/apps/io.github.kordeone.Kara.png is not a valid icon: bwrap: Creating new namespace failed: Operation not permitted
+The latter is a namespace failure, not evidence that the PNG is corrupt. Actual
+PNG dimensions/content were independently checked. Simple nested user-namespace
+bwrap succeeds, but the full Flatpak sandbox does not; no claim is made about
+which exact additional namespace/seccomp policy is responsible.
 
-5. Validation
-Final validation: all seven commands passed on the final source.
-Commands run under fresh temporary XDG_DATA_HOME/XDG_CONFIG_HOME/XDG_CACHE_HOME/
-XDG_STATE_HOME and TMPDIR, with the external Cargo cache:
-  cargo fmt --check
-  cargo check --locked
-  cargo clippy --locked --all-targets -- -D warnings
-  cargo test --locked
-  cargo build --locked
+No privileged container, unconfined policy, disabled sandbox, skipped icon check,
+manual OSTree bypass or host kernel/configuration change was used. Flatpak export
+experiments stopped after the normal paths demonstrated the blocker.
+NO locally installable .flatpak was created. Flatpak install, sandbox launch,
+portal persistence, notifications and tray filtering were NOT validated.
+Run the documented build on a host with functional Flatpak namespace sandboxes.
+Debian host flatpak/flatpak-builder are absent; installing host tools or changing
+host isolation would require separate owner approval.
+
+4. Validation results
+All final application regressions passed with disposable temporary XDG_DATA_HOME,
+XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR and TMPDIR:
+  cargo fmt --check                                  PASS
+  cargo check --locked                               PASS
+  cargo clippy --locked --all-targets -- -D warnings   PASS
+  cargo test --locked                                PASS: 176, 0 failed, 1 ignored
+  cargo build --locked                               PASS
+  cargo build --release --locked                     PASS
   KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
     tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
-    -- --ignored --exact --nocapture
-  cargo build --release --locked
-Results: 176 regular tests passed, 0 failed, 1 ignored (private D-Bus test).
-The isolated D-Bus command separately passed that 1 test: 177 exercised in total.
-Strict Clippy reported no warnings. Debug and optimized release builds passed.
-Final regular test runtime: 6.39s; isolated D-Bus runtime: 0.10s.
-Command logs: /var/tmp/kara-performance-measurements/final-validation-{0..6}.log.
+    -- --ignored --exact --nocapture                  PASS: 1, 0 failed
+  python3 packaging/test_packaging.py                 PASS: 9
+  Python helper syntax, sh syntax, Just install dry-run PASS
+  AppStream 1.0.5 / desktop-file-validate 0.28          PASS
+  Actual staged metadata, AppStream 0.15.2             PASS
 
-12 focused new tests cover 10k page coverage/unique identities/global neighbors;
-completion/page-edge and cross-quadrant movement; actual native bounded layout;
-keyboard page crossing/create/complete visibility; O(1) shared snapshots rejecting
-writes/retention; canceled/corrupt/valid export/import paths and duplicate prevention;
-Add/Replace/Clear recovery across restart; worker-thread post-publication rollback
-and denied writes; failed worker lock/reload safety; automatic destination/retention/
-checkpoint behavior; actual iced task completion, conflicting/stale messages,
-single-thread timer progress and deferred tray Quit. Existing regressions were
-adapted to drive real asynchronous iced outputs rather than assume immediate writes.
-Original task/list/Calendar/Matrix/date/backup/migration/tray tests remain present.
+AppStream pedantic notices remain intentionally: uppercase preserved application
+ID and no public release history. Ubuntu's older validator reports informational
+unknown developer tag; no warning/error remains. No fabricated release/screenshots.
 
-Test-safety incident and correction:
-- One intermediate new panic-recovery test followed the old Retry load path into
-  the default XDG location. It issued no task-saving transaction there; Store::open
-  can create/open its directory and tasks.lock. We did not inspect or clean that
-  location afterward. No claim is made that every intermediate test was isolated.
-- Corrected Retry to use its frozen view's exact path, added missing-file refusal,
-  and validated panic/reload against a renamed/restored disposable task file.
-  Final complete validation runs additionally set ALL XDG roots to temporary paths.
-  All benchmark fixtures and destructive transaction tests used disposable Stores.
+Read-only source + network-disabled container cached build passed:
+  cargo build --release --frozen --offline
+Final native delivery validation uses the private target directory
+/var/tmp/kara-packaging-build/debian-target. It is a non-hardlinked copy of a
+warm cache; earlier native checks reused the external cache before this final
+isolated pass. Package build targets were private throughout.
+Final staging helper also passed with read-only source, network disabled and a
+fresh output directory. Rust notice evidence is bundled/verified, so a minimal
+Rust install need not install the large rust-docs component just to stage licenses.
+Initial cold Ubuntu release compile: 17m 36s, jobs=2; cached release repeat: 1.99s.
+These host/load-specific values are not a clean reproducibility guarantee.
+Two final AppImage assemblies were byte-identical. Flatpak sandbox/export tests
+FAILED for the environment reason above; do not summarize every check as passed.
 
-6. Changed files
-- src/matrix.rs: allocation-free neighbor lookup, indexed movement/reindexing,
-  bounded page/edge helpers and large-data ordering tests.
-- src/matrix_view.rs: bounded native pages, range picker, shared neighbor flags,
-  exact page-end insertion, native scroll reset and 10k native layout regression.
-- src/matrix_drag.rs: transient page cursor/focus state and stable widget IDs.
-- src/storage.rs: shared read-only record snapshots, single writable-lock ownership,
-  writer guards, exact-path nonempty recovery and isolated snapshot tests.
-- src/storage_job.rs (new): owned asynchronous chooser/worker, completion Gate,
-  progress labels, normal/failure results and isolated worker regressions.
-- src/app.rs: task dispatch/completion/progress, busy/write/quit guards, Matrix
-  cursor following, actual-state failure recovery and asynchronous controller tests.
-- src/backup_ui.rs: native operation progress and disabled transaction cancellation;
-  test-only chooser fixture messages, no task editor layout changes.
-- src/main.rs: registers storage_job.
-- report.txt, performance/results.json, performance/measurement-probes.md: report,
-  raw evidence and exact reproducible benchmark/graphical fixture source.
-- Cargo.toml, Cargo.lock, task schemas, task editor/date picker layout, Calendar,
-  priority assets, logo, tray transport and application ID were not changed.
+Evidence:
+  packaging/build-evidence.json
+  packaging/appimage/tools.lock.json
+  packaging/licenses/{sources.json,runtime-sources.json,rust-notices.json}
+Raw logs, builders, caches and vendored sources retained under:
+  /var/tmp/kara-packaging-build
+  /var/tmp/kara-packaging-podman
+  /var/tmp/kara-packaging-podman-run
+The newly created builder container was stopped after all jobs completed; build
+inputs and caches remain available. Verbatim upstream license texts retain their
+original whitespace/CRLF for checksum provenance; implementation whitespace
+checks exclude those legal copies.
+No real user task data was used or changed by tests. No COSMIC installation on
+Debian and no graphical acceptance claim. No host packages/services configured.
 
-7. Limitations and remaining packaging blockers
-- Pagination is bounded presentation, not continuous virtual scrolling. Choose
-  source/destination pages before a drag; switching pages during a native drag is
-  intentionally disabled. Cross-page keyboard reorder and direct range selection
-  remain available. No drag autoscroll/page-turn behavior was invented.
-- While a Store job is active, record writes are temporarily disabled rather than
-  queued. Read-only navigation/tray remains live. One job can wait for a native
-  chooser; Quit is deferred until it is canceled/completed. There is no unsafe
-  force-cancel of a running filesystem transaction.
-- Ordinary task/list CRUD, Matrix drop commits and initial/retry document loading
-  still use existing synchronous persistence. These can pause on large files or
-  slow disks. This milestone removes the audited 1–2s BACKUP/IMPORT UI transactions;
-  it does not claim every data operation or Tasks/Calendar rendering is asynchronous.
-- Tasks/Calendar still eagerly build/scan their own collections; native rendering
-  of extremely large task views may need later work. Unbounded individual notes/
-  titles and the live document/64MiB backup resource budget remain audit items.
-- Widget-ID cache pruning for deleted/churned records, cold startup/idle CPU/RSS,
-  GPU frame timing and multi-day tray memory behavior remain unmeasured/future work.
-- No packaging artifacts created. Prior audit blockers remain: invalid AppStream
-  metadata/template provides ID, hardcoded build output paths, dependency advisory/
-  license decisions, MSRV/toolchain/offline build policy, actual Flatpak persistent
-  portal write grants/atomic sync/retention identity, and AppImage runtime baseline.
-  No new dependency/security audit or blanket advisory clearance is claimed here.
-- No COSMIC graphical verification, physical power-loss or live hardware performance
-  measurements were performed on Debian. Owner acceptance is required before merge.
+5. Changed files
+- build.rs, justfile, .gitignore, rust-toolchain.toml.
+- resources/app.desktop, resources/app.metainfo.xml, five additional PNG sizes.
+- LICENSE, THIRD_PARTY_NOTICES.md; packaging license/provenance evidence.
+- packaging/Containerfile, build.py, validate.sh, test_packaging.py, README.md.
+- packaging/flatpak/{io.github.kordeone.Kara.json,prepare.py,assemble.py}.
+- packaging/appimage/{build.py,fetch-tools.py,tools.lock.json}.
+- packaging/build-evidence.json and this consolidated report.
+No src/ files, Cargo.toml or Cargo.lock changed. Binaries/caches are not committed.
 
-8. CachyOS functional/performance acceptance
-1. Transfer this FEATURE source via Samba. Fully Quit every old Kara process via
-   tray before launching; the shared application ID can activate an old instance
-   even with a different XDG_DATA_HOME. Build cargo build --release --locked.
-2. Use a NEW disposable XDG root and backup folder. Seed 1k/10k distributed and
-   10k concentrated fixtures using performance/measurement-probes.md, each in a
-   separate fresh root. Never seed/replace production data. Reuse a test root only
-   for intentional restart checks. Launch with that exact XDG_DATA_HOME.
-3. Record commit, machine, COSMIC/display scaling/theme/backend, window dimensions,
-   cold/warm state and sample counts. Measure real interactions with recording or
-   compositor timing; do not call cargo build elapsed time application startup.
-4. Test Matrix wide/narrow/short windows and both themes. Normal small lists should
-   look the same. Large quadrants must show exact counts and range picker; visit
-   first/middle/last ranges, use keyboard and Previous/Next, verify 10k unique IDs
-   remain reachable and native scrolling/headers/Add/actions stay accessible.
-5. Drag within/between quadrants and at visible page ends; verify final position
-   before the next hidden row, priority updates, source/destination/marker feedback,
-   no duplicate/lost records, completion groups and canceled/invalid drops unchanged.
-   Switch target pages BEFORE dragging. Reorder across page boundary with arrows;
-   create/edit/complete tasks and confirm the affected record is followed to its
-   page. Check named-list filtering and restart-persisted priority/manual order.
-6. In each module, export/import/Add/Replace/Clear using disposable records. Watch
-   progress, move/resize/navigate, and test tray Open/Close/second launch. Data writes
-   must remain disabled during a job; repeated actions cannot start a conflict.
-   Distinguish remaining large Tasks/Calendar widget-render cost from worker delay.
-7. Confirm Add existing-wins/conflict/count/no-duplicate behavior and Replace/Clear
-   confirmation/recovery. Cancel native chooser/pretransaction confirmation; no
-   data changes. Running destructive work has no mid-transaction Cancel.
-8. With a large import/backup running, request tray Quit or close without a host:
-   Kara must finish safely then exit. If a chooser is waiting, cancel/complete it.
-   Reopen the SAME disposable root and check persisted data/recovery archives.
-9. Test automatic backup while hidden, suspend/resume, one overdue restart, Apply/
-   disable, Keep last and destination switching/unavailability. Preserve manual/
-   recovery files and previous destinations; errors must remain visible.
-10. Worker panic is injected only in automated tests, not a shipped UI action.
-    For a real failure preserve files/recoveries, use Retry Storage at the SAME
-    path, and never bypass corruption/missing-file errors with empty defaults.
-11. Compare actual visible/hidden CPU, RSS/PSS and drag latency before/after at
-    identical data/window sizes. Headless timer/layout numbers are evidence for
-    backend fixes, not COSMIC graphical acceptance or an all-module frame-rate claim.
+6. Exact owner install/launch/uninstall commands
+AppImage, from the transferred dist directory:
+  sha256sum -c SHA256SUMS
+  chmod +x ./Kara-0.1.0-testing-x86_64.AppImage
+  ./Kara-0.1.0-testing-x86_64.AppImage
+If FUSE is unavailable:
+  APPIMAGE_EXTRACT_AND_RUN=1 ./Kara-0.1.0-testing-x86_64.AppImage
+Uninstall only that artifact (after Quit):
+  rm -- ./Kara-0.1.0-testing-x86_64.AppImage
+Do not delete ~/.local/share/io.github.kordeone.Kara or any backup archive.
 
-Stop for owner review. Do not merge, push or begin packaging.
+Flatpak commands are CONDITIONAL: first build the absent bundle on a supported
+host using packaging/README.md. Then, in a disposable COSMIC test account:
+  flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  flatpak --user install --bundle ./Kara-0.1.0-testing-x86_64.flatpak
+  flatpak info --user --show-permissions io.github.kordeone.Kara
+  flatpak run io.github.kordeone.Kara
+  flatpak --user uninstall io.github.kordeone.Kara
+Never add --delete-data. Normal sandbox tasks live at
+~/.var/app/io.github.kordeone.Kara/data/io.github.kordeone.Kara/tasks.json.
+No silent native-to-Flatpak migration; use deliberate backup import if desired.
+These install/uninstall commands were NOT run against the host or production data.
+
+7. CachyOS COSMIC acceptance checklist
+1. Use a dedicated test account/disposable task data. Fully Quit older Kara through
+   tray first: all formats intentionally use the SAME single-instance bus name.
+   Verify SHA256 and commit/source before switching packages.
+2. AppImage: normal FUSE launch AND extract-and-run. Confirm official KARA 5100
+   icon/About branding, light/dark/accent theme, keyboard focus and five modules.
+   Test a real Ubuntu 22.04 desktop (or equivalent documented glibc 2.35 baseline)
+   before claiming that baseline graphically supported. Check host GPU/software
+   renderer paths and missing-portal/tray behavior; no unresolved-library errors.
+3. Flatpak, AFTER building on a namespace-capable host: install as user, inspect
+   permissions/desktop launcher icon, launch from menu, verify private persisted
+   data across full Quit/restart. No broad permissions should be added casually.
+4. CRUD/list assignments, Calendar month/date/selected-day creation, priority icons
+   and Matrix pages/order/DnD/cancellation must match accepted main. Complete/uncomplete
+   and restart; IDs/order/notes/dates must survive without duplicate records.
+5. Export/import Add and Replace with disposable records. Check chooser modality,
+   permission errors, recovery snapshots, verified rollback and responsive busy
+   feedback. Clear All Data only in disposable account; require CLEAR and verified
+   recovery. Manual/recovery archives must remain intact.
+6. Select an external writable automatic-backup folder through the actual portal.
+   Apply interval/retention; hide to tray and trigger backup. Fully Quit/restart
+   and test overdue behavior, persistent grants, revocation/unavailable folder,
+   atomic writes/sync and retention isolation. Keep prior/manual/recovery archives.
+   A portal that cannot support the required safe operation must show an error;
+   do not broaden home/filesystem access or weaken sync to hide it.
+7. Tray Open/Quit, close-to-tray, second launch, panel restart and registration loss.
+   Test while a worker is busy and confirm deferred Quit finishes transactions.
+   Use flatpak run --log-session-bus io.github.kordeone.Kara for exact denied calls;
+   report them before changing permissions. Confirm live COSMIC theme updates.
+8. Notification CAPABILITY check for a future completed Flatpak (gdbus exists in
+   the selected runtime):
+   flatpak run --command=gdbus io.github.kordeone.Kara call --session \
+     --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop \
+     --method org.freedesktop.portal.Notification.AddNotification kara-package-test \
+     "{'title': <'Kara packaging test'>, 'body': <'Portal delivery test'>}"
+   Verify COSMIC displays it, then remove it:
+   flatpak run --command=gdbus io.github.kordeone.Kara call --session \
+     --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop \
+     --method org.freedesktop.portal.Notification.RemoveNotification kara-package-test
+   This probes portal delivery only. Kara currently emits no desktop notification
+   events, so application notification behavior is not established by this task.
+9. Uninstall only test artifact/application. Confirm task data/backups remain.
+   Record package hash, OS/glibc/GPU/COSMIC version, theme/scaling and results.
+
+8. Remaining release blockers / limitations
+- Flatpak bundle creation and install/launch acceptance blocked here by namespaces.
+- Actual GUI/portal/tray/notification/clean-host graphics acceptance remains pending.
+- drm-fourcc 2.2.0 has an MIT declaration/authors but no complete license text at
+  its locked revision. Original evidence is retained and inventory flags review;
+  no copyright notice was invented. Resolve before public distribution.
+- AppImage runtime third-party licenses are included. Exact corresponding-source/
+  relink obligations and the prior dependency advisory/license decisions still
+  require review before public distribution. No legal/security clearance claimed.
+- Apt repositories and runtime branches can advance; base digest/compiler/tools/
+  Cargo revisions and actual runtime commits are recorded, but independent clean
+  bit-for-bit compilation has not been proved. Preserve builder/cache/source inputs.
+- No public release history, screenshots, signatures, updates, Flathub submission,
+  auto desktop integration, autostart or packaging publication implemented.
+
+Stop for owner acceptance. Do not merge or push automatically.
+
+Primary packaging references:
+https://docs.flatpak.org/en/latest/manifests.html
+https://docs.flatpak.org/en/latest/sandbox-permissions.html
+https://docs.appimage.org/reference/best-practices.html
+https://raw.githubusercontent.com/AppImageCommunity/pkg2appimage/master/excludelist

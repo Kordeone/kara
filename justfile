@@ -5,6 +5,7 @@ appid := 'io.github.kordeone.Kara'
 
 # Path to root file system, which defaults to `/`.
 rootdir := ''
+stage-root := if rootdir == '' { '/' } else { rootdir }
 # The prefix for the `/usr` directory.
 prefix := '/usr'
 # The location of the cargo target directory.
@@ -19,7 +20,7 @@ icon-png := appid + '.png'
 
 # Install destinations
 base-dir := absolute_path(clean(rootdir / prefix))
-appdata-dst := base-dir / 'share' / 'appdata' / appdata
+appdata-dst := base-dir / 'share' / 'metainfo' / appdata
 bin-dst := base-dir / 'bin' / name
 desktop-dst := base-dir / 'share' / 'applications' / desktop
 icons-dst := base-dir / 'share' / 'icons' / 'hicolor'
@@ -63,10 +64,7 @@ run *args:
 
 # Installs files
 install:
-    install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
-    install -Dm0644 {{ 'target' / 'xdgen' / 'app.desktop' }} {{desktop-dst}}
-    install -Dm0644 {{ 'target' / 'xdgen' / 'app.metainfo.xml' }} {{appdata-dst}}
-    install -Dm0644 {{icon-png-src}} {{icon-png-dst}}
+    python3 packaging/build.py --destdir '{{stage-root}}' --prefix '{{prefix}}' --offline
 
 # Uninstalls installed files
 uninstall:

@@ -1,0 +1,51 @@
+{
+  "app-id": "io.github.kordeone.Kara",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "25.08",
+  "sdk": "org.freedesktop.Sdk",
+  "command": "kara",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/kara/cargo-home",
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_BUILD_JOBS": "2"
+    }
+  },
+  "finish-args": [
+    "--socket=wayland",
+    "--device=dri",
+    "--talk-name=org.kde.StatusNotifierWatcher",
+    "--talk-name=com.system76.CosmicSettingsDaemon",
+    "--talk-name=com.system76.CosmicSettingsDaemon.Config",
+    "--filesystem=xdg-config/cosmic/com.system76.CosmicTk:ro",
+    "--filesystem=xdg-config/cosmic/com.system76.CosmicTheme.Mode:ro",
+    "--filesystem=xdg-config/cosmic/com.system76.CosmicTheme.Dark:ro",
+    "--filesystem=xdg-config/cosmic/com.system76.CosmicTheme.Light:ro"
+  ],
+  "modules": [
+    {
+      "name": "kara",
+      "buildsystem": "simple",
+      "build-commands": [
+        "python3 packaging/build.py --destdir / --prefix /app --offline"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [
+            ".git",
+            "target",
+            "dist",
+            "packaging/work",
+            "__pycache__"
+          ]
+        }
+      ]
+    }
+  ]
+}

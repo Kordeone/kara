@@ -5,16 +5,19 @@
   <project_license>MPL-2.0</project_license>
   <name>Kara</name>
   <summary>A native task and productivity manager for the COSMIC™ desktop</summary>
-  <icon type="remote" width="512" height="512" scale="1">
-    https://github.com/Kordeone/kara/raw/main/resources/icons/hicolor/512x512/apps/io.github.kordeone.Kara.png
-  </icon>
-  <url type="vcs-browser">https://github.com/Kordeone/kara</url>
+  <description>
+    <p>Kara is a native COSMIC productivity application for organizing tasks, named lists and due dates.</p>
+    <p>Plan work with a monthly calendar and an Eisenhower Matrix. Local backups
+    support export, import and recovery without a cloud account.</p>
+  </description>
+  <developer id="io.github.kordeone">
+    <name>Kordeone</name>
+  </developer>
+  <url type="homepage">https://github.com/Kordeone/kara</url>
+  <url type="bugtracker">https://github.com/Kordeone/kara/issues</url>
   <launchable type="desktop-id">io.github.kordeone.Kara.desktop</launchable>
   <provides>
-    <id>com.system76.CosmicApplication</id>
-    <binaries>
-      <binary>kara</binary>
-    </binaries>
+    <binary>kara</binary>
   </provides>
   <requires>
     <display_length compare="ge">360</display_length>
@@ -25,7 +28,8 @@
     <control>touch</control>
   </supports>
   <categories>
-    <category>COSMIC</category>
+    <category>Office</category>
+    <category>ProjectManagement</category>
   </categories>
   <keywords>
     <keyword>COSMIC</keyword>
