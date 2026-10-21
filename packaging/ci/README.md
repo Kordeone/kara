@@ -37,7 +37,15 @@ Rust builds run offline. No binary from the developer's machine is used in CI.
 The build runs as the host runner's unprivileged UID, not container root: existing
 permission-denial tests must exercise real failures. Timezone data and Noto/DejaVu
 fonts are installed from the same snapshot for DST and software layout tests.
-For rootless Podman, also pass `--userns=keep-id` to preserve host UID ownership.
+The image creates a real passwd user and primary group matching the build-time
+`CI_UID` / `CI_GID` arguments (defaults 1001:1001). Build and run must use the
+same IDs. Merely passing Docker `--user` does not create an NSS identity.
+`check-identity.py` verifies real/effective UID/GID, passwd lookup, primary and
+supplementary group lookups before expensive work and immediately before D-Bus.
+D-Bus configuration and its real EXTERNAL authentication are unchanged.
+For rootless Podman, also pass `--userns=keep-id --passwd=false` to preserve host
+UID ownership while disabling Podman's automatic passwd injection. That injection
+masked the original Docker-only failure in the earlier local validation.
 
 ## Build and validation path
 
@@ -63,7 +71,9 @@ portals, FUSE mounting and actual clean-host behavior need owner acceptance.
 Local equivalent (Docker; Podman can substitute without privileged mode):
 
 ```sh
-docker build -t kara-appimage-builder -f packaging/ci/Containerfile packaging/ci
+docker build -t kara-appimage-builder \
+  --build-arg CI_UID="$(id -u)" --build-arg CI_GID="$(id -g)" \
+  -f packaging/ci/Containerfile packaging/ci
 ci_work=$(mktemp -d "${TMPDIR:-/var/tmp}/kara-ci.XXXXXXXX")
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/source:ro" -v "$ci_work:/work" \
   kara-appimage-builder bash /source/packaging/ci/build-appimage.sh /work/candidate
@@ -171,3 +181,27 @@ acceptance pass.
 - [Flatpak's Actions guidance](https://github.com/flatpak/flatpak-github-actions)
 
 - [GitHub hosted runner resource limits](https://docs.github.com/en/enterprise-cloud%40latest/actions/reference/runners/github-hosted-runners)
+
+## Rerunning the NSS / D-Bus repair
+
+The owner reported that the first hosted run compiled Kara but failed the isolated
+D-Bus test because the numeric runtime UID had no passwd identity. The image now
+provisions matching passwd/group entries using the runner's build arguments;
+NSS assertions fail early if build/run identities diverge. No authentication
+mechanism, daemon policy or application test was changed.
+
+After reviewing the repair commit, the owner must push that new commit to
+`feat/appimage-ci`. An existing PR targeting main will get a new `synchronize`
+run; otherwise open a reviewed PR. Do not just click **Re-run jobs** on the old
+5900ac8 run: that reruns the old source. If dispatch is available on the default
+branch, explicitly select the updated feature ref. This agent does not push.
+
+Check the new run's commit, `NSS identity verified` diagnostic before D-Bus,
+real isolated tray-test pass, AppImage validation, measured size/checksum and
+seven-day artifact upload. Local validation uses rootless Podman with
+`--passwd=false` so host-user injection cannot mask the Docker failure. A second
+UID/GID combination and a direct real EXTERNAL wire handshake are also checked
+locally; hosted Docker/Actions execution still needs the new GitHub run.
+
+Sources: [Docker user selection](https://docs.docker.com/reference/cli/docker/container/run/#user),
+[D-Bus EXTERNAL authentication](https://dbus.freedesktop.org/doc/dbus-specification.html#auth-mechanisms-external).

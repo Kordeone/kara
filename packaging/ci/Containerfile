@@ -29,5 +29,14 @@ ENV CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     tzdata fonts-noto-core fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/*
+# Docker --user selects numeric credentials but does not create NSS records.
+# Match the runner's IDs so bind mounts and D-Bus EXTERNAL agree on identity.
+ARG CI_UID=1001
+ARG CI_GID=1001
+RUN test "$CI_UID" -gt 0 && test "$CI_GID" -gt 0 \
+    && (getent group "$CI_GID" > /dev/null || groupadd --gid "$CI_GID" kara-build) \
+    && useradd --no-log-init --uid "$CI_UID" --gid "$CI_GID" \
+        --home-dir /work/home --no-create-home --shell /bin/bash kara-build \
+    && getent passwd "$CI_UID" && getent group "$CI_GID"
 ENV HOME=/work/home
 WORKDIR /source

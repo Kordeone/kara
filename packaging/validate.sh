@@ -14,6 +14,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked
 cargo build --release --locked
+python3 packaging/ci/check-identity.py
 KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
   tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
   -- --ignored --exact --nocapture

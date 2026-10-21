@@ -16,6 +16,7 @@ build_root=$(CDPATH='' cd -- "$1" && pwd)
 artifacts="$build_root/artifacts"
 mkdir -p "$artifacts" "${TMPDIR:-/tmp}" "$HOME"
 exec > >(tee "$build_root/build.log") 2>&1
+python3 packaging/ci/check-identity.py
 # All downloads precede the frozen/offline source build. No shared CI cache.
 cargo fetch --locked
 export CARGO_NET_OFFLINE=true

@@ -68,6 +68,18 @@ class CITests(unittest.TestCase):
             with patch.object(installer.urllib.request, 'urlopen', return_value=io.BytesIO(content)):
                 self.assertEqual(installer.fetch(record, Path(folder)).read_bytes(), content)
 
+    def test_runtime_identity_is_provisioned_and_checked_before_dbus(self):
+        workflow = (ROOT / '.github/workflows/appimage.yml').read_text()
+        for argument in ['--build-arg CI_UID="$(id -u)"', '--build-arg CI_GID="$(id -g)"']:
+            self.assertIn(argument, workflow)
+        container = Path(__file__).with_name('Containerfile').read_text()
+        self.assertIn('useradd --no-log-init --uid "$CI_UID" --gid "$CI_GID"', container)
+        validation = (ROOT / 'packaging/validate.sh').read_text()
+        self.assertLess(validation.index('python3 packaging/ci/check-identity.py'),
+                        validation.index('KARA_PRIVATE_TRAY_TEST=1 dbus-run-session'))
+        self.assertNotIn('ANONYMOUS', container)
+        self.assertNotIn('--privileged', workflow)
+
     def test_workflow_is_testing_only_and_actions_are_sha_pinned(self):
         text = (ROOT / '.github/workflows/appimage.yml').read_text()
         self.assertIn('contents: read', text)

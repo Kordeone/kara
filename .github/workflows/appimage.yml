@@ -24,7 +24,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Build pinned Ubuntu 22.04 tool environment
-        run: docker build --tag kara-appimage-builder --file packaging/ci/Containerfile packaging/ci
+        run: |
+          docker build --tag kara-appimage-builder \
+            --build-arg CI_UID="$(id -u)" --build-arg CI_GID="$(id -g)" \
+            --file packaging/ci/Containerfile packaging/ci
       - name: Validate and build from locked sources
         env:
           CI_WORK: ${{ runner.temp }}/kara-appimage

@@ -1,156 +1,112 @@
-KARA — GitHub Actions AppImage CI
+KARA — CI NSS/D-Bus Repair and Safe Worktree Consolidation
 
-Branch: feat/appimage-ci
-Worktree: /home/rapper/projects/kara-ci
-Base: 199d69ec717eaac996950ebc2140f326088efbd1 (feat/release-packaging).
-Main remains 7514dfc; packaging worktree, rescue data and other worktrees preserved.
-No merge, push, tag, GitHub Release, publication or host package installation.
-GitHub-hosted execution has NOT occurred. COSMIC graphical acceptance is NOT claimed.
+Existing worktree: /home/rapper/projects/kara-ci
+Branch: feat/appimage-ci; starting HEAD 5900ac8.
+No new worktree, merge, push, publication, tag or host software/configuration change.
 
-IMPLEMENTATION
-- .github/workflows/appimage.yml: pull requests targeting main, pushes to main and
-  manual dispatch; read-only contents permission; SHA-pinned official checkout
-  v7.0.1/upload-artifact v7.0.2; credentials not persisted; 90-minute timeout;
-  superseded same-ref runs canceled; seven-day testing artifact retention.
-- Ubuntu 22.04 hosted runner builds a digest-pinned Ubuntu 22.04 tools container.
-  Signed Ubuntu snapshot 20261020T000000Z freezes apt dependencies. A SHA-256-pinned
-  Ubuntu ca-certificates package bootstraps HTTPS without disabling TLS/signatures.
-  Only historical snapshot validity timestamps are exempted from expiry checks.
-- Exact dated official Rust 1.99.1 compiler/Cargo/std/rustfmt/Clippy archives and
-  actionlint 1.7.12 verified by SHA-256. AppImage tools retain existing lock file.
-- build-appimage.sh reuses packaging/validate.sh, packaging/build.py and existing
-  AppImage fetch/build helpers. It fetches locked sources, then builds offline.
-  No external prebuilt Kara, hardcoded developer path or shared CI Cargo cache.
-  CI dev/test debug symbols and incremental caches are disabled to bound disk
-  use on standard hosted runners; release settings are unchanged.
-- New verifier extracts the actual type-2 x86_64 AppImage without FUSE and checks
-  official icons, desktop/AppStream metadata, licenses, runtime allowlist,
-  resolved dependencies, executable AppRun and maximum GLIBC_2.35 requirements.
-  Extracted symbol maxima and package bytes/hash must match assembly evidence.
-- ShellCheck required explicit empty CDPATH quoting in the existing generated
-  AppRun; launcher behavior is unchanged.
-- SHA-256 is generated and checked. Job summary and uploaded evidence record
-  actual bytes/MiB, source SHA/epoch, tool versions and complete dpkg inventory.
-- Builder includes snapshot-pinned timezone data and Noto/DejaVu fonts. Runs as
-  an unprivileged UID so permission-denial regressions remain meaningful.
-- No application src/, Cargo.lock, dependencies, task schema or UI changes.
+1. CI repair
+The owner-reported hosted run compiled Kara but failed isolated D-Bus authentication.
+Docker --user chooses numeric credentials without creating passwd/group entries.
+Earlier local Podman keep-id runs injected an identity and masked that difference.
+Reproduced locally with --passwd=false: UID 1000 cannot resolve through NSS and
+normal dbus-daemon fails with "Could not get password database information for UID
+of current process". The new assertion also rejects this old image explicitly.
 
-ARTIFACT CONVENTIONS
-GitHub artifact: Kara-AppImage-x86_64-<full github.sha>-<run_attempt>.
-Payload: Kara-<Cargo version>-testing-<12-character source SHA>-x86_64.AppImage.
-Checksum: same basename plus .sha256 (standard basename-only sha256sum format).
-Also upload assembly/validation JSON, build-environment.txt and summary.md.
-Artifacts expire after 7 days; no extra ZIP compression. Downloaded executable
-mode may require chmod +x. GitHub artifact ZIP digest differs from AppImage hash.
-PR source SHA is normally the synthetic merge commit. Reference 13.56 MiB is not
-assumed for CI; hosted size will be measured only after an actual hosted run.
+- Containerfile creates a locked-login kara-build account and matching primary
+  group from CI_UID/CI_GID build arguments, using standard useradd/groupadd.
+- Workflow passes actual runner UID/GID at build and run time. No host passwd or
+  group file is mounted; no privileged container or relaxed security/auth policy.
+- check-identity.py checks real/effective UID/GID, pwd/grp NSS lookups, primary and
+  supplementary groups, and name/number round trips. Runs before expensive CI work
+  and immediately before the unchanged isolated D-Bus regression.
+- D-Bus daemon configuration, real EXTERNAL authentication, zbus client behavior,
+  Rust tests and application code are unchanged. No regression assertion weakened.
+- Ubuntu digest/snapshot, Rust/AppImage tool pins, Cargo.lock, glibc 2.35 ceiling,
+  checksum generation, artifact upload and seven-day retention remain unchanged.
 
-CHANGED FILES
-.github/workflows/appimage.yml
-packaging/README.md
-packaging/appimage/build.py
-packaging/ci/Containerfile
-packaging/ci/README.md
-packaging/ci/build-appimage.sh
-packaging/ci/install-tools.py
-packaging/ci/test_ci.py
-packaging/ci/tools.lock.json
-packaging/ci/verify-appimage.py
-report.txt
+Changed files:
+.github/workflows/appimage.yml; packaging/ci/Containerfile;
+packaging/ci/build-appimage.sh; packaging/ci/check-identity.py;
+packaging/ci/test_ci.py; packaging/ci/README.md; packaging/validate.sh;
+docs/worktree-consolidation.md; report.txt.
 
-VALIDATION
-Local reproduction of the exact CI entry point on Ubuntu 22.04, unprivileged UID:
-  cargo fmt --check                                  PASS
-  cargo check --locked                               PASS
-  cargo clippy --locked --all-targets -- -D warnings   PASS
-  cargo test --locked                                PASS: 176; 0 failed; 1 ignored
-  cargo build --locked                               PASS
-  cargo build --release --locked                     PASS
-  KARA_PRIVATE_TRAY_TEST=1 dbus-run-session -- cargo test --locked \
-    tray::tests::dbus_protocol_registration_recovery_and_single_instance_transport \
-    -- --ignored --exact --nocapture                  PASS: 1
-  python3 packaging/test_packaging.py                 PASS: 9
-  python3 packaging/ci/test_ci.py                     PASS: 5
-  actionlint 1.7.12 / ShellCheck 0.8.0                 PASS
-  Python syntax, sh/bash syntax and generated AppRun   PASS
-  Desktop entry / AppStream / actual extracted bundle PASS
-  SHA-256 generation and verification                 PASS
-  Network-disabled repeat AppImage assembly           PASS: byte-identical
-  Git whitespace checks                              PASS
+2. Final local validation
+- Full Ubuntu CI entry point with --passwd=false and UID/GID 1000:1000: PASS.
+- Full Debian native companion validation: PASS.
+- Both: cargo fmt --check; cargo check --locked;
+  cargo clippy --locked --all-targets -- -D warnings;
+  cargo test --locked (176 pass, 1 separately exercised ignored D-Bus test);
+  cargo build --locked; cargo build --release --locked.
+- Isolated real D-Bus regression: PASS (1) on both Debian and repaired Ubuntu.
+- Second image/runtime UID 1001, GID 121: NSS assertion, real EXTERNAL wire
+  authentication and unchanged isolated D-Bus regression PASS with no injection.
+- Direct private-bus EXTERNAL handshake also PASS at UID 1000; no fallback auth.
+- Original image missing NSS identity: diagnostic rejects it as expected (exit 1).
+- Packaging tests: 9 pass; CI tests: 6 pass. actionlint, ShellCheck, metadata,
+  extracted AppImage structure/icons/licenses/runtime/glibc and checksum: PASS.
+- AppImage measured 14,223,864 bytes (13.56 MiB), GLIBC maxima Kara 2.35,
+  libxkbcommon 2.33. Pre-commit artifact SHA256:
+  05cfb5a0e81e88d28dd6c0b3f193424f76081f6739aca071c5bb0a00f472ce16
+  /var/tmp/kara-appimage-ci-build/candidate-nss-repair/artifacts/
+  It identifies base 5900ac8 plus the reviewed environment repair. Artifact content
+  matches the prior package; the repair changes CI identity, not Kara's executable.
+- Logs: /var/tmp/kara-appimage-ci-build/nss-{before,validation,native-validation,
+  external-auth,1001-validation,negative-assertion}.log and nss-image*-build.log.
+- No actual user data used. No COSMIC graphical verification claimed.
+- New hosted Docker/Actions run and artifact upload/download remain unverified;
+  local Podman without identity injection is not a claimed GitHub pass.
 
-An initial container-root trial exposed 11 permission-denial test failures;
-missing timezone data and fonts caused two further failures. Fixed builder/user
-prerequisites, not application code or assertions. All 176 tests then passed.
-The final entry point rejects root. No test was skipped to work around failures.
-Final dev/test profile excludes debug symbols/incremental cache; release unchanged.
-Measured Ubuntu target directory: 3.9 GiB; Cargo cache: 1.4 GiB. These are local
-measurements, not a promise about hosted runner timings/storage or full cold CI.
+3. Worktree consolidation
+Twelve registered worktrees audited. All use /home/rapper/projects/kara/.git.
+Verified HEAD/ancestry, tracked source hashes, dirty/untracked/ignored inventories,
+tracked reports, branches, worktree locks and host process references.
 
-Local pre-commit CI candidate (application sources at base 199d69e plus reviewed
-uncommitted CI/launcher changes):
-  /var/tmp/kara-appimage-ci-build/candidate-unprivileged/artifacts/
-  Kara-0.1.0-testing-199d69ec717e-x86_64.AppImage
-  Actual bytes: 14,223,864 (13.56 MiB), measured, not copied from reference metadata.
-  SHA256: 92f60f58a69c88e3ba3ff088e0a44f35bf996dd6dc8bad74761050c32a440bc4
-  Extracted maximum GLIBC: Kara 2.35; libxkbcommon.so.0 2.33.
-  Executable/type-2/x86_64, icon/desktop/license/runtime and loader checks passed.
+Removed with plain git worktree remove (no force), all tips already in main:
+- /home/rapper/projects/kara-sidebar-polish
+- /home/rapper/projects/kara-performance
+- /home/rapper/projects/kara-backup-restore
+- /tmp/kara-matrix-feedback
+- /tmp/kara-matrix-integration
+All branches/commits/reports preserved. Eight unique ignored generated metadata
+files archived and read-back/hash-verified before removal. No artifact was assumed
+redundant solely because it was ignored. Before/after inventories and manifests:
+  /home/rapper/projects/kara-ci/packaging/work/retired-worktrees/
+This internal durable archive is ignored, NOT committed; preserve it before any
+future CI worktree retirement. Existing backups were untouched.
 
-Raw logs and private caches: /var/tmp/kara-appimage-ci-build/.
-Full source entry-point log: container-validation-unprivileged.log.
-Builder image logs: image-build-complete.log and image-build.log.
-Native companion log: native-validation.log.
-Debian companion validation also COMPLETE: formatting, locked check, strict
-Clippy, 176 tests (1 ignored), debug/release builds, isolated D-Bus (1 pass),
-9 packaging tests and source metadata checks all passed. Native release rebuild
-was 20m 56s with two jobs; this is not a hosted CI timing measurement.
-AppStream retains two accepted pedantic notices (uppercase preserved ID and no
-public release history); Ubuntu's older validator reports an informational
-modern developer-tag notice. No required validation failure remains.
-Native toolchain: installed stable alias verified as exact rustc 1.99.1; the
-workflow itself installs checksum-pinned 1.99.1 and never selects rolling stable.
-Independent syntax/lint log: tool-validation.log.
-Artifact bytes/cache outputs are not committed. No real user data was used.
-Hosted workflow, upload/download and COSMIC acceptance remain NOT RUN.
+Retained:
+- kara: protected dirty rescue (8 modified tracked + 2 untracked source files),
+  original Git store, ignored cache and agent/shell working directories.
+- kara-main: canonical clean main, unchanged at 7514dfc.
+- kara-ci: current unmerged repair plus internal retirement evidence.
+- kara-packaging: unmerged 199d69e, AppImage/checksum/packaging evidence.
+- kara-audit: unique unmerged audit documentation commit 33239ee and report.
+- kara-calendar: merged source but 690 unique ignored build-artifact files.
+- kara-ui-polish: merged source but 6,512 unique ignored build-artifact files and
+  historical Luna ownership. Retain pending evidence/ownership disposition.
+All retained worktrees remain valid. Protected rescue file, index and HEAD hashes
+match before/after exactly. No agents killed, no branches removed, no Git-store move.
+No existing backups, build caches, ordinary recovery folders or non-Kara data removed.
+Uppercase /home/rapper/Projects does not currently exist.
 
-OWNER FIRST RUN / GRAPHICAL ACCEPTANCE
-1. Review and push/open a PR targeting main manually. This agent does not push.
-   Manual dispatch requires the workflow to exist on the default branch first.
-2. Confirm the pinned action SHAs, read-only permissions, source SHA and complete
-   validation/build job. Approve a first-time fork workflow if GitHub requires it.
-3. Download within seven days; inspect actual bytes/hash and build environment.
-   Run sha256sum --check against the .sha256 from the download directory.
-4. Completely Quit existing Kara via tray before switching builds. Prefer a
-   disposable account/dataset; never clear real user data merely to test a build.
-5. On CachyOS COSMIC and an x86_64 Ubuntu 22.04/glibc 2.35 test environment, verify
-   regular FUSE and extract-and-run launch, icon, themes, Tasks/Calendar/Matrix,
-   selector, Matrix drag/drop, tray lifecycle and single-instance activation.
-6. Verify native backup chooser, Add/Replace imports, recovery/clear safeguards,
-   automatic backup destination access and persistence across restart.
-7. Keep job logs, package inventory and checksums with acceptance results.
+Complete directory/branch inventory, report hashes, archive checksums, process
+observations and recovery instructions: docs/worktree-consolidation.md plus its
+referenced internal JSON manifests.
 
-RELEASE AND FLATPAK READINESS
-- Normal CI runs only create testing artifacts. An owner-approved exact version,
-  commit and tag, graphical/license/security acceptance and a separate reviewed
-  protected release workflow are required before any future public release.
-  No public-release workflow or tag trigger was added.
-- Flatpak manifest inspected: Freedesktop 25.08, offline vendoring, minimal
-  Wayland/GPU/tray/COSMIC settings allowlist. No broad home/network/bus access.
-- Smallest follow-up: native disposable Ubuntu GitHub VM, temporary user Flatpak
-  installation, normal namespace preflight, signed runtime/SDK 25.08 (record/pin
-  commits), existing prepare.py with verified exact Rust toolchain, ordinary
-  sandboxed flatpak-builder/build-bundle, metadata/permissions and checksum/upload.
-  Detailed steps in packaging/ci/README.md. No Flatpak workflow enabled yet.
-- Debian's existing full Flatpak sandbox blocker remains:
-  bwrap: Creating new namespace failed: Operation not permitted
-  No bypass, privileged container, disabled icon validation or host change.
-- Hosted Flatpak source build/export, portal grants after restart, notifications,
-  tray filtering and COSMIC behavior remain unverified. Flathub/public release also
-  needs screenshots/release metadata, dependency/security review, drm-fourcc full
-  MIT notice clarification and runtime source/relink obligation review.
-- Snapshot/tool hosting and GitHub runners remain external dependencies. Pinning
-  is a repeatable recipe, not proof of clean-build byte identity or endless archive
-  availability. Update frozen tools/snapshot deliberately for security fixes.
+4. Future layout and approval boundary
+Reuse kara-main for ordinary milestones. Temporary isolation only when necessary,
+under a designated ignored internal .worktrees directory; retire after integration
+and verified evidence disposition. Do not create more top-level kara-* projects.
+Eventual single project root: /home/rapper/projects/kara with the existing .git,
+accepted main sources, .worktrees and .archives. Converting the protected original
+requires an explicit owner-approved rescue backup/checkpoint/migration first.
+Nothing was moved or switched. Detailed staged plan in the consolidation document.
 
-Exact local commands, artifact conventions, sources and future release approval
-procedure: packaging/ci/README.md. Existing package installation/uninstall guidance:
-packaging/README.md. Do not use --delete-data on Flatpak uninstall.
+5. GitHub rerun
+Owner reviews and pushes the NEW repair commit manually. An existing PR targeting
+main then starts a synchronize run; otherwise open a PR. Re-running the old failed
+5900ac8 job uses old source and will not test this fix. If manual dispatch is
+available on the default branch, select the updated feature ref.
+Check the new SHA, NSS diagnostic, real isolated D-Bus pass, full regression suite,
+AppImage/glibc/checksum evidence, actual size and seven-day artifact upload.
+No merge or push performed by this agent. Stop for owner review.
